@@ -1,0 +1,100 @@
+<script>
+  import { onMount } from 'svelte';
+  import { getWatchedPaths, addWatchedPath } from '../api.js';
+
+  let paths = [];
+  let newPathInput = "";
+  let isTauriAvailable = false;
+
+  onMount(() => {
+    loadPaths();
+    // Check if Tauri is available
+    isTauriAvailable = typeof window !== 'undefined' && window.__TAURI__;
+  });
+
+  async function loadPaths() {
+    try {
+      paths = await getWatchedPaths();
+    } catch (e) {
+      console.error("Failed to load paths", e);
+    }
+  }
+
+  async function handleAdd(useNativeDialog = false) {
+    if (useNativeDialog) {
+      // Try native dialog first (Tauri)
+      try {
+        if (isTauriAvailable) {
+          // Dynamic import to avoid issues in non-Tauri environments
+          const { open } = await import('@tauri-apps/api/dialog');
+          const selected = await open({
+            directory: true,
+            multiple: false,
+            title: "Select Folder to Track"
+          });
+          
+          if (selected) {
+            // path is a string when multiple is false
+            const pathToAdd = Array.isArray(selected) ? selected[0] : selected;
+            await addWatchedPath(pathToAdd);
+            await loadPaths();
+            return;
+          }
+        } 
+      } catch (err) {
+        console.error("Tauri dialog error:", err);
+        alert("Native dialog failed: " + err);
+      }
+    }
+    
+    // Fallback to text input
+    if(newPathInput){
+      await addWatchedPath(newPathInput);
+      newPathInput = "";
+      await loadPaths();
+    }
+  }
+</script>
+
+<div class="card" style="max-height: 300px;">
+  <div class="card-header">
+    <h5 class="card-title mb-0">Watched Folders</h5>
+  </div>
+  <div class="card-body" style="overflow-y: auto;">
+    {#if paths.length === 0}
+      <p class="text-muted">No folders being watched yet.</p>
+    {:else}
+      <ul class="list-group list-group-flush">
+        {#each paths as p}
+          <li class="list-group-item d-flex justify-content-between align-items-center px-0">
+            <span class="text-break">{p.path}</span>
+            <span class="badge {p.is_active ? 'bg-success' : 'bg-secondary'}">
+              {p.is_active ? 'Active' : 'Inactive'}
+            </span>
+          </li>
+        {/each}
+      </ul>
+    {/if}
+  </div>
+  <div class="card-footer">
+    <div class="d-grid gap-2">
+      {#if isTauriAvailable}
+        <button class="btn btn-primary" type="button" on:click={() => handleAdd(true)}>
+          <i class="bi bi-folder-plus me-1"></i>Choose Folder
+        </button>
+      {/if}
+      <div class="input-group">
+        <input
+          type="text"
+          class="form-control"
+          placeholder="{isTauriAvailable ? 'Or enter path manually...' : 'Enter folder path...'}"
+          bind:value={newPathInput}
+          on:keydown={(e) => e.key === 'Enter' && handleAdd(false)}
+        />
+        <button class="btn btn-outline-secondary" type="button" on:click={() => handleAdd(false)}>
+          Add
+        </button>
+      </div>
+    </div>
+  </div>
+</div>

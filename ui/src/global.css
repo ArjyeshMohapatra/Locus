@@ -1,0 +1,71 @@
+@import 'bootstrap/dist/css/bootstrap.min.css';
+
+/* Custom styles for LOCUS */
+body {
+  background-color: #f8f9fa;
+  overscroll-behavior: none;
+}
+
+html {
+  overscroll-behavior: none;
+}
+
+/* Hide scrollbars */
+::-webkit-scrollbar {
+  display: none;
+}
+
+* {
+  -ms-overflow-style: none;  /* IE and Edge */
+  scrollbar-width: none;  /* Firefox */
+}
+
+/* Smooth transitions for interactive elements */
+.btn {
+  transition: all 0.2s ease;
+}
+
+.card {
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+  border: none;
+  margin-bottom: 20px;
+  transition: box-shadow 0.3s ease;
+}
+
+.card:hover {
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+}
+
+.btn-primary {
+  background-color: #007bff;
+  border-color: #007bff;
+}
+
+.btn-primary:hover {
+  background-color: #0056b3;
+  border-color: #0056b3;
+}
+
+.activity-item {
+  padding: 10px 0;
+  border-bottom: 1px solid #e9ecef;
+}
+
+.activity-item:last-child {
+  border-bottom: none;
+}
+
+.activity-time {
+  color: #6c757d;
+  font-size: 0.875rem;
+}
+
+.activity-details {
+  font-weight: 500;
+}
+
+.app-container {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 20px;
+}
