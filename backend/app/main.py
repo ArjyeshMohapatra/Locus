@@ -178,7 +178,17 @@ def get_timeline(limit: int = 50, db: Session = Depends(get_db)):
 @app.get("/files/versions")
 def list_file_versions(path: str, db: Session = Depends(get_db)):
     """List available versions for a specific file path"""
-    return crud.get_file_versions(db, path)
+    versions = crud.get_file_versions(db, path)
+    if not versions and os.path.exists(path):
+        # Fallback/Recovery: If file exists but has no history,
+        # try to link it using its current content (if valid).
+        current_hash = storage.calculate_file_hash(path)
+        if current_hash:
+            crud.create_file_record(db, path, content_hash=current_hash)
+            # Re-fetch
+            versions = crud.get_file_versions(db, path)
+
+    return versions
 
 
 @app.get("/files/current-version")
@@ -195,7 +205,23 @@ def get_current_version(path: str, db: Session = Depends(get_db)):
     if not current_hash:
         raise HTTPException(status_code=500, detail="Failed to hash file")
 
+    # 1. Try to fetch versions via Identity (FileRecord) first
+    # This ensures that if the file was moved/renamed, we still find its history
     versions = crud.get_file_versions(db, path)
+
+    # 2. If no versions found via Identity, maybe the FileRecord is missing/stale?
+    # Try to trigger a "check" or "recovery" by creating the record now?
+    # If fetch failed, it means get_file_versions returned empty.
+    # But wait, get_file_versions ALREADY looks up by FileRecord.
+    # So if it returns empty, it means we have no history linked to this current path OR identity.
+
+    if not versions:
+        # Attempt active recovery: Create/Link the record now using the hash we just calculated
+        # This fixes the "User updated path manually in UI but DB doesn't know this file is that old file" gap.
+        crud.create_file_record(db, path, content_hash=current_hash)
+        # Re-fetch
+        versions = crud.get_file_versions(db, path)
+
     match = next((v for v in versions if v.file_hash == current_hash), None)
     return {
         "file_hash": current_hash,

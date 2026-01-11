@@ -39,15 +39,34 @@ class FileEvent(Base):
     is_processed = Column(Boolean, default=False)
 
 
+class FileRecord(Base):
+    __tablename__ = "file_records"
+
+    id = Column(Integer, primary_key=True, index=True)
+    # The current path on disk. If the file is renamed, this is updated.
+    current_path = Column(String, unique=True, nullable=False, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    last_seen_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+
 class FileVersion(Base):
     __tablename__ = "file_versions"
 
     id = Column(Integer, primary_key=True, index=True)
+
+    # Link to the consistent identity of the file
+    file_record_id = Column(Integer, ForeignKey("file_records.id"), nullable=True)
+
+    # Historical path at the time of backup (snapshot)
     original_path = Column(String, nullable=False, index=True)
+
     storage_path = Column(String, nullable=False)  # Path to the backed up file
     version_number = Column(Integer, nullable=False)
     file_hash = Column(String, nullable=True)
     file_size_bytes = Column(BigInteger, nullable=True)
+
+    # Relationship
+    file_record = relationship("FileRecord")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
