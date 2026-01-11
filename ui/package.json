@@ -9,9 +9,12 @@
   },
   "type": "module",
   "dependencies": {
+    "@fortawesome/fontawesome-svg-core": "^7.1.0",
+    "@fortawesome/free-solid-svg-icons": "^7.1.0",
     "@tauri-apps/api": "^1.6.0",
     "bootstrap": "^5.3.8",
-    "svelte": "^5.0.0"
+    "svelte": "^5.0.0",
+    "svelte-fa": "^4.0.4"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^4.0.0",

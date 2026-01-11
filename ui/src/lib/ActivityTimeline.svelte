@@ -2,6 +2,8 @@
   import { onMount, onDestroy } from 'svelte';
   import { slide } from 'svelte/transition';
   import { getRecentFileEvents } from '../api.js';
+  import Fa from 'svelte-fa';
+  import { faChevronDown, faChevronRight } from '@fortawesome/free-solid-svg-icons';
   import FileHistoryModal from './FileHistoryModal.svelte';
 
   let events = [];
@@ -88,7 +90,9 @@
                   type="button"
                >
                  <div class="d-flex align-items-center">
-                    <i class="bi {expandedFiles.has(filePath) ? 'bi-chevron-down' : 'bi-chevron-right'} me-2 text-muted" style="font-size: 0.8rem;"></i>
+                    <span class="me-2 text-muted" style="font-size: 0.8rem;">
+                      <Fa icon={expandedFiles.has(filePath) ? faChevronDown : faChevronRight} aria-hidden="true" />
+                    </span>
                     <div class="text-truncate">
                         <span class="fw-bold small font-monospace d-block text-truncate">
                             {filePath.split(/[\\/]/).pop()}
@@ -110,17 +114,7 @@
                        History
                    </button>
 
-                     <button
-                       class="btn btn-sm btn-outline-secondary me-2 rounded-circle toggle-circle"
-                       class:rotated={expandedFiles.has(filePath)}
-                       type="button"
-                       aria-label={expandedFiles.has(filePath) ? 'Collapse' : 'Expand'}
-                       title={expandedFiles.has(filePath) ? 'Collapse' : 'Expand'}
-                       on:click={(e) => { e.stopPropagation(); toggleExpand(filePath); }}
-                     >
-                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 15 12 9 18 15"/></svg>
-                     </button>
-                   <span class="badge bg-secondary rounded-pill" style="font-size: 0.7rem;">{fileEvents.length}</span>
+                     <span class="badge bg-secondary rounded-pill" style="font-size: 0.7rem;">{fileEvents.length}</span>
                </div>
            </div>
            
@@ -153,26 +147,5 @@
 <FileHistoryModal filePath={selectedFile} onClose={() => selectedFile = null} />
 
 <style>
-  .toggle-circle {
-    width: 20px;
-    height: 20px;
-    padding: 0;
-    line-height: 1;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    transition: transform 200ms ease;
-  }
-
-  /* Rotate the inner icon for a crisper rotation */
-  .toggle-circle svg {
-    transition: transform 200ms ease;
-    display: inline-block;
-    font-size: 0.8rem;
-    transform: rotate(0deg);
-  }
-
-  .toggle-circle.rotated svg {
-    transform: rotate(180deg);
-  }
+  /* Expand/collapse is handled via the file header chevron and History button */
 </style>

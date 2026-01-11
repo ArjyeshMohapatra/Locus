@@ -1,7 +1,9 @@
 <script>
   import { onMount } from 'svelte';
-  import { fade } from 'svelte/transition';
-    import { getFileVersions, restoreFileVersion, getFileVersionContent, getCurrentFileVersion } from '../api.js';
+    import { fade } from 'svelte/transition';
+        import { getFileVersions, restoreFileVersion, getFileVersionContent, getCurrentFileVersion } from '../api.js';
+    import Fa from 'svelte-fa';
+    import { faArrowLeft, faHistory, faUndo, faEye } from '@fortawesome/free-solid-svg-icons';
 
   export let filePath = null;
   export let onClose = () => {};
@@ -121,12 +123,12 @@
       <div class="modal-header">
         <h5 class="modal-title">
             {#if selectedVersion}
-                <button class="btn btn-sm btn-outline-secondary me-2" on:click={closePreview}>
-                   <i class="bi bi-arrow-left"></i> Back
-                </button>
+                     <button class="btn btn-sm btn-outline-secondary me-2" on:click={closePreview}>
+                         <Fa icon={faArrowLeft} class="me-1" aria-hidden="true"/> Back
+                     </button>
                 File Preview (V{selectedVersion.version_number})
             {:else}
-                                <i class="bi bi-clock-history me-2"></i>File History
+                                <Fa icon={faHistory} class="me-2" aria-hidden="true"/>File History
                                 {#if currentVersionNumber}
                                     <span class="ms-2 small text-muted">(Current: V{currentVersionNumber})</span>
                                 {:else if currentHash}
@@ -165,7 +167,7 @@
                         Recorded: {formatDate(selectedVersion.created_at)}
                     </div>
                     <button class="btn btn-primary btn-sm" on:click={() => handleRestore(selectedVersion.id)}>
-                        <i class="bi bi-arrow-counterclockwise me-1"></i> Restore This Version
+                        <Fa icon={faUndo} class="me-1" aria-hidden="true"/> Restore This Version
                     </button>
                 </div>
                 
@@ -229,7 +231,7 @@
                                 class="btn btn-sm btn-outline-secondary" 
                                 on:click|stopPropagation={() => openPreview(v)}
                             >
-                                <i class="bi bi-eye me-1"></i>Preview
+                                <Fa icon={faEye} class="me-1" aria-hidden="true"/>Preview
                             </button>
                         </div>
                     {/each}

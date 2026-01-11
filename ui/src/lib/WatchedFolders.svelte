@@ -1,6 +1,8 @@
 <script>
   import { onMount } from 'svelte';
-  import { getWatchedPaths, addWatchedPath } from '../api.js';
+  import { getWatchedPaths, addWatchedPath, relinkWatchedPath } from '../api.js';
+  import Fa from 'svelte-fa';
+  import { faLink, faFolderPlus } from '@fortawesome/free-solid-svg-icons';
 
   let paths = [];
   let newPathInput = "";
@@ -17,6 +19,53 @@
       paths = await getWatchedPaths();
     } catch (e) {
       console.error("Failed to load paths", e);
+    }
+  }
+
+  async function handleRelink(oldPath) {
+    let newPath = null;
+    
+    // 1. Try Tauri Dialog
+    if (isTauriAvailable) {
+       try {
+          // Dynamic import to avoid issues in non-Tauri environments
+          const { open } = await import('@tauri-apps/api/dialog');
+          const selected = await open({
+            directory: true,
+            multiple: false,
+            title: `Select New Location for ${oldPath}`
+          });
+          
+          if (selected) {
+            newPath = Array.isArray(selected) ? selected[0] : selected;
+          }
+       } catch (err) {
+         console.error("Tauri dialog error:", err);
+       }
+    }
+
+    // 2. Fallback to Prompt
+    if (!newPath) {
+      // Pre-fill with old path to make editing typos easier, 
+      // but strictly we expect a NEW path.
+      newPath = prompt(`Enter new location for:\n${oldPath}`, oldPath);
+    }
+
+    if (newPath && newPath !== oldPath) {
+      // Ask user if they want Locus to move the files
+      const shouldMoveFiles = confirm(
+        `Do you want Locus to MOVE the files on disk for you?\n\n` + 
+        `YES (OK) = I want Locus to move files from "${oldPath}" to "${newPath}".\n` + 
+        `NO (Cancel) = I have already moved them manually.`
+      );
+
+      try {
+        await relinkWatchedPath(oldPath, newPath, shouldMoveFiles);
+        alert(`Location updated successfully!`);
+        await loadPaths();
+      } catch (e) {
+        alert("Relink failed: " + e.message);
+      }
     }
   }
 
@@ -67,10 +116,19 @@
       <ul class="list-group list-group-flush">
         {#each paths as p}
           <li class="list-group-item d-flex justify-content-between align-items-center px-0">
-            <span class="text-break">{p.path}</span>
-            <span class="badge {p.is_active ? 'bg-success' : 'bg-secondary'}">
-              {p.is_active ? 'Active' : 'Inactive'}
-            </span>
+            <span class="text-break me-2">{p.path}</span>
+            <div class="d-flex align-items-center gap-2">
+               <button 
+                  class="btn btn-sm btn-outline-warning" 
+                  title="Relink Path (Move History)"
+                  on:click={() => handleRelink(p.path)}
+                >
+                    <Fa icon={faLink} aria-hidden="true"/>
+               </button>
+               <span class="badge {p.is_active ? 'bg-success' : 'bg-secondary'}">
+                  {p.is_active ? 'Active' : 'Missing'}
+               </span>
+            </div>
           </li>
         {/each}
       </ul>
@@ -80,7 +138,7 @@
     <div class="d-grid gap-2">
       {#if isTauriAvailable}
         <button class="btn btn-primary" type="button" on:click={() => handleAdd(true)}>
-          <i class="bi bi-folder-plus me-1"></i>Choose Folder
+          <Fa icon={faFolderPlus} class="me-1" aria-hidden="true"/>Choose Folder
         </button>
       {/if}
       <div class="input-group">

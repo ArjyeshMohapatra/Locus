@@ -27,6 +27,25 @@ export async function addWatchedPath(path) {
   return await res.json();
 }
 
+export async function relinkWatchedPath(oldPath, newPath, moveFiles = false) {
+  const payload = {
+    old_path: String(oldPath).trim(),
+    new_path: String(newPath).trim(),
+    move_files: !!moveFiles
+  };
+  
+  const res = await fetch(`${BASE_URL}/files/watched/relink`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => ({}));
+    throw new Error(errorData.detail || 'Failed to relink path');
+  }
+  return await res.json();
+}
+
 export async function getActivityTimeline(limit = 50) {
   const res = await fetch(`${BASE_URL}/activity/timeline?limit=${limit}`);
   return await res.json();
