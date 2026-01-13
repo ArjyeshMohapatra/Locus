@@ -4,21 +4,26 @@ from datetime import datetime
 import os
 
 
-# --- Watched Paths ---
+# ---Watched Path ---
+# creates path's needed to be watched
 def create_watched_path(db: Session, path: str):
     db_path = models.WatchedPath(path=path)
     db.add(db_path)
     db.commit()
-    db.refresh(db_path)
+    db.refresh(
+        db_path
+    )  # don't use it if there's no need for accessing data immediately after saving
     return db_path
 
 
+# get's all actively watched paths
 def get_watched_paths(db: Session):
     return (
         db.query(models.WatchedPath).filter(models.WatchedPath.is_active == True).all()
     )
 
 
+# set's is_active = False for watched path instead of hard deleting them in order to store previous history related to them
 def delete_watched_path(db: Session, path_id: int):
     db_path = (
         db.query(models.WatchedPath).filter(models.WatchedPath.id == path_id).first()
@@ -29,6 +34,7 @@ def delete_watched_path(db: Session, path_id: int):
     return db_path
 
 
+# finds an active path an dchanges its path string into new one
 def update_watched_path(db: Session, old_path: str, new_path: str):
     """Update a watched path entry (e.g., when root is renamed)."""
     db_path = (
@@ -46,6 +52,7 @@ def update_watched_path(db: Session, old_path: str, new_path: str):
 
 
 # --- File Events ---
+# receives a dictionary of data and saves it to file events table
 def create_file_event(db: Session, event_data: dict):
     # event_data should match FileEvent columns: event_type, src_path, etc.
     db_event = models.FileEvent(**event_data)
@@ -55,6 +62,7 @@ def create_file_event(db: Session, event_data: dict):
     return db_event
 
 
+# populates recent 50 file activities
 def get_recent_file_events(db: Session, limit: int = 50):
     return (
         db.query(models.FileEvent)
@@ -65,6 +73,7 @@ def get_recent_file_events(db: Session, limit: int = 50):
 
 
 # --- File Records (Identity Tracking) ---
+# get's a file's record from file_record table
 def get_file_record(db: Session, path: str):
     return (
         db.query(models.FileRecord)
@@ -73,6 +82,42 @@ def get_file_record(db: Session, path: str):
     )
 
 
+# tries to recover a record when a file appears in a new location
+def _try_recover_file_record(db: Session, path: str, content_hash: str):
+    # Heuristic: Same Content Hash AND Same Filename AND Old Record is "Missing"
+    candidate_versions = (
+        db.query(models.FileVersion)
+        .filter(models.FileVersion.file_hash == content_hash)
+        .all()
+    )
+
+    current_filename = os.path.basename(path)
+
+    for version in candidate_versions:
+        if not version.file_record:
+            continue
+
+        old_record = version.file_record
+        old_path = old_record.current_path
+
+        # Check 1: Filename match (avoids linking 'copy.txt' to 'original.txt' automatically)
+        if os.path.basename(old_path) != current_filename:
+            continue
+
+        # Check 2: Is the old path gone?
+        if os.path.exists(old_path):
+            continue
+
+        print(f"[Identity Recovery] Relinking {old_path} -> {path}")
+        old_record.current_path = path
+        db.commit()
+        db.refresh(old_record)
+        return old_record
+
+    return None
+
+
+# checks existance of a file and update the file_record table accordingly
 def create_file_record(db: Session, path: str, content_hash: str = None):
     # 1. Normal Check: Does this path already have a record?
     existing = get_file_record(db, path)
@@ -80,32 +125,10 @@ def create_file_record(db: Session, path: str, content_hash: str = None):
         return existing
 
     # 2. Recovery Check: Did we lose this file from another location?
-    # Heuristic: Same Content Hash AND Same Filename AND Old Record is "Missing"
     if content_hash:
-        # Find ANY file version with this hash
-        # (This might be slow if DB is huge, but fine for local tool)
-        candidate_versions = (
-            db.query(models.FileVersion)
-            .filter(models.FileVersion.file_hash == content_hash)
-            .all()
-        )
-
-        current_filename = os.path.basename(path)
-
-        for version in candidate_versions:
-            if version.file_record:
-                old_record = version.file_record
-                old_path = old_record.current_path
-
-                # Check 1: Filename match (avoids linking 'copy.txt' to 'original.txt' automatically)
-                if os.path.basename(old_path) == current_filename:
-                    # Check 2: Is the old path gone?
-                    if not os.path.exists(old_path):
-                        print(f"[Identity Recovery] Relinking {old_path} -> {path}")
-                        old_record.current_path = path
-                        db.commit()
-                        db.refresh(old_record)
-                        return old_record
+        recovered = _try_recover_file_record(db, path, content_hash)
+        if recovered:
+            return recovered
 
     # 3. Create New Record
     db_record = models.FileRecord(current_path=path)
@@ -115,11 +138,8 @@ def create_file_record(db: Session, path: str, content_hash: str = None):
     return db_record
 
 
+# updates a file's current path if it gets renamed or moved
 def update_file_record_path(db: Session, old_path: str, new_path: str):
-    """
-    Updates the current_path of a file record.
-    Used when a file is renamed/moved.
-    """
     db_record = get_file_record(db, old_path)
     if db_record:
         db_record.current_path = new_path
@@ -128,11 +148,17 @@ def update_file_record_path(db: Session, old_path: str, new_path: str):
     return db_record
 
 
+# helper function to safely replace beginning of a path
+def swap_path_prefix(current_path: str, old_prefix: str, new_prefix: str) -> str:
+    relative_suffix = current_path[len(old_prefix) :]
+    if relative_suffix.startswith(os.path.sep):
+        return new_prefix + relative_suffix
+    return os.path.join(new_prefix, relative_suffix)
+
+
+# updates current path for all the files under a moved directory
 def update_directory_records(db: Session, old_dir: str, new_dir: str):
-    """
-    Updates current_path for all files inside a moved directory.
-    """
-    # Find all records starting with this path
+    # Find all records starting with this watched directory's old_path
     records = (
         db.query(models.FileRecord)
         .filter(models.FileRecord.current_path.startswith(old_dir))
@@ -147,23 +173,89 @@ def update_directory_records(db: Session, old_dir: str, new_dir: str):
     for record in records:
         # Replace the prefix
         if record.current_path.startswith(norm_old_dir):
-            relative_suffix = record.current_path[
-                len(old_dir) :
-            ]  # Use original length to slice
-            # Ensure we join correctly
-            if relative_suffix.startswith(os.path.sep):
-                new_full_path = new_dir + relative_suffix
-            else:
-                new_full_path = os.path.join(new_dir, relative_suffix)
-
-            record.current_path = new_full_path
+            record.current_path = swap_path_prefix(
+                record.current_path, old_dir, new_dir
+            )
             count += 1
 
     db.commit()
     return count
 
 
+def relink_watched_path(db: Session, old_path: str, new_path: str):
+    """
+    Finds the old watched path, updates it, and bulk-updates all file records.
+    Used for manual relinking (e.g. C: -> E: moves).
+    """
+    # 1. Update the Watched Folder Entry
+    watched_path = (
+        db.query(models.WatchedPath).filter(models.WatchedPath.path == old_path).first()
+    )
+    if not watched_path:
+        return None  # Path not found
+
+    # Check if new path is already watched (prevent duplicates)
+    existing_new = (
+        db.query(models.WatchedPath).filter(models.WatchedPath.path == new_path).first()
+    )
+    if existing_new:
+        # Merge scenario: The user manually added E:\Test, so we have C:\Test (old) and E:\Test (new).
+        # We want to move history from C: to E:, then delete C:.
+        watched_path.is_active = False  # Deactivate old
+    else:
+        # Standard rename
+        watched_path.path = new_path
+        watched_path.is_active = True
+
+    # 2. Bulk Update Every File Record Inside
+    # Leverage existing logic but ensure correct prefix handling
+    count_records = update_directory_records(db, old_path, new_path)
+
+    # 3. Bulk Update History Logs (FileEvent)
+    # This prevents UI from 404ing when querying historical items
+    count_events = update_directory_events(db, old_path, new_path)
+
+    db.commit()
+    return {
+        "status": "relinked",
+        "files_updated": count_records,
+        "events_updated": count_events,
+    }
+
+
+def update_directory_events(db: Session, old_dir: str, new_dir: str):
+    """
+    Updates historical file events to reflect a moved root directory.
+    Replaces old_dir prefix with new_dir in src_path and dest_path.
+    """
+    count = 0
+
+    # Get all events where EITHER src or dest starts with the old_dir
+    events = (
+        db.query(models.FileEvent)
+        .filter(
+            (models.FileEvent.src_path.startswith(old_dir))
+            | (models.FileEvent.dest_path.startswith(old_dir))
+        )
+        .all()
+    )
+
+    for event in events:
+        # Check src_path
+        if event.src_path and event.src_path.startswith(old_dir):
+            event.src_path = swap_path_prefix(event.src_path, old_dir, new_dir)
+            count += 1
+
+        # Check dest_path
+        if event.dest_path and event.dest_path.startswith(old_dir):
+            event.dest_path = swap_path_prefix(event.dest_path, old_dir, new_dir)
+            count += 1
+
+    return count
+
+
 # --- Activity Logs ---
+# logs user's activity
 def log_activity(db: Session, type: str, app: str, details: str = None):
     db_log = models.ActivityLog(activity_type=type, app_name=app, details=details)
     db.add(db_log)
@@ -172,6 +264,7 @@ def log_activity(db: Session, type: str, app: str, details: str = None):
     return db_log
 
 
+# fetches 100 of user's activity
 def get_activity_timeline(db: Session, limit: int = 100):
     return (
         db.query(models.ActivityLog)
@@ -182,6 +275,7 @@ def get_activity_timeline(db: Session, limit: int = 100):
 
 
 # --- File Versions ---
+# creates a version for a file in case file gets modified
 def create_file_version(
     db: Session,
     original_path: str,
@@ -205,6 +299,7 @@ def create_file_version(
     return db_version
 
 
+# fetches file version from db in order to be displayed
 def get_file_versions(db: Session, original_path: str):
     # 1. Try to find the FileRecord for this path
     record = get_file_record(db, original_path)

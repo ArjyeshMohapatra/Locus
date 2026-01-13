@@ -19,6 +19,7 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
 
+# stores a list of folders locus should keep track of
 class WatchedPath(Base):
     __tablename__ = "watched_paths"
 
@@ -28,6 +29,7 @@ class WatchedPath(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
+# logs related to everything that happens to a file (created, modified, deleted) in real time
 class FileEvent(Base):
     __tablename__ = "file_events"
 
@@ -39,16 +41,22 @@ class FileEvent(Base):
     is_processed = Column(Boolean, default=False)
 
 
+# keeps track of identity of a file (e.g. if renamed)
 class FileRecord(Base):
     __tablename__ = "file_records"
 
     id = Column(Integer, primary_key=True, index=True)
     # The current path on disk. If the file is renamed, this is updated.
     current_path = Column(String, unique=True, nullable=False, index=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    last_seen_at = Column(DateTime(timezone=True), onupdate=func.now())
+    created_at = Column(
+        DateTime(timezone=True), server_default=func.now()
+    )  # sets time when a row gets inserted
+    last_seen_at = Column(
+        DateTime(timezone=True), onupdate=func.now()
+    )  # sets new value each time a row is updated
 
 
+# stores backup or history of a file
 class FileVersion(Base):
     __tablename__ = "file_versions"
 
@@ -70,6 +78,7 @@ class FileVersion(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
+# tracks what a user is doing on their system
 class ActivityLog(Base):
     __tablename__ = "activity_logs"
 
@@ -84,6 +93,7 @@ class ActivityLog(Base):
     end_time = Column(DateTime(timezone=True), nullable=True)
 
 
+# stores screenshots and context found in them
 class Snapshot(Base):
     __tablename__ = "snapshots"
 
@@ -96,6 +106,7 @@ class Snapshot(Base):
     app_context = Column(String, nullable=True)  # What app was open?
 
 
+# setting's page configuration
 class KeyValueStore(Base):
     """Simple settings store for user config like 'max_storage_size'"""
 

@@ -1,10 +1,10 @@
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from app.database import models, crud
 from app.monitor import monitor_service, register_restore_start
 from app import storage
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker, Session
 from pydantic import BaseModel
 import threading
@@ -12,6 +12,7 @@ import time
 import uvicorn
 import os
 import gzip
+import shutil  # Added shutil for file operations
 
 
 # --- Database Setup ---
@@ -20,10 +21,12 @@ engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
+# Initialize database tables (creates tables if missing).
 def init_db():
     models.Base.metadata.create_all(bind=engine)
 
 
+# FastAPI dependency that yields a scoped DB session.
 def get_db():
     db = SessionLocal()
     try:
@@ -41,6 +44,16 @@ class ActivityCreate(BaseModel):
     type: str  # 'app_focus', 'system', etc.
     app: str  # 'chrome.exe', 'code.exe'
     details: str | None = None
+
+
+class PathInput(BaseModel):
+    path: str
+
+
+class PathRelink(BaseModel):
+    old_path: str
+    new_path: str
+    move_files: bool | None = False  # New flag to request physical move
 
 
 class FileRestore(BaseModel):
@@ -131,15 +144,17 @@ app.add_middleware(
 
 
 @app.get("/")
+# Basic service status endpoint.
 def read_root():
     return {"status": "running", "service": "LOCUS Backend"}
 
 
 @app.get("/health")
+# Healthcheck endpoint to verify DB connectivity and background services.
 def health_check(db: Session = Depends(get_db)):
     # Simple check to ensure DB is reachable
     try:
-        crud.get_watched_paths(db)
+        db.execute(text("SELECT 1"))
         return {"db": "connected", "background_service": "active"}
     except Exception as e:
         return {"db": "error", "error": str(e)}
@@ -147,11 +162,13 @@ def health_check(db: Session = Depends(get_db)):
 
 # --- Watched Paths endpoints ---
 @app.get("/files/watched")
+# List all currently watched folders.
 def list_watched_paths(db: Session = Depends(get_db)):
     return crud.get_watched_paths(db)
 
 
 @app.post("/files/watched")
+# Add a new watched folder and refresh monitor watches.
 def add_watched_path(path_data: PathCreate, db: Session = Depends(get_db)):
     try:
         path = crud.create_watched_path(db, path_data.path)
@@ -162,7 +179,93 @@ def add_watched_path(path_data: PathCreate, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail=str(e))
 
 
+def _perform_physical_move(old_path: str, new_path: str):
+    """
+    Helper to move folder contents. Handles case where destination already exists
+    by merging contents instead of nesting.
+    """
+    print(f"[Relink] Moving files from {old_path} to {new_path}")
+
+    # Case 1: Destination does not exist -> Standard Rename
+    if not os.path.exists(new_path):
+        parent_dir = os.path.dirname(new_path)
+        if not os.path.exists(parent_dir):
+            os.makedirs(parent_dir)
+        shutil.move(old_path, new_path)
+        return
+
+    # Case 2: Destination exists -> Merge/Move Contents
+    # User likely created the empty target folder already.
+    # We should move CONTENTS of old_path into new_path
+    # instead of moving old_path INTO new_path (creating a nested folder).
+    for item in os.listdir(old_path):
+        src = os.path.join(old_path, item)
+        dst = os.path.join(new_path, item)
+        if os.path.exists(dst):
+            raise FileExistsError(
+                f"Destination file {item} already exists in {new_path}"
+            )
+        shutil.move(src, dst)
+
+    # Remove the now-empty source directory
+    os.rmdir(old_path)
+
+
+@app.post("/files/watched/relink")
+def relink_folder(data: PathRelink, db: Session = Depends(get_db)):
+    """
+    Manually moves history from one path to another.
+    Can also physically move files if move_files=True.
+    """
+
+    # 1. Validation Logic
+    if data.move_files:
+        if not os.path.exists(data.old_path):
+            raise HTTPException(
+                status_code=400, detail="Source folder not found! Cannot move files."
+            )
+    elif not os.path.exists(data.new_path):
+        # If NOT moving (just updating DB), the new path MUST exist already.
+        raise HTTPException(
+            status_code=400,
+            detail="New path does not exist on disk! Did you move the files yet?",
+        )
+
+    try:
+        # A. Stop Watching
+        monitor_service.handle_root_deletion(data.old_path)
+
+        # B. Perform Physical Move (Optional)
+        if data.move_files:
+            try:
+                _perform_physical_move(data.old_path, data.new_path)
+            except Exception as e:
+                # If move fails, we must abort DB update
+                print(f"[Relink] Physical move failed: {e}")
+                monitor_service.sync_watches()  # Restart watch on old path
+                raise HTTPException(
+                    status_code=500, detail=f"Failed to move files: {str(e)}"
+                )
+
+        # C. Update the Database
+        result = crud.relink_watched_path(db, data.old_path, data.new_path)
+        if not result:
+            # This is weird if we just moved it... but maybe DB sync issue?
+            raise HTTPException(
+                status_code=404, detail="Old watched path not found in DB"
+            )
+
+        # D. Start watching the NEW location
+        monitor_service.sync_watches()
+
+        return result
+    except Exception as e:
+        monitor_service.sync_watches()  # safety
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/files/events")
+# Return the most recent filesystem events recorded by the monitor.
 def get_file_events(limit: int = 50, db: Session = Depends(get_db)):
     events = crud.get_recent_file_events(db, limit)
     return events
@@ -170,6 +273,7 @@ def get_file_events(limit: int = 50, db: Session = Depends(get_db)):
 
 # --- Activity Endpoints ---
 @app.get("/activity/timeline")
+# Return recent user activity logs.
 def get_timeline(limit: int = 50, db: Session = Depends(get_db)):
     return crud.get_activity_timeline(db, limit)
 
@@ -295,6 +399,7 @@ def restore_version(restore_data: FileRestore, db: Session = Depends(get_db)):
 
 
 @app.post("/activity/log")
+# Create an activity log entry (manual client-side logging).
 def log_activity_manual(activity: ActivityCreate, db: Session = Depends(get_db)):
     return crud.log_activity(db, activity.type, activity.app, activity.details)
 

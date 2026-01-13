@@ -2,23 +2,21 @@ import os
 import shutil
 import hashlib
 import uuid
-import gzip  # CHANGED: Imported gzip for compression
+import gzip
 from pathlib import Path
+from typing import Any, Optional
 
-# Define where we store the file versions
-# For now, let's put it in a .locus_storage folder in the user's home directory
-# or relative to the backend. Let's make it relative to the backend execution for portability in dev.
+# path for storing the file versions
 STORAGE_ROOT = Path("./.locus_storage").resolve()
 
 
 def init_storage():
     """Ensure storage directory exists"""
-    # CHANGED: Added comment to explain we create the folder if missing
     if not STORAGE_ROOT.exists():
         STORAGE_ROOT.mkdir(parents=True)
 
 
-def calculate_file_hash(file_path: str) -> str:
+def calculate_file_hash(file_path: str) -> Optional[str]:
     """Calculate SHA256 hash of a file"""
     if not os.path.exists(file_path):
         return None
@@ -32,11 +30,11 @@ def calculate_file_hash(file_path: str) -> str:
     return sha256_hash.hexdigest()
 
 
-def save_file_version(src_path: str) -> dict:
+def save_file_version(src_path: str) -> Optional[dict[str, Any]]:
     """
     Copies the file to the storage directory using Content-Addressed Storage.
 
-    METHOD 1 IMPLEMENTATION:
+    Content Addressed Storage:
     1. Calculate the unique fingerprint (SHA-256 hash) of the file content.
     2. Check if we already have a file with that fingerprint in our storage.
     3. If YES (Deduplication): We skip writing the file again! We just return the path to the existing one.
@@ -50,6 +48,8 @@ def save_file_version(src_path: str) -> dict:
 
     # Step 1: Calculate the unique fingerprint (Hash)
     file_hash = calculate_file_hash(src_path)
+    if not file_hash:
+        return None
     file_size = os.path.getsize(src_path)
 
     # Step 2: Define the storage filename based on the Hash
@@ -93,7 +93,7 @@ def save_file_version(src_path: str) -> dict:
         if storage_path.exists():
             try:
                 os.remove(storage_path)
-            except:
+            except OSError:
                 pass
         return None
 

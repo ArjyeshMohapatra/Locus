@@ -8,6 +8,7 @@ from app.database.models import SessionLocal
 from app import storage
 
 
+# Normalize a filesystem path for consistent comparisons and DB lookups.
 def _norm_path(path: str) -> str:
     return os.path.normcase(os.path.abspath(path))
 
@@ -29,9 +30,11 @@ class LocusEventHandler(FileSystemEventHandler):
     Also handles file versioning (Shadow Copies).
     """
 
+    # Initialize the handler; watchdog calls the event methods.
     def __init__(self):
         super().__init__()
 
+    # Create a versioned backup of a file when its content changes.
     def _backup_file(self, src_path: str):
         normalized_src_path = _norm_path(src_path)
         expires_at = PENDING_RESTORES.get(normalized_src_path)
@@ -90,6 +93,7 @@ class LocusEventHandler(FileSystemEventHandler):
         finally:
             db.close()
 
+    # Persist a filesystem event (create/modify/delete/move) to the DB.
     def _log_event(self, event_type: str, src_path: str, dest_path: str = None):
         if src_path.endswith((".tmp", ".crdownload", "~", ".swp")):
             return  # Ignore temp files
@@ -109,20 +113,24 @@ class LocusEventHandler(FileSystemEventHandler):
         finally:
             db.close()
 
+    # Watchdog callback: file created.
     def on_created(self, event):
         if not event.is_directory:
             self._log_event("created", event.src_path)
             self._backup_file(event.src_path)
 
+    # Watchdog callback: file deleted.
     def on_deleted(self, event):
         if not event.is_directory:
             self._log_event("deleted", event.src_path)
 
+    # Watchdog callback: file modified.
     def on_modified(self, event):
         if not event.is_directory:
             self._log_event("modified", event.src_path)
             self._backup_file(event.src_path)
 
+    # Watchdog callback: file or directory moved/renamed.
     def on_moved(self, event):
         if not event.is_directory:
             self._log_event("moved", event.src_path, event.dest_path)
@@ -160,11 +168,13 @@ class RootEventHandler(FileSystemEventHandler):
     Watches the PARENT of a watched folder to detect if the watched folder itself is moved/renamed.
     """
 
+    # Track the watched root so we can detect when the root itself moves/renames.
     def __init__(self, target_folder_name: str, full_target_path: str, monitor_service):
         self.target_folder_name = target_folder_name
         self.full_target_path = full_target_path
         self.monitor_service = monitor_service
 
+    # Watchdog callback: detect when the watched root folder is moved/renamed.
     def on_moved(self, event):
         # DEBUG: Print all moves seen by root monitor
         if event.is_directory:
@@ -203,6 +213,7 @@ class RootEventHandler(FileSystemEventHandler):
                 self.full_target_path, event.dest_path
             )
 
+    # Watchdog callback: detect when the watched root folder disappears.
     def on_deleted(self, event):
         # If the root folder is deleted (or moved to another drive), we lose track.
         if event.is_directory and _norm_path(event.src_path) == _norm_path(
@@ -217,6 +228,7 @@ class RootEventHandler(FileSystemEventHandler):
 
 
 class FileMonitorService:
+    # Manage watchdog observers and keep them in sync with DB configuration.
     def __init__(self):
         self.observer = Observer()
         self.active_watches = {}  # path -> watch_ref
@@ -226,6 +238,7 @@ class FileMonitorService:
         """Starts the observer thread."""
         self.observer.start()
 
+    # Stop the observer thread and wait for it to exit.
     def stop(self):
         self.observer.stop()
         self.observer.join()
@@ -260,9 +273,57 @@ class FileMonitorService:
             self.observer.unschedule(self.root_watches[path])
             del self.root_watches[path]
 
+        # Future Feature to be implemented ----
         # Optional: Mark as 'inactive' in DB?
         # For now, we just stop monitoring it to avoid errors.
         # The user will see it red in UI if we added status checks (future feature).
+
+    def _unschedule_watch(self, watch_map: dict, key: str):
+        """Safely unschedule a watchdog watch stored in a dict by key."""
+        watch = watch_map.get(key)
+        if not watch:
+            return
+        try:
+            self.observer.unschedule(watch)
+        finally:
+            # Ensure we don't keep stale references even if unschedule errors
+            watch_map.pop(key, None)
+
+    def _stop_watching_path(self, path: str):
+        """Stop both the recursive watch and its parent/root watch for a path."""
+        self._unschedule_watch(self.active_watches, path)
+        self._unschedule_watch(self.root_watches, path)
+        print(f"[-] Stopped watching: {path}")
+
+    def _ensure_root_watch(self, watched_path: str):
+        """Ensure a non-recursive parent watch exists for a watched root."""
+        if watched_path in self.root_watches:
+            return
+
+        parent_path = os.path.dirname(watched_path)
+        folder_name = os.path.basename(watched_path)
+
+        if not os.path.exists(parent_path):
+            print(f"[!] Parent path also missing: {parent_path}")
+            return
+
+        root_handler = RootEventHandler(folder_name, watched_path, self)
+        parent_watch = self.observer.schedule(
+            root_handler, parent_path, recursive=False
+        )
+        self.root_watches[watched_path] = parent_watch
+        print(f"[+] Root Monitor attached to parent: {parent_path}")
+
+    def _ensure_recursive_watch(self, watched_path: str):
+        """Ensure a recursive watch exists for the watched folder itself."""
+        if watched_path in self.active_watches:
+            return
+
+        watch = self.observer.schedule(
+            LocusEventHandler(), watched_path, recursive=True
+        )
+        self.active_watches[watched_path] = watch
+        print(f"[+] Started watching: {watched_path}")
 
     def sync_watches(self):
         """
@@ -274,62 +335,26 @@ class FileMonitorService:
             paths = crud.get_watched_paths(db)
             current_db_paths = {p.path for p in paths}
 
-            # 1. Remove stale watches (Standard)
-            for path in list(self.active_watches.keys()):
+            # 1. Remove stale watches
+            for path in tuple(self.active_watches.keys()):
                 if path not in current_db_paths:
-                    self.observer.unschedule(self.active_watches[path])
-                    del self.active_watches[path]
+                    self._stop_watching_path(path)
 
-                    # Also remove associated root watcher if it exists
-                    if path in self.root_watches:
-                        self.observer.unschedule(self.root_watches[path])
-                        del self.root_watches[path]
-
-                    print(f"[-] Stopped watching: {path}")
-
-            # 2. Add new watches
+            # 2. Ensure watches exist for all configured paths
             for p in paths:
-                # We always try to setup monitors, even if one part fails.
+                try:
+                    self._ensure_root_watch(p.path)
+                except Exception as e:
+                    print(f"[!] Error attaching root monitor for {p.path}: {e}")
 
-                # A. Parent Watch (Non-recursive) - Setup this first or independently
-                # We do this even if the child doesn't exist, so we can detect if it's moved BACK or created
-                if p.path not in self.root_watches:
-                    try:
-                        parent_path = os.path.dirname(p.path)
-                        folder_name = os.path.basename(p.path)
-
-                        if os.path.exists(parent_path):
-                            root_handler = RootEventHandler(folder_name, p.path, self)
-                            parent_watch = self.observer.schedule(
-                                root_handler, parent_path, recursive=False
-                            )
-                            self.root_watches[p.path] = parent_watch
-                            print(f"[+] Root Monitor attached to parent: {parent_path}")
-                        else:
-                            print(f"[!] Parent path also missing: {parent_path}")
-                    except Exception as e:
-                        print(f"[!] Error attaching root monitor for {p.path}: {e}")
-
-                # B. Normal Recursive Watch (The Child)
-                if p.path not in self.active_watches:
-                    try:
-                        watch = self.observer.schedule(
-                            LocusEventHandler(), p.path, recursive=True
-                        )
-                        self.active_watches[p.path] = watch
-                        print(f"[+] Started watching: {p.path}")
-                    except FileNotFoundError:
-                        print(
-                            f"[!] Warning: Path not found {p.path} (Waiting for it to appear...)"
-                        )
-                        # Note: If it appears later, the Parent Monitor might catch a "Created" or "Moved" event
-                        # matching this path and we could trigger a sync?
-                        # Actually RootEventHandler currently only handles on_moved.
-                        # We might needed on_created too to auto-start watching?
-                        # For now, at least we don't crash.
-                    except Exception as e:
-                        print(f"[!] Error watching {p.path}: {e}")
-
+                try:
+                    self._ensure_recursive_watch(p.path)
+                except FileNotFoundError:
+                    print(
+                        f"[!] Warning: Path not found {p.path} (Waiting for it to appear...)"
+                    )
+                except Exception as e:
+                    print(f"[!] Error watching {p.path}: {e}")
         finally:
             db.close()
 
