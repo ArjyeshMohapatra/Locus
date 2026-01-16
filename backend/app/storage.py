@@ -3,6 +3,7 @@ import shutil
 import hashlib
 import uuid
 import gzip
+import time
 from pathlib import Path
 from typing import Any, Optional
 
@@ -136,6 +137,17 @@ def get_total_storage_usage():
     return total_size
 
 
+GC_GRACE_PERIOD_SECONDS = 60 * 60  # 60 minutes
+
+
+def _is_within_grace_period(stored_file: Path, now: float) -> bool:
+    try:
+        return now - stored_file.stat().st_mtime < GC_GRACE_PERIOD_SECONDS
+    except OSError as e:
+        print(f"[Storage] GC: Skipping {stored_file.name} (stat failed: {e})")
+        return True
+
+
 def run_garbage_collection(active_file_hashes: set):
     """
     Simple Garbage Collection (GC).
@@ -143,7 +155,8 @@ def run_garbage_collection(active_file_hashes: set):
     1. Look at all files in our storage folder.
     2. Check if their Hash is in the 'active_file_hashes' list (from the Database).
     3. If a file is NOT in the list, it means no version uses this content anymore.
-    4. Delete the unused file to free up space.
+    4. Skip files created/modified recently (grace period).
+    5. Delete the unused file to free up space.
     """
     print("[Storage] Starting Garbage Collection...")
     cleaned_count = 0
@@ -152,28 +165,35 @@ def run_garbage_collection(active_file_hashes: set):
     if not STORAGE_ROOT.exists():
         return
 
+    now = time.time()
+
     for stored_file in STORAGE_ROOT.iterdir():
-        # Check if it's a file
-        if stored_file.is_file():
-            # Get the hash from filename (remove .gz if present)
-            # Logic: Filename is "{hash}.gz" or "{hash}" (legacy uuid isn't a hash but logic holds)
-            # For our CAS files, filename IS the header.
+        if not stored_file.is_file():
+            continue
 
-            # NOTE: Legacy files (UUIDs) won't match a hash set, so they might be deleted
-            # if we aren't careful. For now, we strictly only GC files that look like our hashes
-            # or we assume 'active_file_hashes' includes filenames too.
-            # To be safe: We will just check if the full filename matches any metadata record.
+        # Grace period: do not delete files that are too new
+        if _is_within_grace_period(stored_file, now):
+            continue
 
-            # Simplified approach: We assume active_file_hashes contains the *storage filenames* not just hashes.
-            if stored_file.name not in active_file_hashes:
-                try:
-                    size = stored_file.stat().st_size
-                    stored_file.unlink()  # Delete the file
-                    cleaned_count += 1
-                    cleaned_bytes += size
-                    print(f"[Storage] GC: Deleted unreferenced file {stored_file.name}")
-                except Exception as e:
-                    print(f"[Storage] GC: Failed to delete {stored_file.name}: {e}")
+        # Get the hash from filename (remove .gz if present)
+        # Logic: Filename is "{hash}.gz" or "{hash}" (legacy uuid isn't a hash but logic holds)
+        # For our CAS files, filename IS the header.
+
+        # NOTE: Legacy files (UUIDs) won't match a hash set, so they might be deleted
+        # if we aren't careful. For now, we strictly only GC files that look like our hashes
+        # or we assume 'active_file_hashes' includes filenames too.
+        # To be safe: We will just check if the full filename matches any metadata record.
+
+        # Simplified approach: We assume active_file_hashes contains the *storage filenames* not just hashes.
+        if stored_file.name not in active_file_hashes:
+            try:
+                size = stored_file.stat().st_size
+                stored_file.unlink()  # Delete the file
+                cleaned_count += 1
+                cleaned_bytes += size
+                print(f"[Storage] GC: Deleted unreferenced file {stored_file.name}")
+            except Exception as e:
+                print(f"[Storage] GC: Failed to delete {stored_file.name}: {e}")
 
     print(
         f"[Storage] GC Complete. Removed {cleaned_count} files, freed {cleaned_bytes / 1024 / 1024:.2f} MB."

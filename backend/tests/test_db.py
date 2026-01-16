@@ -23,6 +23,7 @@ def test_db():
         print(f"✅ Created path: {path.path}")
     except Exception as e:
         print(f"⚠️  Path might already exist: {e}")
+        db.rollback()
 
     # 2. Log activity
     print("Logging activity...")
