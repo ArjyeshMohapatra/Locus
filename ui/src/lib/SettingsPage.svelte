@@ -4,6 +4,7 @@
   import {
     faFilter,
     faTrashCan,
+    faCircleHalfStroke,
     faMoon,
     faSun,
     faPowerOff,
@@ -17,8 +18,10 @@
   let gcEnabled = true;
   let gcGraceMinutes = 60;
 
-  let theme = 'light';
+  let themeMode = 'system';
+  let resolvedTheme = 'light';
   let startupMode = 'startup';
+  let mediaQuery;
 
   const addFilter = () => {
     const trimmed = newFilter.trim();
@@ -37,15 +40,53 @@
     gcEnabled = !gcEnabled;
   };
 
-  const setTheme = (mode) => {
-    theme = mode;
+  const getSystemTheme = () =>
+    window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+
+  const resolveTheme = (mode) => (mode === 'system' ? getSystemTheme() : mode);
+
+  const applyTheme = (mode) => {
+    themeMode = mode;
+    resolvedTheme = resolveTheme(mode);
+    localStorage.setItem('locus-theme', themeMode);
+    window.dispatchEvent(new CustomEvent('locus-theme-change', { detail: { mode } }));
   };
 
   const openStartupSettings = () => {
     alert('Open Startup Settings (placeholder).');
   };
 
-  $: document.body.classList.toggle('theme-dark', theme === 'dark');
+  onMount(() => {
+    const saved = localStorage.getItem('locus-theme');
+    themeMode = saved || 'system';
+
+    mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+    const handleSystemChange = () => {
+      if (themeMode === 'system') {
+        resolvedTheme = resolveTheme('system');
+      }
+    };
+
+    if (mediaQuery.addEventListener) {
+      mediaQuery.addEventListener('change', handleSystemChange);
+    } else {
+      mediaQuery.addListener(handleSystemChange);
+    }
+
+    resolvedTheme = resolveTheme(themeMode);
+
+    return () => {
+      if (mediaQuery.removeEventListener) {
+        mediaQuery.removeEventListener('change', handleSystemChange);
+      } else {
+        mediaQuery.removeListener(handleSystemChange);
+      }
+    };
+  });
+
+  $: themeIndex = themeMode === 'light' ? 0 : themeMode === 'system' ? 1 : 2;
+  $: themeIcon =
+    themeMode === 'system' ? faCircleHalfStroke : resolvedTheme === 'dark' ? faMoon : faSun;
 </script>
 
 <section class="settings-page">
@@ -143,30 +184,36 @@
   <details class="settings-section" open>
     <summary>
       <div class="section-title">
-        <Fa icon={theme === 'dark' ? faMoon : faSun} class="section-icon" />
+        <Fa icon={themeIcon} class="section-icon" />
         <div>
           <h2>Appearance</h2>
-          <p class="muted">Switch between light and GitHub-inspired dark mode.</p>
+          <p class="muted">Light, system, or GitHub-inspired dark mode.</p>
         </div>
       </div>
-      <Fa icon={faChevronDown} class="section-chevron" />
-    </summary>
-    <div class="settings-content">
-      <div class="theme-toggle">
-        <button
-          class="theme-button {theme === 'light' ? 'is-active' : ''}"
-          on:click={() => setTheme('light')}
-        >
-          Light
-        </button>
-        <button
-          class="theme-button {theme === 'dark' ? 'is-active' : ''}"
-          on:click={() => setTheme('dark')}
-        >
-          Dark
-        </button>
+      <div class="appearance-actions">
+        <div class="segmented-control" style={`--segment-index: ${themeIndex}`}>
+          <span class="segment-indicator"></span>
+          <button
+            class="segment {themeMode === 'light' ? 'is-active' : ''}"
+            on:click={() => applyTheme('light')}
+          >
+            Light
+          </button>
+          <button
+            class="segment {themeMode === 'system' ? 'is-active' : ''}"
+            on:click={() => applyTheme('system')}
+          >
+            System
+          </button>
+          <button
+            class="segment {themeMode === 'dark' ? 'is-active' : ''}"
+            on:click={() => applyTheme('dark')}
+          >
+            Dark
+          </button>
+        </div>
       </div>
-    </div>
+    </summary>
   </details>
 
   <details class="settings-section" open>

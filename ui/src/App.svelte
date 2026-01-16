@@ -1,5 +1,5 @@
 <script>
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
   import { fade } from 'svelte/transition';
   import { checkHealth } from './api.js';
   import WatchedFolders from './lib/WatchedFolders.svelte';
@@ -17,10 +17,60 @@
   let status = 'initializing...';
   let sidebarOpen = false;
   let currentView = 'dashboard';
+  let themeMode = 'system';
+  let mediaQuery;
+
+  const getSystemTheme = () =>
+    window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+
+  const applyTheme = (mode) => {
+    const nextTheme = mode === 'system' ? getSystemTheme() : mode;
+    document.body.classList.toggle('theme-dark', nextTheme === 'dark');
+  };
+
+  let handleSystemChange;
+  let handleThemeEvent;
 
   onMount(async () => {
     const health = await checkHealth();
     status = health.background_service || 'offline';
+
+    themeMode = localStorage.getItem('locus-theme') || 'system';
+    applyTheme(themeMode);
+
+    mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+    handleSystemChange = () => {
+      if (themeMode === 'system') {
+        applyTheme('system');
+      }
+    };
+
+    if (mediaQuery.addEventListener) {
+      mediaQuery.addEventListener('change', handleSystemChange);
+    } else {
+      mediaQuery.addListener(handleSystemChange);
+    }
+
+    handleThemeEvent = (event) => {
+      themeMode = event.detail?.mode || 'system';
+      localStorage.setItem('locus-theme', themeMode);
+      applyTheme(themeMode);
+    };
+
+    window.addEventListener('locus-theme-change', handleThemeEvent);
+  });
+
+  onDestroy(() => {
+    if (mediaQuery && handleSystemChange) {
+      if (mediaQuery.removeEventListener) {
+        mediaQuery.removeEventListener('change', handleSystemChange);
+      } else {
+        mediaQuery.removeListener(handleSystemChange);
+      }
+    }
+    if (handleThemeEvent) {
+      window.removeEventListener('locus-theme-change', handleThemeEvent);
+    }
   });
 
   const toggleSidebar = () => {

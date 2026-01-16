@@ -1,0 +1,112 @@
+/* layout: shell, container, sidebar, view wrappers */
+.app-shell {
+  min-height: 100vh;
+}
+
+.app-container {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 24px 32px;
+  box-sizing: border-box;
+  /* default left margin to account for collapsed sidebar */
+  margin-left: 64px;
+  min-height: 100vh;
+  overflow: auto;
+}
+
+.view-wrapper {
+  min-height: 60vh;
+  will-change: opacity, transform;
+}
+
+.sidebar {
+  background: var(--sidebar-bg);
+  color: var(--sidebar-text);
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  transition: width 0.2s ease, transform 0.2s ease;
+  border-right: 1px solid var(--sidebar-border);
+  position: fixed;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  z-index: 50;
+  overflow-y: auto;
+  width: 64px;
+}
+
+.sidebar.is-open {
+  width: 240px;
+}
+
+/* shift main content when sidebar state changes */
+.sidebar.is-open + .app-container {
+  margin-left: 240px;
+}
+
+.hamburger {
+  background: transparent;
+  border: none;
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  cursor: pointer;
+}
+
+.hamburger-icon {
+  font-size: 20px;
+  color: var(--sidebar-text);
+}
+
+.sidebar-menu {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px;
+}
+
+.sidebar-item {
+  background: transparent;
+  border: none;
+  color: inherit;
+  padding: 10px 12px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.15s ease, color 0.15s ease, transform 0.15s ease;
+}
+
+.sidebar-item:hover {
+  background: var(--sidebar-hover);
+  transform: translateX(2px);
+}
+
+.sidebar-item.is-active {
+  background: var(--sidebar-active);
+  color: var(--sidebar-text);
+}
+
+.sidebar-icon {
+  font-size: 18px;
+  width: 24px;
+  display: inline-flex;
+  justify-content: center;
+}
+
+.sidebar-label {
+  white-space: nowrap;
+  opacity: 1;
+  transition: opacity 0.15s ease, transform 0.15s ease;
+}
+
+.sidebar.is-collapsed .sidebar-label {
+  opacity: 0;
+  width: 0;
+  overflow: hidden;
+  transform: translateX(-6px);
+}

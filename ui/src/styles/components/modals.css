@@ -1,0 +1,29 @@
+/* modal and preview styles */
+.modal-content,
+.modal-header,
+.modal-footer,
+.modal-body {
+  background: var(--card-bg);
+  color: var(--text-primary);
+  border-color: var(--border-subtle);
+}
+
+.preview-container pre {
+  background: var(--app-bg) !important;
+  color: var(--text-primary) !important;
+  border-color: var(--border-subtle) !important;
+}
+
+.modal .list-group-item,
+.modal .form-control,
+.modal .form-select {
+  background: var(--card-bg);
+  color: var(--text-primary);
+  border-color: var(--border-subtle);
+}
+
+/* make the close button visible in dark mode */
+body.theme-dark .btn-close {
+  filter: invert(1) brightness(2);
+  opacity: 0.8;
+}

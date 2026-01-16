@@ -1,0 +1,33 @@
+/* activity timeline / list styles */
+.activity-item {
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border-subtle);
+  background: transparent;
+}
+
+.activity-item:last-child {
+  border-bottom: none;
+}
+
+.activity-item:hover {
+  background: var(--sidebar-hover);
+}
+
+.activity-time {
+  color: var(--text-muted);
+  font-size: 0.875rem;
+}
+
+.activity-details {
+  font-weight: 500;
+}
+
+.list-group-item {
+  background: var(--card-bg);
+  color: var(--text-primary);
+  border-color: var(--border-subtle);
+}
+
+.list-group-item-action:hover {
+  background: var(--sidebar-hover);
+}

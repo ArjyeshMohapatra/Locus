@@ -1,0 +1,63 @@
+/* utility classes and smaller helpers */
+.badge.bg-success {
+  background-color: var(--success) !important;
+}
+
+.badge.bg-danger {
+  background-color: var(--danger) !important;
+}
+
+.badge {
+  color: #ffffff;
+}
+
+.btn-outline-secondary {
+  color: var(--text-primary);
+  border-color: var(--border-subtle);
+}
+
+.btn-outline-secondary:hover {
+  background: var(--sidebar-hover);
+  border-color: var(--border-subtle);
+}
+
+.muted {
+  color: var(--text-muted);
+}
+
+.text-muted {
+  color: var(--text-muted) !important;
+}
+
+.text-dark {
+  color: var(--text-primary) !important;
+}
+
+.form-control,
+.form-select,
+.input-group-text {
+  background: var(--app-bg);
+  color: var(--text-primary);
+  border-color: var(--border-subtle);
+}
+
+.form-control:focus,
+.form-select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 0.2rem rgba(88, 166, 255, 0.25);
+}
+
+.form-control::placeholder,
+.settings-input::placeholder,
+.filter-input input::placeholder {
+  color: var(--text-muted);
+  opacity: 1; /* keep placeholder visible across browsers */
+}
+
+.btn-link {
+  color: var(--accent);
+}
+
+.btn-link:hover {
+  color: var(--accent-strong);
+}
