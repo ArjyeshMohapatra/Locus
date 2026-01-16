@@ -25,7 +25,7 @@
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  transition: width 0.2s ease, transform 0.2s ease;
+  transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   border-right: 1px solid var(--sidebar-border);
   position: fixed;
   top: 0;
@@ -33,80 +33,104 @@
   bottom: 0;
   z-index: 50;
   overflow-y: auto;
-  width: 64px;
+  width: 72px;
 }
 
 .sidebar.is-open {
-  width: 240px;
+  width: 260px;
 }
 
 /* shift main content when sidebar state changes */
 .sidebar.is-open + .app-container {
-  margin-left: 240px;
+  margin-left: 260px;
 }
 
 .hamburger {
   background: transparent;
   border: none;
-  padding: 16px 18px;
+  padding: 24px 26px;
   display: flex;
   flex-direction: column;
   align-items: flex-start;
   cursor: pointer;
+  margin-bottom: 8px;
 }
 
 .hamburger-icon {
-  font-size: 20px;
+  font-size: 18px;
   color: var(--sidebar-text);
+  opacity: 0.7;
+  transition: opacity 0.2s;
+}
+
+.hamburger:hover .hamburger-icon {
+  opacity: 1;
 }
 
 .sidebar-menu {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding: 8px;
+  gap: 6px;
+  padding: 0 12px;
 }
 
 .sidebar-item {
   background: transparent;
   border: none;
   color: inherit;
-  padding: 10px 12px;
-  border-radius: 10px;
+  padding: 12px 14px;
+  border-radius: var(--radius-md);
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 16px;
   cursor: pointer;
   text-align: left;
-  transition: background 0.15s ease, color 0.15s ease, transform 0.15s ease;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  white-space: nowrap;
+  font-weight: 500;
 }
 
 .sidebar-item:hover {
   background: var(--sidebar-hover);
-  transform: translateX(2px);
+  color: var(--text-primary);
 }
 
 .sidebar-item.is-active {
   background: var(--sidebar-active);
-  color: var(--sidebar-text);
+  color: var(--sidebar-accent);
 }
 
 .sidebar-icon {
   font-size: 18px;
   width: 24px;
+  min-width: 24px;
   display: inline-flex;
   justify-content: center;
 }
 
 .sidebar-label {
-  white-space: nowrap;
   opacity: 1;
-  transition: opacity 0.15s ease, transform 0.15s ease;
+  transition: opacity 0.2s, transform 0.2s;
+  font-size: 0.95rem;
+  white-space: nowrap;
 }
 
-.sidebar.is-collapsed .sidebar-label {
+.is-collapsed .sidebar-label {
   opacity: 0;
   width: 0;
+  height: 0;
   overflow: hidden;
-  transform: translateX(-6px);
+  pointer-events: none;
+  position: absolute; /* Take out of flow so it doesn't push icons */
 }
+
+.sidebar-header {
+  transition: opacity 0.2s;
+}
+
+.is-collapsed .sidebar-header {
+  opacity: 0;
+  pointer-events: none;
+}
+
+

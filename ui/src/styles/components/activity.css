@@ -1,8 +1,10 @@
 /* activity timeline / list styles */
 .activity-item {
-  padding: 10px 0;
+  padding: 12px 16px;
   border-bottom: 1px solid var(--border-subtle);
   background: transparent;
+  transition: all 0.2s ease;
+  cursor: pointer;
 }
 
 .activity-item:last-child {
@@ -13,14 +15,50 @@
   background: var(--sidebar-hover);
 }
 
-.activity-time {
-  color: var(--text-muted);
-  font-size: 0.875rem;
+.activity-item .btn-outline-primary {
+  opacity: 0;
+  transition: opacity 0.2s ease;
 }
 
-.activity-details {
+.activity-item:hover .btn-outline-primary {
+  opacity: 1;
+}
+
+.activity-time {
+  color: var(--text-muted);
+  font-size: 0.8rem;
   font-weight: 500;
 }
+
+.event-list {
+  background: var(--app-bg);
+  border-radius: 0 0 var(--radius-md) var(--radius-md);
+  margin: 0 8px 8px 8px;
+}
+
+.event-row {
+  display: flex;
+  align-items: center;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: 0.85rem;
+}
+
+.event-row:last-child {
+  border-bottom: none;
+}
+
+.section-chevron {
+  display: inline-flex;
+  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  color: var(--text-muted);
+}
+
+.section-chevron.rotated {
+  transform: rotate(90deg);
+}
+
+
 
 .list-group-item {
   background: var(--card-bg);

@@ -162,11 +162,11 @@
             <!-- Preview View -->
             <div transition:fade={{ duration: 200 }}>
             <div class="preview-container">
-                <div class="d-flex justify-content-between align-items-center mb-2 bg-light p-2 rounded">
-                    <div class="small text-muted">
+                <div class="d-flex justify-content-between align-items-center mb-3 p-3 rounded-3 preview-header">
+                    <div class="small text-muted fw-medium">
                         Recorded: {formatDate(selectedVersion.created_at)}
                     </div>
-                    <button class="btn btn-primary btn-sm" on:click={() => handleRestore(selectedVersion.id)}>
+                    <button class="btn btn-primary btn-sm px-3" on:click={() => handleRestore(selectedVersion.id)}>
                         <Fa icon={faUndo} class="me-1" aria-hidden="true"/> Restore This Version
                     </button>
                 </div>
@@ -176,9 +176,9 @@
                         <div class="spinner-border text-primary" role="status"></div>
                     </div>
                 {:else}
-                    <div class="card bg-light border-0">
+                    <div class="card border-0">
                         <div class="card-body p-0 position-relative">
-                            <pre class="m-0 p-3 overflow-auto" style="max-height: 400px; font-size: 0.85em; background: #fff; border: 1px solid #dee2e6;">{previewContent}</pre>
+                            <pre class="m-0 p-3 overflow-auto preview-text">{previewContent}</pre>
                         </div>
                     </div>
                 {/if}
@@ -189,23 +189,23 @@
             <!-- Version List View -->
             <div transition:fade={{ duration: 200 }}>
             {#if loading}
-                <div class="d-flex justify-content-center py-4">
+                <div class="d-flex justify-content-center py-5">
                     <div class="spinner-border text-primary" role="status">
                         <span class="visually-hidden">Loading...</span>
                     </div>
                 </div>
             {:else if versions.length === 0}
-                <div class="text-center py-5 text-muted bg-light rounded">
-                    <p class="mb-0">No version history found for this file.</p>
+                <div class="text-center py-5 text-muted empty-state rounded-4">
+                    <p class="mb-0 fw-medium">No version history found for this file.</p>
                     <small>Modifications are tracked automatically by LOCUS.</small>
                 </div>
             {:else}
-                <div class="list-group">
+                <div class="list-group list-group-flush border-top">
                     {#each versions as v}
                         <!-- svelte-ignore a11y-click-events-have-key-events -->
                         <!-- svelte-ignore a11y-no-static-element-interactions -->
                         <div 
-                            class="list-group-item list-group-item-action d-flex justify-content-between align-items-center cursor-pointer version-row"
+                            class="list-group-item list-group-item-action d-flex justify-content-between align-items-center cursor-pointer version-row py-3"
                             on:click={() => openPreview(v)}
                             on:keydown={(e) => e.key === 'Enter' && openPreview(v)}
                             role="button"
@@ -214,24 +214,24 @@
                         >
                             <div>
                                 <div class="d-flex align-items-center mb-1">
-                                    <span class="badge bg-secondary me-2">V{v.version_number}</span>
-                                    <span class="fw-medium">{formatDate(v.created_at)}</span>
-                                                                        {#if currentVersionId === v.id}
-                                                                            <span class="ms-2 small text-muted">(current)</span>
-                                                                        {/if}
+                                    <span class="badge-soft badge-soft-secondary me-3">V{v.version_number}</span>
+                                    <span class="fw-semibold">{formatDate(v.created_at)}</span>
+                                    {#if currentVersionId === v.id}
+                                        <span class="ms-3 badge-soft badge-soft-success">current</span>
+                                    {/if}
                                 </div>
                                 <div class="text-muted small">
                                     Size: {formatSize(v.file_size_bytes)}
                                     {#if v.file_hash}
-                                    <span class="mx-1">•</span> <span class="text-truncate d-inline-block align-bottom" style="max-width: 150px;" title={v.file_hash}>Hash: {v.file_hash.substring(0,8)}...</span>
+                                    <span class="mx-2">•</span> <span class="text-truncate d-inline-block align-bottom" style="max-width: 250px;" title={v.file_hash}>Hash: {v.file_hash}</span>
                                     {/if}
                                 </div>
                             </div>
                             <button 
-                                class="btn btn-sm btn-outline-secondary" 
+                                class="btn btn-sm btn-outline-secondary rounded-pill px-3" 
                                 on:click|stopPropagation={() => openPreview(v)}
                             >
-                                <Fa icon={faEye} class="me-1" aria-hidden="true"/>Preview
+                                <Fa icon={faEye} class="me-2" aria-hidden="true"/>Preview
                             </button>
                         </div>
                     {/each}
@@ -241,8 +241,8 @@
         {/if}
       </div>
       
-      <div class="modal-footer bg-light">
-        <button type="button" class="btn btn-secondary" on:click={onClose}>Close</button>
+      <div class="modal-footer border-top-0 pt-0">
+        <button type="button" class="btn btn-outline-secondary px-4" on:click={onClose}>Close</button>
       </div>
     </div>
   </div>
@@ -253,16 +253,43 @@
 <style>
     .modal-backdrop {
         z-index: 1040;
+        background-color: rgba(0, 0, 0, 0.7);
+        backdrop-filter: blur(4px);
     }
     .modal {
         z-index: 1050;
     }
+    .preview-header {
+        background: var(--app-bg);
+        border: 1px solid var(--border-subtle);
+    }
+    .preview-text {
+        max-height: 450px; 
+        font-size: 0.9rem; 
+        background: var(--app-bg); 
+        color: var(--text-primary);
+        border: 1px solid var(--border-subtle);
+        border-radius: var(--radius-md);
+        font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    }
+    .empty-state {
+        background: var(--app-bg);
+        border: 2px dashed var(--border-subtle);
+    }
+    .version-row {
+        background: transparent;
+        border-color: var(--border-subtle);
+    }
     .version-row:hover {
-        background-color: #f8f9fa;
+        background-color: var(--sidebar-hover);
+        color: var(--text-primary);
+    }
+    .version-row:hover .text-muted {
+        color: var(--text-muted) !important;
     }
     /* Set max height for modal body to enable scrolling */
     .modal-body {
-        max-height: 70vh;
+        max-height: 75vh;
         overflow-y: auto;
     }
 </style>

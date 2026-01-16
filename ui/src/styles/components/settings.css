@@ -12,8 +12,14 @@
 .settings-section {
   background: var(--card-bg);
   border: 1px solid var(--border-subtle);
-  border-radius: 14px;
-  padding: 16px 18px;
+  border-radius: var(--radius-lg);
+  padding: 20px;
+  box-shadow: var(--shadow-sm);
+  transition: all 0.2s ease;
+}
+
+.settings-section:hover {
+  border-color: var(--border-strong);
 }
 
 .settings-section summary {
@@ -23,6 +29,7 @@
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+  user-select: none;
 }
 
 .settings-section summary::-webkit-details-marker {
@@ -30,23 +37,32 @@
 }
 
 .settings-section summary h2 {
-  margin: 0 0 4px;
-  font-size: 1.1rem;
+  margin: 0;
+  font-size: 1.15rem;
+  font-weight: 600;
 }
 
 .section-title {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 16px;
 }
 
 .section-icon {
-  font-size: 18px;
+  font-size: 20px;
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-md);
+  background: var(--accent-soft);
   color: var(--accent);
 }
 
 .section-chevron {
-  transition: transform 0.2s ease;
+  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  color: var(--text-muted);
 }
 
 .settings-section[open] .section-chevron {
@@ -54,19 +70,27 @@
 }
 
 .settings-content {
-  margin-top: 16px;
+  margin-top: 24px;
+  padding-top: 24px;
+  border-top: 1px solid var(--border-subtle);
   display: flex;
   flex-direction: column;
-  gap: 16px;
-  animation: fadeIn 0.2s ease;
+  gap: 20px;
+  animation: slideDown 0.3s ease;
+}
+
+@keyframes slideDown {
+  from { opacity: 0; transform: translateY(-8px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 .settings-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  gap: 24px;
 }
+
 
 .settings-row.is-disabled {
   opacity: 0.5;
@@ -98,17 +122,25 @@
 .chip-list {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 10px;
 }
 
 .chip {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 10px;
-  border-radius: 999px;
-  background: var(--sidebar-hover);
-  color: var(--text-primary);
+  padding: 6px 14px;
+  border-radius: var(--radius-md);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 500;
+  font-size: 0.9rem;
+  transition: all 0.2s ease;
+}
+
+.chip:hover {
+  background: var(--accent);
+  color: #fff;
 }
 
 .chip-remove {
@@ -116,7 +148,15 @@
   background: transparent;
   color: inherit;
   cursor: pointer;
+  opacity: 0.6;
+  display: flex;
+  align-items: center;
 }
+
+.chip:hover .chip-remove {
+  opacity: 1;
+}
+
 
 .switch {
   position: relative;

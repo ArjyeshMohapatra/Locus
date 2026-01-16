@@ -89,6 +89,9 @@
     </button>
 
     <nav class="sidebar-menu">
+      <div class="sidebar-header px-3 mb-4 mt-2">
+        <h2 class="text-gradient fs-4 fw-bold">LOCUS</h2>
+      </div>
       <button
         class="sidebar-item {currentView === 'dashboard' ? 'is-active' : ''}"
         on:click={() => setView('dashboard')}
@@ -120,15 +123,18 @@
         {#if currentView === 'settings'}
           <SettingsPage />
         {:else}
-          <header class="d-flex justify-content-between align-items-center mb-4">
-            <h1 class="h2 mb-0">LOCUS - File Activity Monitor</h1>
-            <div class="d-flex align-items-center">
-              <span
-                class="status-indicator {status === 'active' ? 'status-healthy' : 'status-error'}"
-              ></span>
-              <span class="badge {status === 'active' ? 'bg-success' : 'bg-danger'}">
-                System: {status}
-              </span>
+          <header class="d-flex justify-content-between align-items-center mb-5">
+            <div>
+              <h1 class="fw-bold mb-1">Dashboard</h1>
+              <p class="text-muted mb-0">Monitor your file ecosystem in real-time.</p>
+            </div>
+            <div class="d-flex align-items-center gap-3">
+              <div class="d-flex align-items-center gap-2 px-3 py-2 rounded-pill status-pill">
+                <span class="status-indicator {status === 'active' ? 'status-healthy' : 'status-error'}"></span>
+                <span class="fw-medium small text-uppercase {status === 'active' ? 'text-success' : 'text-danger'}">
+                   {status}
+                </span>
+              </div>
             </div>
           </header>
 

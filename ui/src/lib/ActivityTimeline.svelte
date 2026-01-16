@@ -71,33 +71,34 @@
   });
 </script>
 
-<div class="card h-100">
-  <div class="card-header">
-    <h5 class="card-title mb-0">Live File Activity</h5>
+<div class="card h-100 rounded-4">
+  <div class="card-header d-flex align-items-center justify-content-between py-3 px-4">
+    <h5 class="card-title mb-0 fw-bold">Live File Activity</h5>
+    <span class="badge-soft badge-soft-secondary">{sortedFiles.length} Tracks</span>
   </div>
   <div class="card-body p-0">
-    <div class="activity-list" style="height: 250px; overflow-y: auto;">
+    <div class="activity-list overflow-auto" style="height: 350px;">
       {#each sortedFiles as filePath}
         {@const fileEvents = groupedEvents[filePath]}
         {@const latestEvent = fileEvents[0]}
         
-        <div class="file-group border-bottom">
+        <div class="activity-item {expandedFiles.has(filePath) ? 'is-expanded' : ''}">
            <!-- File Header -->
-           <div class="d-flex justify-content-between align-items-center p-2 bg-light">
+           <div class="d-flex justify-content-between align-items-center w-100">
                <button 
-                  class="btn btn-sm btn-link text-decoration-none text-start text-truncate flex-grow-1 p-0 text-dark"
+                  class="d-flex align-items-center flex-grow-1 text-start border-0 bg-transparent p-0"
                   on:click={() => toggleExpand(filePath)}
                   type="button"
                >
                  <div class="d-flex align-items-center">
-                    <span class="me-2 text-muted" style="font-size: 0.8rem;">
-                      <Fa icon={expandedFiles.has(filePath) ? faChevronDown : faChevronRight} aria-hidden="true" />
+                    <span class="section-chevron me-3 {expandedFiles.has(filePath) ? 'rotated' : ''}">
+                      <Fa icon={faChevronRight} aria-hidden="true" />
                     </span>
                     <div class="text-truncate">
-                        <span class="fw-bold small font-monospace d-block text-truncate">
+                        <span class="activity-details d-block fw-semibold" style="color: var(--text-primary);">
                             {filePath.split(/[\\/]/).pop()}
                         </span>
-                        <small class="text-muted d-block text-truncate" style="font-size: 0.75rem; max-width: 200px;">
+                        <small class="text-muted d-block text-truncate" style="font-size: 0.75rem; max-width: 350px;">
                             {filePath}
                         </small>
                     </div>
@@ -106,27 +107,26 @@
                
                <div class="d-flex align-items-center ms-2">
                    <button 
-                       class="btn btn-sm btn-outline-primary me-2 py-0 px-2 rounded-pill" 
-                       style="font-size: 0.75rem;"
+                       class="btn btn-sm btn-outline-primary me-3" 
                        on:click={(e) => { e.stopPropagation(); selectedFile = filePath; }}
                        title="View History / Restore"
                     >
                        History
                    </button>
 
-                     <span class="badge bg-secondary rounded-pill" style="font-size: 0.7rem;">{fileEvents.length}</span>
+                     <span class="badge-soft badge-soft-secondary">{fileEvents.length}</span>
                </div>
            </div>
            
            <!-- Expandable Event List -->
            {#if expandedFiles.has(filePath)}
-             <div class="bg-white ps-3 border-top" transition:slide={{ duration: 300 }}>
+             <div class="event-list mt-2" transition:slide={{ duration: 300 }}>
                  {#each fileEvents as event}
-                    <div class="d-flex border-bottom py-2 pe-2 align-items-center" style="font-size: 0.85rem;">
-                        <span class="badge bg-light text-dark border me-2 font-monospace" style="width: 80px;">{event.event_type}</span>
-                        <span class="text-muted me-auto">{formatTime(event.timestamp)}</span>
+                    <div class="event-row">
+                        <span class="badge-soft badge-soft-secondary me-3" style="min-width: 80px; justify-content: center;">{event.event_type}</span>
+                        <span class="activity-time me-auto">{formatTime(event.timestamp)}</span>
                         {#if event.dest_path}
-                             <small class="text-muted ms-2 text-truncate" style="max-width: 150px;">&rarr; {event.dest_path.split(/[\\/]/).pop()}</small>
+                             <small class="text-muted ms-2 text-truncate" style="max-width: 300px;">&rarr; {event.dest_path.split(/[\\/]/).pop()}</small>
                         {/if}
                     </div>
                  {/each}

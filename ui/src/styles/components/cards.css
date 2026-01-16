@@ -1,45 +1,71 @@
 /* cards and basic buttons */
 .btn {
-  transition: all 0.2s ease;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  border-radius: var(--radius-md);
+  font-weight: 500;
+  padding: 8px 16px;
 }
 
 .card {
   background: var(--card-bg);
   border: 1px solid var(--border-subtle);
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.08);
-  margin-bottom: 20px;
-  transition: box-shadow 0.3s ease;
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  margin-bottom: 24px;
+  transition: all 0.3s ease;
+  overflow: hidden;
 }
 
 .card:hover {
-  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+  box-shadow: var(--shadow-md);
+  border-color: var(--border-strong);
+}
+
+.card-header {
+  background: var(--card-bg);
+  border-bottom: 1px solid var(--border-subtle);
+  padding: 16px 20px;
+  font-weight: 600;
+}
+
+.card-body {
+  padding: 20px;
 }
 
 .btn-primary {
   background-color: var(--accent);
   border-color: var(--accent);
+  box-shadow: 0 2px 4px rgba(59, 130, 246, 0.2);
 }
 
 .btn-primary:hover {
   background-color: var(--accent-strong);
   border-color: var(--accent-strong);
+  box-shadow: 0 4px 6px rgba(59, 130, 246, 0.3);
+  transform: translateY(-1px);
 }
 
-.card-header,
-.card-footer {
-  background: var(--card-bg);
-  border-color: var(--border-subtle);
-}
-
-.card-title,
-.card-subtitle {
+.card-title {
   color: var(--text-primary);
+  font-size: 1.1rem;
+  margin-bottom: 0.5rem;
 }
 
-.bg-light {
-  background-color: var(--card-bg) !important;
+.card-subtitle {
+  color: var(--text-muted);
+  font-size: 0.9rem;
 }
 
-.bg-white {
-  background-color: var(--card-bg) !important;
+/* Glass variant */
+.card-glass {
+  background: rgba(255, 255, 255, 0.7);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.2);
 }
+
+body.theme-dark .card-glass {
+  background: rgba(17, 24, 39, 0.7);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+

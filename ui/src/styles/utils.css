@@ -33,19 +33,78 @@
   color: var(--text-primary) !important;
 }
 
+/* Modern utility classes */
+.text-gradient {
+  background: linear-gradient(135deg, var(--accent) 0%, #a855f7 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.soft-bg-accent { background: var(--accent-soft); color: var(--accent); }
+.soft-bg-success { background: rgba(16, 185, 129, 0.1); color: var(--success); }
+.soft-bg-danger { background: rgba(239, 68, 68, 0.1); color: var(--danger); }
+
+.badge-soft {
+  padding: 4px 12px;
+  border-radius: var(--radius-md);
+  font-size: 0.75rem;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid transparent;
+}
+
+.badge-soft-success {
+  background: rgba(16, 185, 129, 0.1);
+  color: #065f46;
+  border-color: rgba(16, 185, 129, 0.2);
+}
+
+.badge-soft-danger {
+  background: rgba(239, 68, 68, 0.1);
+  color: #991b1b;
+  border-color: rgba(239, 68, 68, 0.2);
+}
+
+.badge-soft-warning {
+  background: rgba(245, 158, 11, 0.1);
+  color: #92400e;
+  border-color: rgba(245, 158, 11, 0.2);
+}
+
+body.theme-dark .badge-soft-success { color: #10b981; }
+body.theme-dark .badge-soft-danger { color: #ef4444; }
+body.theme-dark .badge-soft-warning { color: #f59e0b; }
+
+
+.badge-soft-secondary {
+  background: var(--sidebar-hover);
+  color: var(--text-muted);
+  border-color: var(--border-subtle);
+}
+
+
+.shadow-soft { box-shadow: var(--shadow-md); }
+
 .form-control,
 .form-select,
 .input-group-text {
-  background: var(--app-bg);
+  background: var(--card-bg);
   color: var(--text-primary);
   border-color: var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 10px 14px;
+  transition: all 0.2s ease;
 }
 
 .form-control:focus,
 .form-select:focus {
   border-color: var(--accent);
-  box-shadow: 0 0 0 0.2rem rgba(88, 166, 255, 0.25);
+  box-shadow: 0 0 0 4px var(--accent-soft);
 }
+
 
 .form-control::placeholder,
 .settings-input::placeholder,
@@ -58,6 +117,36 @@
   color: var(--accent);
 }
 
-.btn-link:hover {
-  color: var(--accent-strong);
+.status-pill {
+  background: var(--card-bg);
+  border: 1px solid var(--border-subtle);
+  box-shadow: var(--shadow-sm);
 }
+
+/* Status indicators */
+.status-indicator {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.status-healthy {
+  background-color: var(--success);
+  box-shadow: 0 0 0 4px rgba(16, 185, 129, 0.2);
+  animation: pulse-success 2s infinite;
+}
+
+.status-error {
+  background-color: var(--danger);
+  box-shadow: 0 0 0 4px rgba(239, 68, 68, 0.2);
+}
+
+@keyframes pulse-success {
+  0% { transform: scale(0.95); opacity: 0.8; }
+  50% { transform: scale(1.05); opacity: 1; }
+  100% { transform: scale(0.95); opacity: 0.8; }
+}
+
+.grow { flex-grow: 1; }
+

@@ -105,11 +105,12 @@
   }
 </script>
 
-<div class="card" style="max-height: 300px;">
-  <div class="card-header">
+<div class="card mb-0">
+  <div class="card-header d-flex align-items-center justify-content-between">
     <h5 class="card-title mb-0">Watched Folders</h5>
+    <span class="badge-soft badge-soft-secondary">{paths.length} Total</span>
   </div>
-  <div class="card-body" style="overflow-y: auto;">
+  <div class="card-body">
     {#if paths.length === 0}
       <p class="text-muted">No folders being watched yet.</p>
     {:else}
@@ -117,15 +118,15 @@
         {#each paths as p}
           <li class="list-group-item d-flex justify-content-between align-items-center px-0">
             <span class="text-break me-2">{p.path}</span>
-            <div class="d-flex align-items-center gap-2">
+            <div class="d-flex align-items-center gap-3">
                <button 
-                  class="btn btn-sm btn-outline-warning" 
+                  class="btn btn-sm btn-outline-secondary" 
                   title="Relink Path (Move History)"
                   on:click={() => handleRelink(p.path)}
                 >
                     <Fa icon={faLink} aria-hidden="true"/>
                </button>
-               <span class="badge {p.is_active ? 'bg-success' : 'bg-secondary'}">
+               <span class="badge-soft {p.is_active ? 'badge-soft-success' : 'badge-soft-secondary'}">
                   {p.is_active ? 'Active' : 'Missing'}
                </span>
             </div>
