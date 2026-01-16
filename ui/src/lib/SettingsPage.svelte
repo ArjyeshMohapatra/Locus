@@ -52,8 +52,13 @@
     window.dispatchEvent(new CustomEvent('locus-theme-change', { detail: { mode } }));
   };
 
-  const openStartupSettings = () => {
-    alert('Open Startup Settings (placeholder).');
+  const openStartupSettings = async () => {
+    if (window.__TAURI__) {
+      const { message } = await import('@tauri-apps/api/dialog');
+      await message('Open Startup Settings (placeholder).', { title: 'Settings' });
+    } else {
+      alert('Open Startup Settings (placeholder).');
+    }
   };
 
   onMount(() => {

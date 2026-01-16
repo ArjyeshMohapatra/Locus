@@ -71,11 +71,29 @@
   }
 
   async function handleRestore(versionId) {
-    if(!confirm("Are you sure you want to restore this version? This will overwrite the current file.")) return;
+    let shouldRestore = false;
+    try {
+      if (typeof window !== 'undefined' && window.__TAURI__) {
+        const { ask } = await import('@tauri-apps/api/dialog');
+        shouldRestore = await ask(
+          "Are you sure you want to restore this version? This will overwrite the current file.",
+          { title: 'Restore File', type: 'warning' }
+        );
+      } else {
+        shouldRestore = confirm("Are you sure you want to restore this version? This will overwrite the current file.");
+      }
+    } catch (err) {
+      console.error("Dialog error:", err);
+      // Fallback if Tauri dialog fails even if __TAURI__ is true
+      shouldRestore = confirm("Are you sure you want to restore this version? This will overwrite the current file.");
+    }
+
+    if(!shouldRestore) return;
     
     try {
-            const resp = await restoreFileVersion(versionId);
-            successMsg = `File restored to V${resp.version} successfully!`;
+      loading = true; // Show loading indicator during restore
+      const resp = await restoreFileVersion(versionId);
+      successMsg = `File restored to V${resp.version} successfully!`;
       // Close preview if open
       closePreview();
       // Refresh list
@@ -83,6 +101,8 @@
       setTimeout(() => successMsg = null, 4000);
     } catch (e) {
       error = "Restore failed: " + e.message;
+    } finally {
+      loading = false;
     }
   }
   

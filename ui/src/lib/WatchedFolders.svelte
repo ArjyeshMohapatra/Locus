@@ -28,8 +28,7 @@
     // 1. Try Tauri Dialog
     if (isTauriAvailable) {
        try {
-          // Dynamic import to avoid issues in non-Tauri environments
-          const { open } = await import('@tauri-apps/api/dialog');
+          const { open, ask, message } = await import('@tauri-apps/api/dialog');
           const selected = await open({
             directory: true,
             multiple: false,
@@ -39,26 +38,33 @@
           if (selected) {
             newPath = Array.isArray(selected) ? selected[0] : selected;
           }
+
+          if (newPath && newPath !== oldPath) {
+            const shouldMoveFiles = await ask(
+              `Do you want Locus to MOVE the files on disk for you?\n\n` + 
+              `YES = I want Locus to move files from "${oldPath}" to "${newPath}".\n` + 
+              `NO = I have already moved them manually.`,
+              { title: 'Relink Folder', type: 'warning' }
+            );
+
+            try {
+              await relinkWatchedPath(oldPath, newPath, shouldMoveFiles);
+              await message(`Location updated successfully!`, { title: 'Success' });
+              await loadPaths();
+            } catch (e) {
+              await message("Relink failed: " + e.message, { title: 'Error', type: 'error' });
+            }
+          }
        } catch (err) {
          console.error("Tauri dialog error:", err);
        }
+       return;
     }
 
-    // 2. Fallback to Prompt
-    if (!newPath) {
-      // Pre-fill with old path to make editing typos easier, 
-      // but strictly we expect a NEW path.
-      newPath = prompt(`Enter new location for:\n${oldPath}`, oldPath);
-    }
-
+    // Fallback for non-Tauri (unlikely in production but good for dev)
+    newPath = prompt(`Enter new location for:\n${oldPath}`, oldPath);
     if (newPath && newPath !== oldPath) {
-      // Ask user if they want Locus to move the files
-      const shouldMoveFiles = confirm(
-        `Do you want Locus to MOVE the files on disk for you?\n\n` + 
-        `YES (OK) = I want Locus to move files from "${oldPath}" to "${newPath}".\n` + 
-        `NO (Cancel) = I have already moved them manually.`
-      );
-
+      const shouldMoveFiles = confirm(`Do you want Locus to MOVE the files on disk for you?`);
       try {
         await relinkWatchedPath(oldPath, newPath, shouldMoveFiles);
         alert(`Location updated successfully!`);
@@ -71,11 +77,9 @@
 
   async function handleAdd(useNativeDialog = false) {
     if (useNativeDialog) {
-      // Try native dialog first (Tauri)
       try {
         if (isTauriAvailable) {
-          // Dynamic import to avoid issues in non-Tauri environments
-          const { open } = await import('@tauri-apps/api/dialog');
+          const { open, message } = await import('@tauri-apps/api/dialog');
           const selected = await open({
             directory: true,
             multiple: false,
@@ -83,7 +87,6 @@
           });
           
           if (selected) {
-            // path is a string when multiple is false
             const pathToAdd = Array.isArray(selected) ? selected[0] : selected;
             await addWatchedPath(pathToAdd);
             await loadPaths();
@@ -91,8 +94,8 @@
           }
         } 
       } catch (err) {
-        console.error("Tauri dialog error:", err);
-        alert("Native dialog failed: " + err);
+        const { message } = await import('@tauri-apps/api/dialog');
+        await message("Native dialog failed: " + err, { title: 'Error', type: 'error' });
       }
     }
     
