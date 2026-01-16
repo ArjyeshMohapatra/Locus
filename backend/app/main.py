@@ -365,6 +365,26 @@ def get_version_content(version_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=f"Failed to read file: {str(e)}")
 
 
+def _normalize_path(path: str) -> str:
+    return os.path.normcase(os.path.abspath(os.path.realpath(path)))
+
+
+def _is_within_watched_paths(target_path: str, watched_paths: list[str]) -> bool:
+    target_norm = _normalize_path(target_path)
+    for watched in watched_paths:
+        if not watched:
+            continue
+        watched_norm = _normalize_path(watched)
+        try:
+            common = os.path.commonpath([target_norm, watched_norm])
+        except ValueError:
+            # Different drive letters on Windows
+            continue
+        if common == watched_norm:
+            return True
+    return False
+
+
 @app.post("/files/restore")
 def restore_version(restore_data: FileRestore, db: Session = Depends(get_db)):
     """Restore a specific version of a file"""
@@ -379,12 +399,23 @@ def restore_version(restore_data: FileRestore, db: Session = Depends(get_db)):
 
     # 2. Determine destination
     target_path = restore_data.dest_path or version.original_path
+    if not target_path:
+        raise HTTPException(status_code=400, detail="Missing destination path")
+
+    if not os.path.isabs(target_path):
+        raise HTTPException(status_code=400, detail="Destination path must be absolute")
+
+    watched_paths = [p.path for p in crud.get_watched_paths(db)]
+    if not _is_within_watched_paths(target_path, watched_paths):
+        raise HTTPException(
+            status_code=403,
+            detail="Restore destination must be within a watched path",
+        )
 
     # Signal monitor to ignore the next update for this file
     register_restore_start(target_path)
 
     # 3. Restore
-    # Security note: In a real app, validate target_path is within allowed dirs
     success = storage.restore_file_version(version.storage_path, target_path)
     if not success:
         raise HTTPException(
