@@ -1,5 +1,7 @@
 import time
 import os
+import threading
+import queue
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 from sqlalchemy.orm import Session
@@ -230,53 +232,105 @@ class RootEventHandler(FileSystemEventHandler):
 class FileMonitorService:
     # Manage watchdog observers and keep them in sync with DB configuration.
     def __init__(self):
-        self.observer = Observer()
+        # Create the Observer only when starting, to ensure it is created
+        # and started on the same thread (Windows thread handle safety).
+        self.observer = None
         self.active_watches = {}  # path -> watch_ref
         self.root_watches = {}  # path -> watch_ref (for parent watchers)
 
+        # Ensure all schedule/unschedule calls happen on the monitor thread.
+        self._cmd_queue: "queue.Queue[tuple[str, object | None]]" = queue.Queue()
+        self._monitor_thread: threading.Thread | None = None
+        self._running = False
+
+    def _enqueue_command(self, cmd: str, payload: object | None = None):
+        """Queue a command for the monitor thread, starting it if needed."""
+        if not self._monitor_thread or not self._monitor_thread.is_alive():
+            self.start()
+        self._cmd_queue.put((cmd, payload))
+
+    def _monitor_loop(self):
+        """Monitor thread: owns the Observer and processes commands."""
+        try:
+            self.observer = Observer()
+            self.observer.start()
+
+            while self._running:
+                try:
+                    cmd, payload = self._cmd_queue.get(timeout=0.5)
+                except queue.Empty:
+                    continue
+
+                try:
+                    should_continue = self._dispatch_command(cmd, payload)
+                    if not should_continue:
+                        break
+                except Exception as e:
+                    print(f"[MonitorThread] {cmd} error: {e}")
+        finally:
+            if self.observer:
+                try:
+                    self.observer.stop()
+                    self.observer.join()
+                except Exception:
+                    pass
+            self.observer = None
+
     def start(self):
         """Starts the observer thread."""
-        self.observer.start()
+        if self._monitor_thread and self._monitor_thread.is_alive():
+            return
+        self._running = True
+        self._monitor_thread = threading.Thread(target=self._monitor_loop, daemon=True)
+        self._monitor_thread.start()
+
+    def _dispatch_command(self, cmd: str, payload: object | None) -> bool:
+        """Handle a queued command. Returns False to stop the loop."""
+        if cmd == "sync":
+            self._do_sync_watches()
+            return True
+        if cmd == "rename":
+            if not isinstance(payload, tuple) or len(payload) != 2:
+                return True
+            old_path, _new_path = payload
+            self._stop_watching_path(old_path)
+            self._do_sync_watches()
+            return True
+        if cmd == "delete":
+            if not isinstance(payload, str):
+                return True
+            path = payload
+            self._stop_watching_path(path)
+            self._do_sync_watches()
+            return True
+        if cmd == "stop":
+            return False
+        return True
 
     # Stop the observer thread and wait for it to exit.
     def stop(self):
-        self.observer.stop()
-        self.observer.join()
+        if not self._monitor_thread:
+            return
+        self._running = False
+        try:
+            self._cmd_queue.put(("stop", None))
+            self._monitor_thread.join(timeout=2.0)
+        finally:
+            self._monitor_thread = None
 
     def handle_root_rename(self, old_path: str, new_path: str):
         """Called when a root folder is renamed."""
         print(f"[MonitorService] Handling root rename: {old_path} -> {new_path}")
 
-        # 1. Stop watching the old path
-        if old_path in self.active_watches:
-            self.observer.unschedule(self.active_watches[old_path])
-            del self.active_watches[old_path]
-
-        # 2. Stop watching the OLD parent (we will re-add the new parent in sync)
-        if old_path in self.root_watches:
-            self.observer.unschedule(self.root_watches[old_path])
-            del self.root_watches[old_path]
-
-        # 3. Trigger sync to pick up new configuration from DB
-        self.sync_watches()
+        # Remove old watches and resync on the monitor thread
+        self._enqueue_command("rename", (old_path, new_path))
 
     def handle_root_deletion(self, path: str):
         """Called when a root folder disappears (deleted or moved cross-volume)."""
         print(f"[MonitorService] Handling root deletion/loss: {path}")
-        # Stop watching it.
-        if path in self.active_watches:
-            self.observer.unschedule(self.active_watches[path])
-            del self.active_watches[path]
 
-        # Stop watching parent (since we can't find the child anymore)
-        if path in self.root_watches:
-            self.observer.unschedule(self.root_watches[path])
-            del self.root_watches[path]
-
-        # Future Feature to be implemented ----
-        # Optional: Mark as 'inactive' in DB?
-        # For now, we just stop monitoring it to avoid errors.
-        # The user will see it red in UI if we added status checks (future feature).
+        # Remove watches and resync on the monitor thread.
+        self._enqueue_command("delete", path)
 
     def _unschedule_watch(self, watch_map: dict, key: str):
         """Safely unschedule a watchdog watch stored in a dict by key."""
@@ -284,7 +338,8 @@ class FileMonitorService:
         if not watch:
             return
         try:
-            self.observer.unschedule(watch)
+            if self.observer:
+                self.observer.unschedule(watch)
         finally:
             # Ensure we don't keep stale references even if unschedule errors
             watch_map.pop(key, None)
@@ -307,6 +362,8 @@ class FileMonitorService:
             print(f"[!] Parent path also missing: {parent_path}")
             return
 
+        if not self.observer:
+            raise RuntimeError("Observer not started")
         root_handler = RootEventHandler(folder_name, watched_path, self)
         parent_watch = self.observer.schedule(
             root_handler, parent_path, recursive=False
@@ -319,17 +376,16 @@ class FileMonitorService:
         if watched_path in self.active_watches:
             return
 
+        if not self.observer:
+            raise RuntimeError("Observer not started")
         watch = self.observer.schedule(
             LocusEventHandler(), watched_path, recursive=True
         )
         self.active_watches[watched_path] = watch
         print(f"[+] Started watching: {watched_path}")
 
-    def sync_watches(self):
-        """
-        Reads watched paths from DB and updates local observers.
-        Called on startup and when user configuration changes.
-        """
+    def _do_sync_watches(self):
+        """Internal sync logic; must run on monitor thread."""
         db = SessionLocal()
         try:
             paths = crud.get_watched_paths(db)
@@ -357,6 +413,10 @@ class FileMonitorService:
                     print(f"[!] Error watching {p.path}: {e}")
         finally:
             db.close()
+
+    def sync_watches(self):
+        """Request a sync on the monitor thread."""
+        self._enqueue_command("sync", None)
 
 
 # Global instance
