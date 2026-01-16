@@ -4,3 +4,6 @@ sqlalchemy>=2.0.30
 watchdog>=4.0.0,<5
 python-multipart==0.0.6
 pyinstaller==6.17.0
+pytest
+requests
+httpx
