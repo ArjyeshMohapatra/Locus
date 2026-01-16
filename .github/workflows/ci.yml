@@ -16,6 +16,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('backend/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Cache npm
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.npm
+            ui/node_modules
+          key: ${{ runner.os }}-node-${{ hashFiles('ui/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node-
+
       - name: Setup Python
         uses: actions/setup-python@v4
         with:
@@ -51,11 +70,15 @@ jobs:
           pip-audit --quiet
         working-directory: backend
 
-      - name: Run tests with coverage
+      - name: Run tests with coverage (uses test SQLite DB)
+        env:
+          DATABASE_URL: sqlite:///./backend/test.db
         run: |
           pip install coverage
           coverage run -m pytest -q
           coverage xml -o coverage.xml
+          # remove test DB after tests
+          if [ -f backend/test.db ]; then rm backend/test.db; fi
         working-directory: backend
 
       - name: Upload coverage
