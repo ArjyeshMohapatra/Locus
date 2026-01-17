@@ -5,8 +5,8 @@
   --text-primary: #1e293b;
   --text-muted: #64748b;
   --card-bg: #ffffff;
-  --border-subtle: #f1f5f9;
-  --border-strong: #e2e8f0;
+  --border-subtle: #cbd5e1; /* Increased visibility from #e2e8f0 */
+  --border-strong: #94a3b8; /* Increased visibility from #cbd5e1 */
   
   --accent: #3b82f6; /* Blue 500 */
   --accent-strong: #2563eb; /* Blue 600 */
@@ -18,7 +18,7 @@
   /* sidebar colors */
   --sidebar-bg: #ffffff;
   --sidebar-text: #475569;
-  --sidebar-border: #f1f5f9;
+  --sidebar-border: #cbd5e1; /* Increased visibility */
   --sidebar-hover: #f8fafc;
   --sidebar-active: #f1f5f9;
   --sidebar-accent: #3b82f6;
@@ -43,8 +43,8 @@ body.theme-dark {
   --text-primary: #f1f5f9;
   --text-muted: #8492a6;
   --card-bg: #11141d;
-  --border-subtle: #1e2433;
-  --border-strong: #2d364d;
+  --border-subtle: #334155; /* Increased visibility from #2d364d */
+  --border-strong: #475569; /* Increased visibility from #404b66 */
   
   --accent: #3b82f6;
   --accent-strong: #60a5fa;
@@ -52,7 +52,7 @@ body.theme-dark {
   
   --sidebar-bg: #080a0f;
   --sidebar-text: #94a3b8;
-  --sidebar-border: #1e2433;
+  --sidebar-border: #334155; /* Increased visibility */
   --sidebar-hover: #161b26;
   --sidebar-active: #161b26;
   --sidebar-accent: #3b82f6;
@@ -72,6 +72,10 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
+h1, h2, h3, h4, h5, h6 {
+  color: var(--text-primary);
+}
+
 html {
   overscroll-behavior: none;
 }
@@ -84,4 +88,63 @@ html {
 * {
   -ms-overflow-style: none;  /* IE and Edge */
   scrollbar-width: none;  /* Firefox */
+}
+
+/* Global Form Control Overrides for Dark Mode */
+.theme-dark .form-control {
+  background-color: var(--border-subtle);
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+
+.theme-dark .form-control:focus {
+  background-color: var(--border-subtle);
+  border-color: var(--accent);
+  color: var(--text-primary);
+  box-shadow: 0 0 0 0.2rem var(--accent-soft);
+}
+
+.theme-dark .form-control::placeholder {
+  color: var(--text-muted);
+  opacity: 0.6;
+}
+
+/* Ensure input group text also looks good */
+.theme-dark .input-group-text {
+  background-color: var(--border-subtle);
+  border-color: var(--border-strong);
+  color: var(--text-muted);
+}
+
+/* Ensure List Group items have visible borders in dark mode */
+.theme-dark .list-group-item {
+  background-color: transparent;
+  border-color: var(--border-subtle);
+  color: var(--text-primary);
+}
+
+.theme-dark .list-group {
+  border-color: var(--border-subtle);
+}
+
+/* Modal borders in dark mode */
+.theme-dark .modal-content {
+  background-color: var(--card-bg);
+  border: 1px solid var(--border-strong);
+}
+
+.theme-dark .modal-header,
+.theme-dark .modal-footer {
+  border-color: var(--border-subtle);
+}
+
+/* Table borders in dark mode */
+.theme-dark .table {
+  color: var(--text-primary);
+  border-color: var(--border-subtle);
+}
+
+.theme-dark .table th,
+.theme-dark .table td {
+  border-color: var(--border-subtle);
 }

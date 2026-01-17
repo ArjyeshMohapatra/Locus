@@ -1,17 +1,19 @@
 /* layout: shell, container, sidebar, view wrappers */
 .app-shell {
-  min-height: 100vh;
+  min-height: calc(100vh - 32px);
+  margin-top: 32px;
 }
 
 .app-container {
   max-width: 1200px;
   margin: 0 auto;
-  padding: 24px 32px;
+  padding: 40px 32px; /* Increased top padding for better breathing room */
   box-sizing: border-box;
-  /* default left margin to account for collapsed sidebar */
-  margin-left: 64px;
-  min-height: 100vh;
+  /* match collapsed sidebar width */
+  margin-left: 72px;
+  min-height: calc(100vh - 32px);
   overflow: auto;
+  transition: margin-left 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .view-wrapper {
@@ -28,7 +30,7 @@
   transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   border-right: 1px solid var(--sidebar-border);
   position: fixed;
-  top: 0;
+  top: 32px; /* Start below custom titlebar */
   left: 0;
   bottom: 0;
   z-index: 50;
@@ -123,14 +125,3 @@
   pointer-events: none;
   position: absolute; /* Take out of flow so it doesn't push icons */
 }
-
-.sidebar-header {
-  transition: opacity 0.2s;
-}
-
-.is-collapsed .sidebar-header {
-  opacity: 0;
-  pointer-events: none;
-}
-
-

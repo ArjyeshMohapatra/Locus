@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
     import { fade } from 'svelte/transition';
         import { getFileVersions, restoreFileVersion, getFileVersionContent, getCurrentFileVersion } from '../api.js';
+    import { showMessage, askQuestion } from '../dialogStore.js';
     import Fa from 'svelte-fa';
     import { faArrowLeft, faHistory, faUndo, faEye } from '@fortawesome/free-solid-svg-icons';
 
@@ -71,22 +72,11 @@
   }
 
   async function handleRestore(versionId) {
-    let shouldRestore = false;
-    try {
-      if (typeof window !== 'undefined' && window.__TAURI__) {
-        const { ask } = await import('@tauri-apps/api/dialog');
-        shouldRestore = await ask(
-          "Are you sure you want to restore this version? This will overwrite the current file.",
-          { title: 'Restore File', type: 'warning' }
-        );
-      } else {
-        shouldRestore = confirm("Are you sure you want to restore this version? This will overwrite the current file.");
-      }
-    } catch (err) {
-      console.error("Dialog error:", err);
-      // Fallback if Tauri dialog fails even if __TAURI__ is true
-      shouldRestore = confirm("Are you sure you want to restore this version? This will overwrite the current file.");
-    }
+    let shouldRestore = await askQuestion(
+      "Are you sure you want to restore this version? This will overwrite the current file.",
+      'Restore File',
+      { type: 'warning', okLabel: 'Restore Now', cancelLabel: 'Cancel' }
+    );
 
     if(!shouldRestore) return;
     
@@ -94,6 +84,7 @@
       loading = true; // Show loading indicator during restore
       const resp = await restoreFileVersion(versionId);
       successMsg = `File restored to V${resp.version} successfully!`;
+      showMessage(successMsg, 'Success');
       // Close preview if open
       closePreview();
       // Refresh list
@@ -101,6 +92,7 @@
       setTimeout(() => successMsg = null, 4000);
     } catch (e) {
       error = "Restore failed: " + e.message;
+      showMessage(error, 'Error', 'error');
     } finally {
       loading = false;
     }
@@ -160,20 +152,20 @@
       </div>
       
       <div class="modal-body">
-        <h6 class="text-break mb-3 text-secondary">
-            <small class="text-muted text-uppercase fw-bold" style="font-size: 0.7em;">File Path</small><br>
-            {filePath}
-        </h6>
+        <div class="mb-4">
+            <small class="text-uppercase fw-bold ls-1" style="font-size: 0.7rem; color: var(--accent); opacity: 0.8;">File Path</small>
+            <div class="text-break mt-1 fw-medium" style="color: var(--text-primary);">{filePath}</div>
+        </div>
 
         {#if successMsg}
-            <div class="alert alert-success alert-dismissible fade show" role="alert">
-                {successMsg}
-                <button type="button" class="btn-close" aria-label="Dismiss alert" on:click={() => successMsg = null}></button>
+            <div class="alert soft-bg-success border-0 px-4 py-3 mb-4 rounded-3 d-flex justify-content-between align-items-center" role="alert">
+                <span>{successMsg}</span>
+                <button type="button" class="btn-close ms-auto" aria-label="Dismiss" on:click={() => successMsg = null}></button>
             </div>
         {/if}
         
         {#if error}
-            <div class="alert alert-danger" role="alert">
+            <div class="alert soft-bg-danger border-0 px-4 py-3 mb-4 rounded-3" role="alert">
                 {error}
             </div>
         {/if}
@@ -220,7 +212,7 @@
                     <small>Modifications are tracked automatically by LOCUS.</small>
                 </div>
             {:else}
-                <div class="list-group list-group-flush border-top">
+                <div class="list-group list-group-flush">
                     {#each versions as v}
                         <!-- svelte-ignore a11y-click-events-have-key-events -->
                         <!-- svelte-ignore a11y-no-static-element-interactions -->
@@ -273,18 +265,35 @@
 <style>
     .modal-backdrop {
         z-index: 1040;
-        background-color: rgba(0, 0, 0, 0.7);
-        backdrop-filter: blur(4px);
+        position: fixed;
+        inset: 0;
+        background-color: rgba(255, 255, 255, 0.1);
     }
     .modal {
         z-index: 1050;
+        overflow-x: hidden;
+    }
+    /* Ensure the dialog is well-constrained and centered */
+    .modal-dialog {
+        max-width: 850px;
+        margin: auto auto;
+        /* min-height: calc(100% - 20vh); */
+    }
+    .modal-content {
+        max-height: 80vh;
+        border: 1px solid var(--border-subtle);
+        border-radius: var(--radius-xl);
+        overflow: hidden;
+    }
+    .ls-1 {
+        letter-spacing: 0.05em;
     }
     .preview-header {
         background: var(--app-bg);
         border: 1px solid var(--border-subtle);
     }
     .preview-text {
-        max-height: 450px; 
+        max-height: 480px; 
         font-size: 0.9rem; 
         background: var(--app-bg); 
         color: var(--text-primary);
@@ -298,7 +307,11 @@
     }
     .version-row {
         background: transparent;
-        border-color: var(--border-subtle);
+        border-bottom: 1px solid var(--border-subtle) !important;
+        border-top: none !important;
+    }
+    .version-row:last-child {
+        border-bottom: none !important;
     }
     .version-row:hover {
         background-color: var(--sidebar-hover);
@@ -307,9 +320,9 @@
     .version-row:hover .text-muted {
         color: var(--text-muted) !important;
     }
-    /* Set max height for modal body to enable scrolling */
+    /* Precise control for modal body height and scrolling */
     .modal-body {
-        max-height: 75vh;
+        padding: 24px;
         overflow-y: auto;
     }
 </style>

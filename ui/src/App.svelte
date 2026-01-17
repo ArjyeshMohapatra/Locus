@@ -5,6 +5,8 @@
   import WatchedFolders from './lib/WatchedFolders.svelte';
   import ActivityTimeline from './lib/ActivityTimeline.svelte';
   import SettingsPage from './lib/SettingsPage.svelte';
+  import Titlebar from './lib/Titlebar.svelte';
+  import CustomDialog from './lib/CustomDialog.svelte';
   import Fa from 'svelte-fa';
   import {
     faBars,
@@ -60,7 +62,24 @@
     window.addEventListener('locus-theme-change', handleThemeEvent);
   });
 
+  let handleClickOutside;
+
+  onMount(() => {
+    handleClickOutside = (event) => {
+      if (sidebarOpen) {
+        const sidebar = document.querySelector('.sidebar');
+        if (sidebar && !sidebar.contains(event.target)) {
+          sidebarOpen = false;
+        }
+      }
+    };
+    window.addEventListener('click', handleClickOutside);
+  });
+
   onDestroy(() => {
+    if (handleClickOutside) {
+      window.removeEventListener('click', handleClickOutside);
+    }
     if (mediaQuery && handleSystemChange) {
       if (mediaQuery.removeEventListener) {
         mediaQuery.removeEventListener('change', handleSystemChange);
@@ -82,6 +101,9 @@
   };
 </script>
 
+<Titlebar />
+<CustomDialog />
+
 <div class="app-shell">
   <aside class="sidebar {sidebarOpen ? 'is-open' : 'is-collapsed'}">
     <button class="hamburger" on:click={toggleSidebar} aria-label="Toggle menu">
@@ -89,9 +111,6 @@
     </button>
 
     <nav class="sidebar-menu">
-      <div class="sidebar-header px-3 mb-4 mt-2">
-        <h2 class="text-gradient fs-4 fw-bold">LOCUS</h2>
-      </div>
       <button
         class="sidebar-item {currentView === 'dashboard' ? 'is-active' : ''}"
         on:click={() => setView('dashboard')}

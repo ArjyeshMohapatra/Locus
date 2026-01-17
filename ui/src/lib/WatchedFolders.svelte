@@ -1,6 +1,7 @@
 <script>
   import { onMount } from 'svelte';
   import { getWatchedPaths, addWatchedPath, relinkWatchedPath } from '../api.js';
+  import { showMessage, askQuestion } from '../dialogStore.js';
   import Fa from 'svelte-fa';
   import { faLink, faFolderPlus } from '@fortawesome/free-solid-svg-icons';
 
@@ -28,7 +29,7 @@
     // 1. Try Tauri Dialog
     if (isTauriAvailable) {
        try {
-          const { open, ask, message } = await import('@tauri-apps/api/dialog');
+          const { open } = await import('@tauri-apps/api/dialog');
           const selected = await open({
             directory: true,
             multiple: false,
@@ -40,19 +41,20 @@
           }
 
           if (newPath && newPath !== oldPath) {
-            const shouldMoveFiles = await ask(
+            const shouldMoveFiles = await askQuestion(
               `Do you want Locus to MOVE the files on disk for you?\n\n` + 
               `YES = I want Locus to move files from "${oldPath}" to "${newPath}".\n` + 
               `NO = I have already moved them manually.`,
-              { title: 'Relink Folder', type: 'warning' }
+              'Relink Folder',
+              { type: 'warning', okLabel: 'Yes, Move Files', cancelLabel: 'No, Already Moved' }
             );
 
             try {
               await relinkWatchedPath(oldPath, newPath, shouldMoveFiles);
-              await message(`Location updated successfully!`, { title: 'Success' });
+              await showMessage(`Location updated successfully!`, 'Success');
               await loadPaths();
             } catch (e) {
-              await message("Relink failed: " + e.message, { title: 'Error', type: 'error' });
+              await showMessage("Relink failed: " + e.message, 'Error', 'error');
             }
           }
        } catch (err) {
@@ -67,10 +69,10 @@
       const shouldMoveFiles = confirm(`Do you want Locus to MOVE the files on disk for you?`);
       try {
         await relinkWatchedPath(oldPath, newPath, shouldMoveFiles);
-        alert(`Location updated successfully!`);
+        showMessage(`Location updated successfully!`, 'Success');
         await loadPaths();
       } catch (e) {
-        alert("Relink failed: " + e.message);
+        showMessage("Relink failed: " + e.message, 'Error', 'error');
       }
     }
   }
@@ -79,7 +81,7 @@
     if (useNativeDialog) {
       try {
         if (isTauriAvailable) {
-          const { open, message } = await import('@tauri-apps/api/dialog');
+          const { open } = await import('@tauri-apps/api/dialog');
           const selected = await open({
             directory: true,
             multiple: false,
@@ -94,8 +96,7 @@
           }
         } 
       } catch (err) {
-        const { message } = await import('@tauri-apps/api/dialog');
-        await message("Native dialog failed: " + err, { title: 'Error', type: 'error' });
+        await showMessage("Native dialog failed: " + err, 'Error', 'error');
       }
     }
     

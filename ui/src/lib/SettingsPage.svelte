@@ -1,5 +1,6 @@
 <script>
   import { onMount } from 'svelte';
+  import { showMessage } from '../dialogStore.js';
   import Fa from 'svelte-fa';
   import {
     faFilter,
@@ -53,12 +54,7 @@
   };
 
   const openStartupSettings = async () => {
-    if (window.__TAURI__) {
-      const { message } = await import('@tauri-apps/api/dialog');
-      await message('Open Startup Settings (placeholder).', { title: 'Settings' });
-    } else {
-      alert('Open Startup Settings (placeholder).');
-    }
+    await showMessage('Open Startup Settings (placeholder).', 'Settings');
   };
 
   onMount(() => {

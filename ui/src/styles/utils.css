@@ -11,16 +11,6 @@
   color: #ffffff;
 }
 
-.btn-outline-secondary {
-  color: var(--text-primary);
-  border-color: var(--border-subtle);
-}
-
-.btn-outline-secondary:hover {
-  background: var(--sidebar-hover);
-  border-color: var(--border-subtle);
-}
-
 .muted {
   color: var(--text-muted);
 }
@@ -58,20 +48,20 @@
 
 .badge-soft-success {
   background: rgba(16, 185, 129, 0.1);
-  color: #065f46;
-  border-color: rgba(16, 185, 129, 0.2);
+  color: #064e3b; /* More contrast */
+  border-color: rgba(16, 185, 129, 0.3); /* Stronger border */
 }
 
 .badge-soft-danger {
   background: rgba(239, 68, 68, 0.1);
-  color: #991b1b;
-  border-color: rgba(239, 68, 68, 0.2);
+  color: #7f1d1d; /* More contrast */
+  border-color: rgba(239, 68, 68, 0.3); /* Stronger border */
 }
 
 .badge-soft-warning {
   background: rgba(245, 158, 11, 0.1);
-  color: #92400e;
-  border-color: rgba(245, 158, 11, 0.2);
+  color: #78350f; /* More contrast */
+  border-color: rgba(245, 158, 11, 0.3); /* Stronger border */
 }
 
 body.theme-dark .badge-soft-success { color: #10b981; }
@@ -83,6 +73,16 @@ body.theme-dark .badge-soft-warning { color: #f59e0b; }
   background: var(--sidebar-hover);
   color: var(--text-muted);
   border-color: var(--border-subtle);
+}
+
+.btn-outline-secondary {
+  color: var(--text-primary);
+  border-color: var(--border-strong); /* Use strong border for outlined buttons */
+}
+
+.btn-outline-secondary:hover {
+  background: var(--sidebar-hover);
+  border-color: var(--border-strong);
 }
 
 

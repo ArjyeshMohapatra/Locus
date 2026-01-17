@@ -11,6 +11,16 @@
   let selectedFile = null;
   let expandedFiles = new Set();
   
+  $: if (typeof document !== 'undefined') {
+    const lock = Boolean(selectedFile);
+    document.body.style.overflow = lock ? 'hidden' : '';
+    document.body.style.overflowX = lock ? 'hidden' : '';
+    document.body.style.overscrollBehaviorX = lock ? 'none' : '';
+    document.documentElement.style.overflow = lock ? 'hidden' : '';
+    document.documentElement.style.overflowX = lock ? 'hidden' : '';
+    document.documentElement.style.overscrollBehaviorX = lock ? 'none' : '';
+  }
+  
   // Grouped events: { "path/to/file": [latest_event, older_event] }
   $: groupedEvents = events.reduce((acc, event) => {
     const path = event.src_path;
