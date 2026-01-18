@@ -1,13 +1,13 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
   import { slide } from 'svelte/transition';
-  import { getRecentFileEvents } from '../api.js';
+  import { getRecentFileEvents, subscribeFileEvents } from '../api.js';
   import Fa from 'svelte-fa';
   import { faChevronDown, faChevronRight } from '@fortawesome/free-solid-svg-icons';
   import FileHistoryModal from './FileHistoryModal.svelte';
 
   let events = [];
-  let interval;
+  let eventSource;
   let selectedFile = null;
   let expandedFiles = new Set();
   
@@ -73,11 +73,15 @@
 
   onMount(() => {
     refresh();
-    interval = setInterval(refresh, 2000); // Poll every 2s
+    eventSource = subscribeFileEvents((event) => {
+      events = [event, ...events].slice(0, 50);
+    });
   });
 
   onDestroy(() => {
-    clearInterval(interval);
+    if (eventSource) {
+      eventSource.close();
+    }
   });
 </script>
 

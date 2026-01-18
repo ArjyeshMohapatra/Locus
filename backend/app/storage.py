@@ -4,17 +4,24 @@ import hashlib
 import uuid
 import gzip
 import time
+import json
 from pathlib import Path
 from typing import Any, Optional
 
 # path for storing the file versions
 STORAGE_ROOT = Path("./.locus_storage").resolve()
+CHUNK_DIR = STORAGE_ROOT / "chunks"
+CHUNK_SIZE_BYTES = 4 * 1024 * 1024
+CHUNKED_MIN_SIZE_BYTES = 16 * 1024 * 1024
+MANIFEST_EXT = ".manifest.json"
 
 
 def init_storage():
     """Ensure storage directory exists"""
     if not STORAGE_ROOT.exists():
         STORAGE_ROOT.mkdir(parents=True)
+    if not CHUNK_DIR.exists():
+        CHUNK_DIR.mkdir(parents=True)
 
 
 def calculate_file_hash(file_path: str) -> Optional[str]:
@@ -31,7 +38,160 @@ def calculate_file_hash(file_path: str) -> Optional[str]:
     return sha256_hash.hexdigest()
 
 
-def save_file_version(src_path: str) -> Optional[dict[str, Any]]:
+def _write_compressed(src_path: str, dest_path: Path) -> None:
+    with open(src_path, "rb") as f_in:
+        with gzip.open(dest_path, "wb") as f_out:
+            shutil.copyfileobj(f_in, f_out)
+
+
+def _stream_hash_and_compress(src_path: str, temp_path: Path) -> str:
+    sha256_hash = hashlib.sha256()
+    with open(src_path, "rb") as f_in:
+        with gzip.open(temp_path, "wb") as f_out:
+            for chunk in iter(lambda: f_in.read(4096), b""):
+                sha256_hash.update(chunk)
+                f_out.write(chunk)
+    return sha256_hash.hexdigest()
+
+
+def _chunk_path(chunk_hash: str) -> Path:
+    return CHUNK_DIR / f"{chunk_hash}.chunk"
+
+
+def _save_chunked_file(
+    src_path: str, file_size: int, known_hash: Optional[str] = None
+) -> Optional[dict[str, Any]]:
+    if known_hash:
+        manifest_name = f"{known_hash}{MANIFEST_EXT}"
+        manifest_path = STORAGE_ROOT / manifest_name
+        if manifest_path.exists():
+            return {
+                "storage_path": str(manifest_path),
+                "file_hash": known_hash,
+                "file_size": file_size,
+                "filename": manifest_name,
+            }
+
+    file_hasher = hashlib.sha256()
+    chunks: list[dict[str, Any]] = []
+
+    try:
+        with open(src_path, "rb") as f_in:
+            for chunk in iter(lambda: f_in.read(CHUNK_SIZE_BYTES), b""):
+                file_hasher.update(chunk)
+                chunk_hash = hashlib.sha256(chunk).hexdigest()
+                chunk_path = _chunk_path(chunk_hash)
+                if not chunk_path.exists():
+                    with open(chunk_path, "wb") as f_out:
+                        f_out.write(chunk)
+                chunks.append({"hash": chunk_hash, "size": len(chunk)})
+
+        file_hash = file_hasher.hexdigest()
+        manifest_name = f"{file_hash}{MANIFEST_EXT}"
+        manifest_path = STORAGE_ROOT / manifest_name
+
+        if not manifest_path.exists():
+            manifest = {
+                "file_hash": file_hash,
+                "file_size": file_size,
+                "chunk_size": CHUNK_SIZE_BYTES,
+                "chunks": chunks,
+            }
+            with open(manifest_path, "w", encoding="utf-8") as f_manifest:
+                json.dump(manifest, f_manifest)
+
+        return {
+            "storage_path": str(manifest_path),
+            "file_hash": file_hash,
+            "file_size": file_size,
+            "filename": manifest_name,
+        }
+    except Exception as e:
+        print(f"[Storage] Failed chunked backup for {src_path}: {e}")
+        return None
+
+
+def _save_with_known_hash(
+    src_path: str, file_hash: str, file_size: int
+) -> Optional[dict[str, Any]]:
+    storage_filename = f"{file_hash}.gz"
+    storage_path = STORAGE_ROOT / storage_filename
+
+    if storage_path.exists():
+        print(
+            f"[Storage] Deduplication hit! Content {file_hash[:8]}... already exists."
+        )
+        return {
+            "storage_path": str(storage_path),
+            "file_hash": file_hash,
+            "file_size": file_size,
+            "filename": storage_filename,
+        }
+
+    try:
+        _write_compressed(src_path, storage_path)
+        print(f"[Storage] Saved new content: {storage_filename}")
+        return {
+            "storage_path": str(storage_path),
+            "file_hash": file_hash,
+            "file_size": file_size,
+            "filename": storage_filename,
+        }
+    except Exception as e:
+        print(f"[Storage] Failed to backup file {src_path}: {e}")
+        if storage_path.exists():
+            try:
+                os.remove(storage_path)
+            except OSError:
+                pass
+        return None
+
+
+def _save_with_unknown_hash(src_path: str, file_size: int) -> Optional[dict[str, Any]]:
+    temp_name = f".{uuid.uuid4().hex}.gz.tmp"
+    temp_path = STORAGE_ROOT / temp_name
+
+    try:
+        file_hash = _stream_hash_and_compress(src_path, temp_path)
+        storage_filename = f"{file_hash}.gz"
+        storage_path = STORAGE_ROOT / storage_filename
+
+        if storage_path.exists():
+            print(
+                f"[Storage] Deduplication hit! Content {file_hash[:8]}... already exists."
+            )
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+            return {
+                "storage_path": str(storage_path),
+                "file_hash": file_hash,
+                "file_size": file_size,
+                "filename": storage_filename,
+            }
+
+        os.replace(temp_path, storage_path)
+        print(f"[Storage] Saved new content: {storage_filename}")
+        return {
+            "storage_path": str(storage_path),
+            "file_hash": file_hash,
+            "file_size": file_size,
+            "filename": storage_filename,
+        }
+    except Exception as e:
+        print(f"[Storage] Failed to backup file {src_path}: {e}")
+        if temp_path.exists():
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+        return None
+
+
+def save_file_version(
+    src_path: str, known_hash: Optional[str] = None
+) -> Optional[dict[str, Any]]:
     """
     Copies the file to the storage directory using Content-Addressed Storage.
 
@@ -47,56 +207,15 @@ def save_file_version(src_path: str) -> Optional[dict[str, Any]]:
     if not os.path.exists(src_path):
         return None
 
-    # Step 1: Calculate the unique fingerprint (Hash)
-    file_hash = calculate_file_hash(src_path)
-    if not file_hash:
-        return None
     file_size = os.path.getsize(src_path)
 
-    # Step 2: Define the storage filename based on the Hash
-    # We use .gz extension because we will compress it
-    storage_filename = f"{file_hash}.gz"
-    storage_path = STORAGE_ROOT / storage_filename
+    if file_size >= CHUNKED_MIN_SIZE_BYTES:
+        return _save_chunked_file(src_path, file_size, known_hash=known_hash)
 
-    # Step 3: Deduplication Check
-    if storage_path.exists():
-        # COMMENT: We found a file with the exact same content!
-        # No need to copy/write anything. We just return its location.
-        print(
-            f"[Storage] Deduplication hit! Content {file_hash[:8]}... already exists."
-        )
-        return {
-            "storage_path": str(storage_path),
-            "file_hash": file_hash,
-            "file_size": file_size,
-            "filename": storage_filename,
-        }
+    if known_hash:
+        return _save_with_known_hash(src_path, known_hash, file_size)
 
-    # Step 4: Write new content (Compressed)
-    try:
-        # COMMENT: Reading the source file...
-        with open(src_path, "rb") as f_in:
-            # COMMENT: ...and writing it into a compressed GZIP file
-            with gzip.open(storage_path, "wb") as f_out:
-                shutil.copyfileobj(f_in, f_out)
-
-        print(f"[Storage] Saved new content: {storage_filename}")
-
-        return {
-            "storage_path": str(storage_path),
-            "file_hash": file_hash,
-            "file_size": file_size,  # This is original size
-            "filename": storage_filename,
-        }
-    except Exception as e:
-        print(f"[Storage] Failed to backup file {src_path}: {e}")
-        # Cleanup partial write if failed
-        if storage_path.exists():
-            try:
-                os.remove(storage_path)
-            except OSError:
-                pass
-        return None
+    return _save_with_unknown_hash(src_path, file_size)
 
 
 def restore_file_version(storage_path: str, dest_path: str) -> bool:
@@ -111,8 +230,18 @@ def restore_file_version(storage_path: str, dest_path: str) -> bool:
         # Create directory if it doesn't exist
         os.makedirs(os.path.dirname(dest_path), exist_ok=True)
 
+        if str(storage_path).endswith(MANIFEST_EXT):
+            with open(storage_path, "r", encoding="utf-8") as f_manifest:
+                manifest = json.load(f_manifest)
+            with open(dest_path, "wb") as f_out:
+                for chunk in manifest.get("chunks", []):
+                    chunk_path = _chunk_path(chunk["hash"])
+                    if not chunk_path.exists():
+                        return False
+                    with open(chunk_path, "rb") as f_in:
+                        shutil.copyfileobj(f_in, f_out)
         # Check if the stored file is one of our new compressed ones
-        if str(storage_path).endswith(".gz"):
+        elif str(storage_path).endswith(".gz"):
             # COMMENT: It's a compressed file! Decompress it back to the destination.
             with gzip.open(storage_path, "rb") as f_in:
                 with open(dest_path, "wb") as f_out:
@@ -131,7 +260,7 @@ def get_total_storage_usage():
     """Calculates total size of the .locus_storage directory in bytes."""
     total_size = 0
     if STORAGE_ROOT.exists():
-        for f in STORAGE_ROOT.glob("*"):
+        for f in STORAGE_ROOT.rglob("*"):
             if f.is_file():
                 total_size += f.stat().st_size
     return total_size

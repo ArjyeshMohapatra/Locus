@@ -1,9 +1,11 @@
 from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from contextlib import asynccontextmanager
 from app.database import models, crud
 from app.monitor import monitor_service, register_restore_start
 from app import storage
+from app import event_stream
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker, Session
 from pydantic import BaseModel
@@ -13,6 +15,7 @@ import uvicorn
 import os
 import gzip
 import shutil  # Added shutil for file operations
+import json
 
 
 # --- Database Setup ---
@@ -269,6 +272,20 @@ def relink_folder(data: PathRelink, db: Session = Depends(get_db)):
 def get_file_events(limit: int = 50, db: Session = Depends(get_db)):
     events = crud.get_recent_file_events(db, limit)
     return events
+
+
+@app.get("/files/events/stream")
+async def stream_file_events():
+    async def event_generator():
+        queue = event_stream.subscribe()
+        try:
+            while True:
+                event = await queue.get()
+                yield f"data: {json.dumps(event)}\n\n"
+        finally:
+            event_stream.unsubscribe(queue)
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
 # --- Activity Endpoints ---

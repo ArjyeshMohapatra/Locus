@@ -56,6 +56,22 @@ export async function getRecentFileEvents(limit = 50) {
   return await res.json();
 }
 
+export function subscribeFileEvents(onEvent) {
+  const source = new EventSource(`${BASE_URL}/files/events/stream`);
+  source.onmessage = (event) => {
+    try {
+      const data = JSON.parse(event.data);
+      onEvent(data);
+    } catch (e) {
+      console.error('Event parse error:', e);
+    }
+  };
+  source.onerror = (err) => {
+    console.error('EventSource error:', err);
+  };
+  return source;
+}
+
 export async function getFileVersions(path) {
   const url = new URL(`${BASE_URL}/files/versions`);
   url.searchParams.append('path', path);

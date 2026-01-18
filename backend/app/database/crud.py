@@ -62,6 +62,62 @@ def create_file_event(db: Session, event_data: dict):
     return db_event
 
 
+# --- Backup Tasks ---
+def enqueue_backup_task(db: Session, src_path: str):
+    task = models.BackupTask(src_path=src_path, status="pending", attempts=0)
+    db.add(task)
+    db.commit()
+    db.refresh(task)
+    return task
+
+
+def has_pending_backup_task(db: Session, src_path: str) -> bool:
+    return (
+        db.query(models.BackupTask)
+        .filter(
+            models.BackupTask.src_path == src_path,
+            models.BackupTask.status.in_(["pending", "processing"]),
+        )
+        .first()
+        is not None
+    )
+
+
+def get_next_backup_task(db: Session):
+    return (
+        db.query(models.BackupTask)
+        .filter(models.BackupTask.status == "pending")
+        .order_by(models.BackupTask.created_at.asc())
+        .first()
+    )
+
+
+def mark_backup_task_processing(db: Session, task: models.BackupTask):
+    task.status = "processing"
+    task.attempts += 1
+    task.updated_at = datetime.now()
+    db.commit()
+    db.refresh(task)
+    return task
+
+
+def mark_backup_task_done(db: Session, task: models.BackupTask):
+    task.status = "done"
+    task.updated_at = datetime.now()
+    db.commit()
+    db.refresh(task)
+    return task
+
+
+def mark_backup_task_failed(db: Session, task: models.BackupTask, error: str):
+    task.status = "failed"
+    task.last_error = error
+    task.updated_at = datetime.now()
+    db.commit()
+    db.refresh(task)
+    return task
+
+
 # populates recent 50 file activities
 def get_recent_file_events(db: Session, limit: int = 50):
     return (

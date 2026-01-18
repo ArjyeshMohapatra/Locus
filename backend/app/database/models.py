@@ -41,6 +41,19 @@ class FileEvent(Base):
     is_processed = Column(Boolean, default=False)
 
 
+# durable queue for file backup work
+class BackupTask(Base):
+    __tablename__ = "backup_tasks"
+
+    id = Column(Integer, primary_key=True, index=True)
+    src_path = Column(String, nullable=False, index=True)
+    status = Column(String, nullable=False, default="pending")
+    attempts = Column(Integer, nullable=False, default=0)
+    last_error = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+
 # keeps track of identity of a file (e.g. if renamed)
 class FileRecord(Base):
     __tablename__ = "file_records"

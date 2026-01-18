@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from app.database import models, crud
 from app.database.models import SessionLocal
 from app import storage
+from app import event_stream
 
 
 # Normalize a filesystem path for consistent comparisons and DB lookups.
@@ -18,6 +19,55 @@ def _norm_path(path: str) -> str:
 # Global map to track files currently being restored to avoid creating new versions.
 # Using an expiry window makes this robust against multiple on_modified events.
 PENDING_RESTORES: dict[str, float] = {}
+
+IGNORED_SUFFIXES = (".tmp", ".crdownload", "~", ".swp")
+
+# Debounce window to coalesce rapid successive events per file path.
+BACKUP_DEBOUNCE_SECONDS = 0.4
+LAST_BACKUP_TS: dict[str, float] = {}
+
+
+def _process_backup(src_path: str):
+    if src_path.endswith(IGNORED_SUFFIXES):
+        return
+
+    # CHANGED: Calculate hash EARLY to help with identity recovery
+    current_hash = storage.calculate_file_hash(src_path)
+    if not current_hash:
+        return  # File gone
+
+    db: Session = SessionLocal()
+    try:
+        # IDENTITY TRACKING: Pass hash to recover history if path changed manually
+        file_record = crud.create_file_record(db, src_path, content_hash=current_hash)
+
+        # Check existing versions to determine next version number
+        # and to allow deduplication (hash check)
+        versions = crud.get_file_versions(db, src_path)
+
+        # Deduplication Check: if hash matches any prior version, skip
+        if any(v.file_hash == current_hash for v in versions):
+            return
+
+        next_version = len(versions) + 1
+
+        meta = storage.save_file_version(src_path, known_hash=current_hash)
+        if meta:
+            crud.create_file_version(
+                db,
+                src_path,
+                meta["storage_path"],
+                next_version,
+                meta["file_hash"],
+                meta["file_size"],
+                file_record_id=file_record.id if file_record else None,
+            )
+            print(f"[Backup] Saved version {next_version} of {src_path}")
+
+    except Exception as e:
+        print(f"[Error] Backup failed: {e}")
+    finally:
+        db.close()
 
 
 def register_restore_start(file_path: str):
@@ -39,6 +89,13 @@ class LocusEventHandler(FileSystemEventHandler):
     # Create a versioned backup of a file when its content changes.
     def _backup_file(self, src_path: str):
         normalized_src_path = _norm_path(src_path)
+        now = time.time()
+
+        last_seen = LAST_BACKUP_TS.get(normalized_src_path)
+        if last_seen is not None and (now - last_seen) < BACKUP_DEBOUNCE_SECONDS:
+            return
+        LAST_BACKUP_TS[normalized_src_path] = now
+
         expires_at = PENDING_RESTORES.get(normalized_src_path)
         if expires_at is not None:
             if time.time() <= expires_at:
@@ -48,56 +105,18 @@ class LocusEventHandler(FileSystemEventHandler):
                 return
             PENDING_RESTORES.pop(normalized_src_path, None)
 
-        if src_path.endswith((".tmp", ".crdownload", "~", ".swp")):
+        if src_path.endswith(IGNORED_SUFFIXES):
             return
-
-        # CHANGED: Calculate hash EARLY to help with identity recovery
-        current_hash = storage.calculate_file_hash(src_path)
-        if not current_hash:
-            return  # File gone
-
         db: Session = SessionLocal()
         try:
-            # IDENTITY TRACKING: Pass hash to recover history if path changed manually
-            file_record = crud.create_file_record(
-                db, src_path, content_hash=current_hash
-            )
-
-            # Check existing versions to determine next version number
-            # and to allow deduplication (hash check)
-            # Note: get_file_versions uses the identity (file_record), so if we recovered it,
-            # we get the old history here!
-            versions = crud.get_file_versions(db, src_path)
-            next_version = len(versions) + 1
-
-            # Deduplication Check
-            if versions:
-                last_version = versions[0]  # Ordered desc
-                if last_version.file_hash == current_hash:
-                    # Content hasn't changed
-                    return
-
-            meta = storage.save_file_version(src_path)
-            if meta:
-                crud.create_file_version(
-                    db,
-                    src_path,
-                    meta["storage_path"],
-                    next_version,
-                    meta["file_hash"],
-                    meta["file_size"],
-                    file_record_id=file_record.id if file_record else None,
-                )
-                print(f"[Backup] Saved version {next_version} of {src_path}")
-
-        except Exception as e:
-            print(f"[Error] Backup failed: {e}")
+            if not crud.has_pending_backup_task(db, src_path):
+                crud.enqueue_backup_task(db, src_path)
         finally:
             db.close()
 
     # Persist a filesystem event (create/modify/delete/move) to the DB.
     def _log_event(self, event_type: str, src_path: str, dest_path: str = None):
-        if src_path.endswith((".tmp", ".crdownload", "~", ".swp")):
+        if src_path.endswith(IGNORED_SUFFIXES):
             return  # Ignore temp files
 
         # We need a new session per event because this runs in a separate thread
@@ -108,7 +127,18 @@ class LocusEventHandler(FileSystemEventHandler):
                 "src_path": src_path,
                 "dest_path": dest_path,
             }
-            crud.create_file_event(db, event_data)
+            db_event = crud.create_file_event(db, event_data)
+            event_stream.publish(
+                {
+                    "id": db_event.id,
+                    "event_type": db_event.event_type,
+                    "src_path": db_event.src_path,
+                    "dest_path": db_event.dest_path,
+                    "timestamp": (
+                        db_event.timestamp.isoformat() if db_event.timestamp else None
+                    ),
+                }
+            )
             print(f"[Monitor] {event_type}: {src_path}")
         except Exception as e:
             print(f"[Error] Failed to log event: {e}")
@@ -241,6 +271,7 @@ class FileMonitorService:
         # Ensure all schedule/unschedule calls happen on the monitor thread.
         self._cmd_queue: "queue.Queue[tuple[str, object | None]]" = queue.Queue()
         self._monitor_thread: threading.Thread | None = None
+        self._queue_thread: threading.Thread | None = None
         self._running = False
 
     def _enqueue_command(self, cmd: str, payload: object | None = None):
@@ -284,6 +315,30 @@ class FileMonitorService:
         self._monitor_thread = threading.Thread(target=self._monitor_loop, daemon=True)
         self._monitor_thread.start()
 
+        if not self._queue_thread or not self._queue_thread.is_alive():
+            self._queue_thread = threading.Thread(
+                target=self._backup_queue_loop, daemon=True
+            )
+            self._queue_thread.start()
+
+    def _backup_queue_loop(self):
+        while self._running:
+            db = SessionLocal()
+            try:
+                task = crud.get_next_backup_task(db)
+                if not task:
+                    time.sleep(0.2)
+                    continue
+
+                crud.mark_backup_task_processing(db, task)
+                try:
+                    _process_backup(task.src_path)
+                    crud.mark_backup_task_done(db, task)
+                except Exception as e:
+                    crud.mark_backup_task_failed(db, task, str(e))
+            finally:
+                db.close()
+
     def _dispatch_command(self, cmd: str, payload: object | None) -> bool:
         """Handle a queued command. Returns False to stop the loop."""
         if cmd == "sync":
@@ -315,8 +370,11 @@ class FileMonitorService:
         try:
             self._cmd_queue.put(("stop", None))
             self._monitor_thread.join(timeout=2.0)
+            if self._queue_thread:
+                self._queue_thread.join(timeout=2.0)
         finally:
             self._monitor_thread = None
+            self._queue_thread = None
 
     def handle_root_rename(self, old_path: str, new_path: str):
         """Called when a root folder is renamed."""

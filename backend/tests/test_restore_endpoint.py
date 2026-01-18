@@ -1,10 +1,14 @@
 import os
 from types import SimpleNamespace
+import pytest
 from fastapi.testclient import TestClient
 
 from backend.app.main import app, get_db
 from backend.app import storage
 from backend.app.database import crud
+
+
+pytestmark = pytest.mark.slow
 
 
 def test_restore_endpoint_rejects_outside_and_allows_inside(tmp_path, monkeypatch):
