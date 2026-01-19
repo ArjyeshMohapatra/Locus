@@ -29,6 +29,23 @@ class WatchedPath(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
+# tracks initial snapshot progress for a watched path
+class SnapshotJob(Base):
+    __tablename__ = "snapshot_jobs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    watched_path = Column(String, unique=True, nullable=False, index=True)
+    storage_subdir = Column(String, nullable=False)
+    status = Column(String, nullable=False, default="pending")
+    total_files = Column(Integer, nullable=False, default=0)
+    processed_files = Column(Integer, nullable=False, default=0)
+    skipped_files = Column(Integer, nullable=False, default=0)
+    error_count = Column(Integer, nullable=False, default=0)
+    last_error = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+
 # logs related to everything that happens to a file (created, modified, deleted) in real time
 class FileEvent(Base):
     __tablename__ = "file_events"

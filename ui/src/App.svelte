@@ -7,13 +7,15 @@
   import SettingsPage from './lib/SettingsPage.svelte';
   import Titlebar from './lib/Titlebar.svelte';
   import CustomDialog from './lib/CustomDialog.svelte';
+  import { errorMessages, clearErrorMessages, removeErrorMessage } from './errorStore.js';
   import Fa from 'svelte-fa';
   import {
     faBars,
     faFolderOpen,
     faHome,
     faClock,
-    faGear
+    faGear,
+    faMessage
   } from '@fortawesome/free-solid-svg-icons';
 
   let status = 'initializing...';
@@ -21,6 +23,7 @@
   let currentView = 'dashboard';
   let themeMode = 'system';
   let mediaQuery;
+  let notificationsOpen = false;
 
   const getSystemTheme = () =>
     window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
@@ -63,6 +66,7 @@
   });
 
   let handleClickOutside;
+  let handleNotificationOutside;
 
   onMount(() => {
     handleClickOutside = (event) => {
@@ -76,9 +80,23 @@
     window.addEventListener('click', handleClickOutside);
   });
 
+  onMount(() => {
+    handleNotificationOutside = (event) => {
+      if (!notificationsOpen) return;
+      const wrapper = document.querySelector('.notification-fab');
+      if (wrapper && !wrapper.contains(event.target)) {
+        notificationsOpen = false;
+      }
+    };
+    window.addEventListener('click', handleNotificationOutside);
+  });
+
   onDestroy(() => {
     if (handleClickOutside) {
       window.removeEventListener('click', handleClickOutside);
+    }
+    if (handleNotificationOutside) {
+      window.removeEventListener('click', handleNotificationOutside);
     }
     if (mediaQuery && handleSystemChange) {
       if (mediaQuery.removeEventListener) {
@@ -98,6 +116,21 @@
 
   const setView = (view) => {
     currentView = view;
+  };
+
+  const toggleNotifications = () => {
+    notificationsOpen = !notificationsOpen;
+  };
+
+  const formatTimestamp = (value) => {
+    if (!value) return '';
+    const date = new Date(value);
+    return new Intl.DateTimeFormat(undefined, {
+      hour: '2-digit',
+      minute: '2-digit',
+      month: 'short',
+      day: '2-digit'
+    }).format(date);
   };
 </script>
 
@@ -170,3 +203,199 @@
     {/key}
   </main>
 </div>
+
+{#if currentView === 'dashboard'}
+  <div class="notification-fab">
+    <button class="fab-button" on:click={toggleNotifications} aria-label="Open notifications">
+      <Fa icon={faMessage} />
+      {#if $errorMessages.length > 0}
+        <span class="fab-badge">{$errorMessages.length}</span>
+      {/if}
+    </button>
+
+    {#if notificationsOpen}
+      <div class="fab-popover">
+        <div class="fab-header">
+          <span class="fw-semibold">Messages</span>
+          <button class="btn btn-sm btn-link" on:click={clearErrorMessages}>
+            Clear
+          </button>
+        </div>
+
+        {#if $errorMessages.length === 0}
+          <div class="fab-empty">No errors yet.</div>
+        {:else}
+          <div class="fab-list">
+            {#each $errorMessages as item (item.id)}
+              <div class="fab-item">
+                <div class="fab-item-text">
+                  <div class="fab-item-message">{item.message}</div>
+                  <div class="fab-item-time">{formatTimestamp(item.timestamp)}</div>
+                </div>
+                <button class="fab-remove" on:click={() => removeErrorMessage(item.id)}>
+                  ×
+                </button>
+              </div>
+            {/each}
+          </div>
+        {/if}
+      </div>
+    {/if}
+  </div>
+{/if}
+
+<style>
+  .notification-fab {
+    position: fixed;
+    right: 24px;
+    bottom: 24px;
+    z-index: 2000;
+  }
+
+  .fab-button {
+    position: relative;
+    width: 52px;
+    height: 52px;
+    border-radius: 50%;
+    border: none;
+    background: var(--primary-500, #4f46e5);
+    box-shadow: 0 12px 30px rgba(0, 0, 0, 0.2);
+    cursor: pointer;
+    display: grid;
+    place-items: center;
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+  }
+
+  .fab-button:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 16px 32px rgba(0, 0, 0, 0.25);
+  }
+
+  .fab-button:active {
+    transform: translateY(0);
+    box-shadow: 0 10px 24px rgba(0, 0, 0, 0.2);
+  }
+
+  .fab-button :global(svg) {
+    color: #fff;
+    width: 1.1rem;
+    height: 1.1rem;
+  }
+
+  .fab-badge {
+    position: absolute;
+    top: -6px;
+    right: -6px;
+    background: #ef4444;
+    color: #fff;
+    font-size: 0.7rem;
+    padding: 2px 6px;
+    border-radius: 999px;
+  }
+
+  .fab-popover {
+    position: absolute;
+    right: 0;
+    bottom: 64px;
+    width: 320px;
+    max-height: 360px;
+    background: #fff;
+    border-radius: 14px;
+    box-shadow: 0 16px 30px rgba(0, 0, 0, 0.2);
+    border: 1px solid rgba(0, 0, 0, 0.08);
+    display: flex;
+    flex-direction: column;
+  }
+
+  :global(.theme-dark) .fab-popover {
+    background: #0f172a;
+    color: #e2e8f0;
+    border-color: rgba(148, 163, 184, 0.2);
+    box-shadow: 0 18px 32px rgba(0, 0, 0, 0.45);
+  }
+
+  .fab-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 16px;
+    border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+  }
+
+  :global(.theme-dark) .fab-header {
+    border-bottom-color: rgba(148, 163, 184, 0.2);
+  }
+
+  .fab-list {
+    padding: 12px 16px;
+    overflow: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .fab-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 10px 12px;
+    background: rgba(248, 250, 252, 0.9);
+    border-radius: 10px;
+    border: 1px solid rgba(0, 0, 0, 0.05);
+  }
+
+  :global(.theme-dark) .fab-item {
+    background: rgba(30, 41, 59, 0.8);
+    border-color: rgba(148, 163, 184, 0.2);
+  }
+
+  .fab-item-text {
+    font-size: 0.82rem;
+    color: #1f2937;
+    flex: 1;
+  }
+
+  :global(.theme-dark) .fab-item-text {
+    color: #e2e8f0;
+  }
+
+  .fab-item-message {
+    margin-bottom: 4px;
+  }
+
+  .fab-item-time {
+    font-size: 0.7rem;
+    color: #6b7280;
+  }
+
+  :global(.theme-dark) .fab-item-time {
+    color: #94a3b8;
+  }
+
+  .fab-remove {
+    border: none;
+    background: transparent;
+    font-size: 1rem;
+    cursor: pointer;
+    color: #6b7280;
+  }
+
+  :global(.theme-dark) .fab-remove {
+    color: #94a3b8;
+  }
+
+  .fab-empty {
+    padding: 18px;
+    color: #6b7280;
+    font-size: 0.85rem;
+  }
+
+  :global(.theme-dark) .fab-empty {
+    color: #94a3b8;
+  }
+
+  .btn-link {
+    color: var(--primary-500, #4f46e5);
+    text-decoration: none;
+  }
+</style>

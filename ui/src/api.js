@@ -103,3 +103,22 @@ export async function restoreFileVersion(versionId) {
   if (!res.ok) throw new Error('Failed to restore version');
   return await res.json();
 }
+
+export async function getSecuritySettings() {
+  const res = await fetch(`${BASE_URL}/settings/security`);
+  if (!res.ok) throw new Error('Failed to fetch security settings');
+  return await res.json();
+}
+
+export async function setSecuritySettings(enabled) {
+  const res = await fetch(`${BASE_URL}/settings/security`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled: !!enabled })
+  });
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => ({}));
+    throw new Error(errorData.detail || 'Failed to update security settings');
+  }
+  return await res.json();
+}

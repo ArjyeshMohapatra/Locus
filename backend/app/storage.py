@@ -7,6 +7,8 @@ import time
 import json
 from pathlib import Path
 from typing import Any, Optional
+import ctypes
+import subprocess
 
 # path for storing the file versions
 STORAGE_ROOT = Path("./.locus_storage").resolve()
@@ -22,6 +24,109 @@ def init_storage():
         STORAGE_ROOT.mkdir(parents=True)
     if not CHUNK_DIR.exists():
         CHUNK_DIR.mkdir(parents=True)
+    _protect_storage_root()
+
+
+def _protect_storage_root() -> None:
+    if os.name != "nt":
+        return
+
+    FILE_ATTRIBUTE_HIDDEN = 0x02
+    FILE_ATTRIBUTE_SYSTEM = 0x04
+
+    try:
+        attrs = FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM
+        ctypes.windll.kernel32.SetFileAttributesW(str(STORAGE_ROOT), attrs)
+    except Exception:
+        pass
+
+
+def is_admin_user() -> bool:
+    if os.name != "nt":
+        return False
+    try:
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        return False
+
+
+def _run_icacls(args: list[str]) -> tuple[bool, str]:
+    try:
+        result = subprocess.run(
+            args,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            return False, (result.stderr or result.stdout or "icacls failed").strip()
+        return True, (result.stdout or "ok").strip()
+    except Exception as e:
+        return False, str(e)
+
+
+def enable_admin_protection() -> tuple[bool, str]:
+    if os.name != "nt":
+        return False, "Admin protection is only supported on Windows"
+    if not is_admin_user():
+        return False, "Administrator privileges are required"
+
+    # Remove inheritance and deny Users read/execute. Allow Administrators full control.
+    ok, msg = _run_icacls(
+        [
+            "icacls",
+            str(STORAGE_ROOT),
+            "/inheritance:r",
+            "/grant:r",
+            "Administrators:(OI)(CI)F",
+            "/deny",
+            "Users:(OI)(CI)RX",
+        ]
+    )
+    return ok, msg
+
+
+def disable_admin_protection() -> tuple[bool, str]:
+    if os.name != "nt":
+        return False, "Admin protection is only supported on Windows"
+    if not is_admin_user():
+        return False, "Administrator privileges are required"
+
+    ok, msg = _run_icacls(
+        [
+            "icacls",
+            str(STORAGE_ROOT),
+            "/remove:d",
+            "Users",
+        ]
+    )
+    if not ok:
+        return ok, msg
+
+    # Restore inheritance
+    return _run_icacls(["icacls", str(STORAGE_ROOT), "/inheritance:e"])
+
+
+def storage_subdir_name(watched_path: str) -> str:
+    base = os.path.basename(os.path.normpath(watched_path)) or "watched"
+    short_hash = hashlib.sha256(watched_path.encode("utf-8")).hexdigest()[:6]
+    safe_base = "".join(c for c in base if c.isalnum() or c in ("-", "_"))
+    safe_base = safe_base or "watched"
+    return f"{safe_base}-{short_hash}"
+
+
+def ensure_snapshot_dir(subdir_name: str) -> Path:
+    target = STORAGE_ROOT / subdir_name
+    target.mkdir(parents=True, exist_ok=True)
+    return target
+
+
+def mirror_copy_file(src_path: str, watched_root: str, subdir_name: str) -> Path:
+    rel = os.path.relpath(src_path, watched_root)
+    dest_path = STORAGE_ROOT / subdir_name / rel
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src_path, dest_path)
+    return dest_path
 
 
 def calculate_file_hash(file_path: str) -> Optional[str]:

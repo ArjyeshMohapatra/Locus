@@ -109,6 +109,8 @@ class LocusEventHandler(FileSystemEventHandler):
             return
         db: Session = SessionLocal()
         try:
+            if crud.is_snapshot_in_progress(db, src_path):
+                return
             if not crud.has_pending_backup_task(db, src_path):
                 crud.enqueue_backup_task(db, src_path)
         finally:

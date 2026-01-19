@@ -57,6 +57,7 @@ def client(tmp_path, monkeypatch, test_sessionmaker):
     monkeypatch.setattr(
         main_app.monitor_service, "handle_root_deletion", lambda path: None
     )
+    monkeypatch.setattr(main_app, "INITIAL_SNAPSHOT_ENABLED", False)
 
     with TestClient(main_app.app) as test_client:
         yield test_client

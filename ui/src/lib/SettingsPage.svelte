@@ -1,6 +1,7 @@
 <script>
   import { onMount } from 'svelte';
   import { showMessage } from '../dialogStore.js';
+  import { getSecuritySettings, setSecuritySettings } from '../api.js';
   import Fa from 'svelte-fa';
   import {
     faFilter,
@@ -18,6 +19,12 @@
 
   let gcEnabled = true;
   let gcGraceMinutes = 60;
+
+  let adminProtectionEnabled = false;
+  let adminProtectionLoading = false;
+  let adminProtectionError = '';
+  let adminProtectionInfo = '';
+  let isAdminUser = false;
 
   let themeMode = 'system';
   let resolvedTheme = 'light';
@@ -76,6 +83,8 @@
 
     resolvedTheme = resolveTheme(themeMode);
 
+    loadSecuritySettings();
+
     return () => {
       if (mediaQuery.removeEventListener) {
         mediaQuery.removeEventListener('change', handleSystemChange);
@@ -88,6 +97,39 @@
   $: themeIndex = themeMode === 'light' ? 0 : themeMode === 'system' ? 1 : 2;
   $: themeIcon =
     themeMode === 'system' ? faCircleHalfStroke : resolvedTheme === 'dark' ? faMoon : faSun;
+
+  const loadSecuritySettings = async () => {
+    adminProtectionLoading = true;
+    adminProtectionError = '';
+    try {
+      const data = await getSecuritySettings();
+      adminProtectionEnabled = !!data.admin_protection_enabled;
+      isAdminUser = !!data.is_admin;
+    } catch (e) {
+      adminProtectionError = e.message || 'Failed to load security settings.';
+    } finally {
+      adminProtectionLoading = false;
+    }
+  };
+
+  const toggleAdminProtection = async () => {
+    adminProtectionLoading = true;
+    adminProtectionError = '';
+    adminProtectionInfo = '';
+    const nextValue = !adminProtectionEnabled;
+
+    try {
+      await setSecuritySettings(nextValue);
+      adminProtectionEnabled = nextValue;
+      adminProtectionInfo = nextValue
+        ? 'Admin protection enabled. Backup files are now restricted.'
+        : 'Admin protection disabled.';
+    } catch (e) {
+      adminProtectionError = e.message || 'Failed to update admin protection.';
+    } finally {
+      adminProtectionLoading = false;
+    }
+  };
 </script>
 
 <section class="settings-page">
@@ -125,6 +167,56 @@
           </span>
         {/each}
       </div>
+    </div>
+  </details>
+
+  <details class="settings-section" open>
+    <summary>
+      <div class="section-title">
+        <Fa icon={faGears} class="section-icon" />
+        <div>
+          <h2>Security</h2>
+          <p class="muted">Protect backup data in .locus_storage using admin permissions.</p>
+        </div>
+      </div>
+      <Fa icon={faChevronDown} class="section-chevron" />
+    </summary>
+    <div class="settings-content">
+      <div class="settings-row">
+        <div>
+          <h3>Admin Protection</h3>
+          <p class="muted">
+            When enabled, Windows ACLs restrict access to backup files. Requires admin rights.
+          </p>
+        </div>
+        <label class="switch">
+          <input
+            type="checkbox"
+            bind:checked={adminProtectionEnabled}
+            on:change={toggleAdminProtection}
+            disabled={adminProtectionLoading}
+          />
+          <span class="slider"></span>
+        </label>
+      </div>
+
+      {#if adminProtectionLoading}
+        <div class="settings-note">Applying security settings…</div>
+      {/if}
+
+      {#if adminProtectionInfo}
+        <div class="settings-note">{adminProtectionInfo}</div>
+      {/if}
+
+      {#if adminProtectionError}
+        <div class="settings-note text-danger">{adminProtectionError}</div>
+      {/if}
+
+      {#if !isAdminUser}
+        <div class="settings-note">
+          Admin mode not detected. To enable protection, reopen LOCUS as Administrator.
+        </div>
+      {/if}
     </div>
   </details>
 

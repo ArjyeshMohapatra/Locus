@@ -1,10 +1,25 @@
 <script>
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
+  import { subscribeFileEvents } from '../api.js';
   import Fa from 'svelte-fa';
   import { faMinus, faSquare, faXmark, faCloud } from '@fortawesome/free-solid-svg-icons';
 
   let appWindow;
   let isMaximized = false;
+  let eventSource;
+  let snapshotProgress = null;
+
+  const formatEta = (seconds) => {
+    if (seconds === null || seconds === undefined) return 'ETA --:--';
+    const totalSeconds = Math.max(Number(seconds) || 0, 0);
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const secs = Math.floor(totalSeconds % 60);
+    if (hours > 0) {
+      return `ETA ${hours}h ${String(minutes).padStart(2, '0')}m`;
+    }
+    return `ETA ${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+  };
 
   onMount(async () => {
     if (window.__TAURI__) {
@@ -22,6 +37,32 @@
     }
   });
 
+  onMount(() => {
+    eventSource = subscribeFileEvents((event) => {
+      if (event?.type === 'snapshot_progress') {
+        snapshotProgress = {
+          watched_path: event.watched_path,
+          total: Number(event.total) || 0,
+          processed: Number(event.processed) || 0,
+          skipped: Number(event.skipped) || 0,
+          error_count: Number(event.error_count) || 0,
+          eta_seconds: event.eta_seconds
+        };
+        return;
+      }
+
+      if (event?.type === 'snapshot_complete') {
+        snapshotProgress = null;
+      }
+    });
+  });
+
+  onDestroy(() => {
+    if (eventSource) {
+      eventSource.close();
+    }
+  });
+
   const minimize = () => appWindow?.minimize();
   const toggleMaximize = async () => {
     await appWindow?.toggleMaximize();
@@ -36,6 +77,23 @@
       <Fa icon={faCloud} size="xs" />
     </span>
     <span class="titlebar-text">LOCUS</span>
+  </div>
+
+  <div class="titlebar-center" data-tauri-drag-region>
+    {#if snapshotProgress}
+      {@const total = Math.max(snapshotProgress.total, 1)}
+      {@const completed = snapshotProgress.processed + snapshotProgress.skipped}
+      {@const percent = Math.min(100, Math.round((completed / total) * 100))}
+      <div class="snapshot-progress" title={snapshotProgress.watched_path}>
+        <div class="snapshot-track" aria-label="Snapshot progress">
+          <div class="snapshot-fill" style={`width: ${percent}%`}></div>
+        </div>
+        <div class="snapshot-meta">
+          <span class="snapshot-label">Snapshot</span>
+          <span class="snapshot-stats">{percent}% • {formatEta(snapshotProgress.eta_seconds)}</span>
+        </div>
+      </div>
+    {/if}
   </div>
 
   <div class="titlebar-controls">
@@ -88,6 +146,57 @@
   .titlebar-controls {
     display: flex;
     height: 100%;
+  }
+
+  .titlebar-center {
+    position: absolute;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    align-items: center;
+    height: 100%;
+    pointer-events: none;
+  }
+
+  .snapshot-progress {
+    display: grid;
+    gap: 2px;
+    min-width: 220px;
+    max-width: 380px;
+    width: 32vw;
+  }
+
+  .snapshot-track {
+    height: 6px;
+    border-radius: 999px;
+    background: rgba(148, 163, 184, 0.3);
+    overflow: hidden;
+  }
+
+  .snapshot-fill {
+    height: 100%;
+    background: var(--accent);
+    border-radius: inherit;
+    transition: width 0.2s ease;
+  }
+
+  .snapshot-meta {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.65rem;
+    color: var(--text-muted);
+    letter-spacing: 0.02em;
+  }
+
+  .snapshot-label {
+    font-weight: 600;
+    text-transform: uppercase;
+  }
+
+  @media (max-width: 760px) {
+    .titlebar-center {
+      display: none;
+    }
   }
 
   .control-btn {

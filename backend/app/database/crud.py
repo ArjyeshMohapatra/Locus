@@ -16,6 +16,90 @@ def create_watched_path(db: Session, path: str):
     return db_path
 
 
+# --- Snapshot Jobs ---
+def create_snapshot_job(db: Session, watched_path: str, storage_subdir: str):
+    job = models.SnapshotJob(
+        watched_path=watched_path,
+        storage_subdir=storage_subdir,
+        status="pending",
+        total_files=0,
+        processed_files=0,
+        skipped_files=0,
+        error_count=0,
+    )
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+    return job
+
+
+def get_snapshot_job(db: Session, watched_path: str):
+    return (
+        db.query(models.SnapshotJob)
+        .filter(models.SnapshotJob.watched_path == watched_path)
+        .first()
+    )
+
+
+def mark_snapshot_job_started(db: Session, job: models.SnapshotJob, total_files: int):
+    job.status = "in_progress"
+    job.total_files = total_files
+    job.updated_at = datetime.now()
+    db.commit()
+    db.refresh(job)
+    return job
+
+
+def update_snapshot_job_progress(
+    db: Session,
+    job: models.SnapshotJob,
+    processed: int,
+    skipped: int = 0,
+    error_count: int = 0,
+    last_error: str | None = None,
+):
+    job.processed_files = processed
+    job.skipped_files = skipped
+    job.error_count = error_count
+    if last_error:
+        job.last_error = last_error
+    job.updated_at = datetime.now()
+    db.commit()
+    db.refresh(job)
+    return job
+
+
+def mark_snapshot_job_done(db: Session, job: models.SnapshotJob):
+    job.status = "done"
+    job.updated_at = datetime.now()
+    db.commit()
+    db.refresh(job)
+    return job
+
+
+def mark_snapshot_job_failed(db: Session, job: models.SnapshotJob, error: str):
+    job.status = "failed"
+    job.last_error = error
+    job.updated_at = datetime.now()
+    db.commit()
+    db.refresh(job)
+    return job
+
+
+def is_snapshot_in_progress(db: Session, target_path: str) -> bool:
+    active = (
+        db.query(models.SnapshotJob)
+        .filter(models.SnapshotJob.status == "in_progress")
+        .all()
+    )
+    if not active:
+        return False
+    for job in active:
+        if target_path.startswith(job.watched_path):
+            return True
+    return False
+
+
 # get's all actively watched paths
 def get_watched_paths(db: Session):
     return (
@@ -328,6 +412,30 @@ def get_activity_timeline(db: Session, limit: int = 100):
         .limit(limit)
         .all()
     )
+
+
+# --- Settings ---
+def get_setting(db: Session, key: str, default: str | None = None) -> str | None:
+    setting = (
+        db.query(models.KeyValueStore).filter(models.KeyValueStore.key == key).first()
+    )
+    if not setting:
+        return default
+    return setting.value
+
+
+def set_setting(db: Session, key: str, value: str) -> models.KeyValueStore:
+    setting = (
+        db.query(models.KeyValueStore).filter(models.KeyValueStore.key == key).first()
+    )
+    if setting:
+        setting.value = value
+    else:
+        setting = models.KeyValueStore(key=key, value=value)
+        db.add(setting)
+    db.commit()
+    db.refresh(setting)
+    return setting
 
 
 # --- File Versions ---

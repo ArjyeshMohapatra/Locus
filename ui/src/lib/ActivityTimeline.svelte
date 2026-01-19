@@ -2,6 +2,7 @@
   import { onMount, onDestroy } from 'svelte';
   import { slide } from 'svelte/transition';
   import { getRecentFileEvents, subscribeFileEvents } from '../api.js';
+  import { addErrorMessage } from '../errorStore.js';
   import Fa from 'svelte-fa';
   import { faChevronDown, faChevronRight } from '@fortawesome/free-solid-svg-icons';
   import FileHistoryModal from './FileHistoryModal.svelte';
@@ -74,7 +75,12 @@
   onMount(() => {
     refresh();
     eventSource = subscribeFileEvents((event) => {
-      events = [event, ...events].slice(0, 50);
+      if (event?.event_type) {
+        events = [event, ...events].slice(0, 50);
+      }
+      if (event?.type === 'snapshot_error') {
+        addErrorMessage(event.message || 'Snapshot error occurred.');
+      }
     });
   });
 

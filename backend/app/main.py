@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from contextlib import asynccontextmanager
 from app.database import models, crud
-from app.monitor import monitor_service, register_restore_start
+from app.monitor import monitor_service, register_restore_start, _process_backup
 from app import storage
 from app import event_stream
 from sqlalchemy import create_engine, text
@@ -64,6 +64,10 @@ class FileRestore(BaseModel):
     dest_path: str | None = None  # Optional, defaults to original path
 
 
+class AdminProtectionToggle(BaseModel):
+    enabled: bool
+
+
 # --- Background Service Placeholders ---
 def background_monitor_task():
     """
@@ -120,6 +124,16 @@ async def lifespan(app: FastAPI):
     print("LOCUS System Starting...")
     init_db()
 
+    db = SessionLocal()
+    try:
+        enabled = crud.get_setting(db, "admin_protection_enabled", "false")
+        if enabled == "true":
+            ok, msg = storage.enable_admin_protection()
+            if not ok:
+                print(f"[Security] Admin protection failed: {msg}")
+    finally:
+        db.close()
+
     # Start background service in a separate thread (daemon=True so it dies with main process)
     monitor_thread = threading.Thread(target=background_monitor_task, daemon=True)
     monitor_thread.start()
@@ -144,6 +158,14 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# --- Snapshot Settings ---
+INITIAL_SNAPSHOT_ENABLED = True
+INITIAL_SNAPSHOT_BLOCKING = True
+INITIAL_SNAPSHOT_SKIP_SYMLINKS = True
+INITIAL_SNAPSHOT_FAIL_ON_UNREADABLE = False
+SNAPSHOT_BATCH_SIZE = 200
 
 
 @app.get("/")
@@ -177,9 +199,180 @@ def add_watched_path(path_data: PathCreate, db: Session = Depends(get_db)):
         path = crud.create_watched_path(db, path_data.path)
         # Trigger live update of the monitor service
         monitor_service.sync_watches()
+        if INITIAL_SNAPSHOT_ENABLED:
+            if INITIAL_SNAPSHOT_BLOCKING:
+                _run_initial_snapshot(path_data.path)
+            else:
+                threading.Thread(
+                    target=_run_initial_snapshot,
+                    args=(path_data.path,),
+                    daemon=True,
+                ).start()
         return path
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+def _check_snapshot_file(file_path: str) -> tuple[bool, list[str]]:
+    errors: list[str] = []
+    try:
+        if INITIAL_SNAPSHOT_SKIP_SYMLINKS and os.path.islink(file_path):
+            errors.append(f"Skipped symlink: {file_path}")
+            return False, errors
+        if not os.access(file_path, os.R_OK):
+            errors.append(f"Unreadable file: {file_path}")
+            return False, errors
+        return True, errors
+    except Exception as e:
+        errors.append(f"Error accessing {file_path}: {e}")
+        return (not INITIAL_SNAPSHOT_FAIL_ON_UNREADABLE), errors
+
+
+def _scan_snapshot_targets(root_path: str) -> tuple[list[str], list[str]]:
+    files: list[str] = []
+    errors: list[str] = []
+
+    for current_root, _dirs, filenames in os.walk(root_path):
+        for name in filenames:
+            full_path = os.path.join(current_root, name)
+            include, errs = _check_snapshot_file(full_path)
+            if errs:
+                errors.extend(errs)
+            if include:
+                files.append(full_path)
+    return files, errors
+
+
+def _publish_snapshot_error(watched_path: str, message: str) -> None:
+    event_stream.publish(
+        {
+            "type": "snapshot_error",
+            "watched_path": watched_path,
+            "message": message,
+        }
+    )
+
+
+def _publish_snapshot_progress(
+    watched_path: str,
+    total: int,
+    processed: int,
+    skipped: int,
+    error_count: int,
+    eta_seconds: int | None,
+) -> None:
+    event_stream.publish(
+        {
+            "type": "snapshot_progress",
+            "watched_path": watched_path,
+            "total": total,
+            "processed": processed,
+            "skipped": skipped,
+            "error_count": error_count,
+            "eta_seconds": eta_seconds,
+        }
+    )
+
+
+def _process_snapshot_file(
+    file_path: str,
+    root_path: str,
+    storage_subdir: str,
+) -> None:
+    storage.mirror_copy_file(file_path, root_path, storage_subdir)
+    _process_backup(file_path)
+
+
+def _process_snapshot_files(
+    db: Session,
+    job: models.SnapshotJob,
+    root_path: str,
+    storage_subdir: str,
+    files: list[str],
+    initial_errors: list[str],
+) -> tuple[int, int, int, str | None]:
+    start = time.time()
+    processed = 0
+    skipped = 0
+    error_count = len(initial_errors)
+    last_error = initial_errors[-1] if initial_errors else None
+
+    for idx, file_path in enumerate(files, start=1):
+        try:
+            _process_snapshot_file(file_path, root_path, storage_subdir)
+            processed += 1
+        except Exception as e:
+            skipped += 1
+            error_count += 1
+            last_error = str(e)
+            _publish_snapshot_error(root_path, f"Failed {file_path}: {e}")
+
+        if idx % SNAPSHOT_BATCH_SIZE == 0 or idx == len(files):
+            elapsed = max(time.time() - start, 0.001)
+            rate = processed / elapsed if processed else 0
+            remaining = len(files) - processed
+            eta = int(remaining / rate) if rate > 0 else None
+            crud.update_snapshot_job_progress(
+                db,
+                job,
+                processed=processed,
+                skipped=skipped,
+                error_count=error_count,
+                last_error=last_error,
+            )
+            _publish_snapshot_progress(
+                root_path,
+                total=len(files),
+                processed=processed,
+                skipped=skipped,
+                error_count=error_count,
+                eta_seconds=eta,
+            )
+
+    return processed, skipped, error_count, last_error
+
+
+def _run_initial_snapshot(root_path: str) -> None:
+    if not os.path.exists(root_path):
+        raise HTTPException(status_code=400, detail="Watched path does not exist")
+
+    storage_subdir = storage.storage_subdir_name(root_path)
+    storage.ensure_snapshot_dir(storage_subdir)
+
+    db = SessionLocal()
+    try:
+        job = crud.get_snapshot_job(db, root_path)
+        if not job:
+            job = crud.create_snapshot_job(db, root_path, storage_subdir)
+
+        files, errors = _scan_snapshot_targets(root_path)
+        crud.mark_snapshot_job_started(db, job, total_files=len(files))
+
+        for err in errors:
+            _publish_snapshot_error(root_path, err)
+
+        processed, skipped, error_count, _last_error = _process_snapshot_files(
+            db,
+            job,
+            root_path,
+            storage_subdir,
+            files,
+            errors,
+        )
+
+        crud.mark_snapshot_job_done(db, job)
+        event_stream.publish(
+            {
+                "type": "snapshot_complete",
+                "watched_path": root_path,
+                "total": len(files),
+                "processed": processed,
+                "skipped": skipped,
+                "error_count": error_count,
+            }
+        )
+    finally:
+        db.close()
 
 
 def _perform_physical_move(old_path: str, new_path: str):
@@ -450,6 +643,37 @@ def restore_version(restore_data: FileRestore, db: Session = Depends(get_db)):
 # Create an activity log entry (manual client-side logging).
 def log_activity_manual(activity: ActivityCreate, db: Session = Depends(get_db)):
     return crud.log_activity(db, activity.type, activity.app, activity.details)
+
+
+# --- Security Settings ---
+@app.get("/settings/security")
+def get_security_settings(db: Session = Depends(get_db)):
+    enabled = crud.get_setting(db, "admin_protection_enabled", "false") == "true"
+    return {
+        "admin_protection_enabled": enabled,
+        "is_admin": storage.is_admin_user(),
+    }
+
+
+@app.post("/settings/security")
+def set_security_settings(
+    payload: AdminProtectionToggle, db: Session = Depends(get_db)
+):
+    if payload.enabled:
+        ok, msg = storage.enable_admin_protection()
+        if not ok:
+            raise HTTPException(status_code=400, detail=msg)
+        crud.set_setting(db, "admin_protection_enabled", "true")
+    else:
+        ok, msg = storage.disable_admin_protection()
+        if not ok:
+            raise HTTPException(status_code=400, detail=msg)
+        crud.set_setting(db, "admin_protection_enabled", "false")
+
+    return {
+        "admin_protection_enabled": payload.enabled,
+        "message": "updated",
+    }
 
 
 if __name__ == "__main__":
