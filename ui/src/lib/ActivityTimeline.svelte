@@ -125,7 +125,7 @@
 
 <div class="card h-100 rounded-4">
   <div class="card-header d-flex align-items-center justify-content-between py-3 px-4">
-    <h5 class="card-title mb-0 fw-bold">Live File Activity</h5>
+    <h5 class="card-title mb-0 fw-bold">Live Activity</h5>
     <span class="badge-soft badge-soft-secondary">{sortedDirs.length} Directories</span>
   </div>
   <div class="card-body p-0">
@@ -167,7 +167,7 @@
           </div>
 
           {#if expandedDirs.has(dirPath)}
-            <div class="event-list mt-2" transition:slide={{ duration: 300 }}>
+            <div class="event-list mt-2" transition:slide={{ duration: 200 }}>
               {#each filesInDir as filePath}
                 {@const fileEvents = dirGroup.files[filePath]}
                 <div class="activity-item {expandedFiles.has(filePath) ? 'is-expanded' : ''}" style="padding: 8px 0;">
@@ -205,7 +205,7 @@
                   </div>
 
                   {#if expandedFiles.has(filePath)}
-                    <div class="event-list mt-2" transition:slide={{ duration: 300 }}>
+                    <div class="event-list mt-2" transition:slide={{ duration: 200 }}>
                       {#each fileEvents as event}
                         <div class="event-row">
                           <span class="badge-soft badge-soft-secondary me-3" style="min-width: 80px; justify-content: center;">{event.event_type}</span>
