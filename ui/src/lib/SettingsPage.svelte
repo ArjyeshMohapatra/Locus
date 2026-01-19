@@ -1,7 +1,12 @@
 <script>
   import { onMount } from 'svelte';
   import { showMessage } from '../dialogStore.js';
-  import { getSecuritySettings, setSecuritySettings } from '../api.js';
+  import {
+    getSecuritySettings,
+    setSecuritySettings,
+    getTrackingExclusions,
+    setTrackingExclusions
+  } from '../api.js';
   import Fa from 'svelte-fa';
   import {
     faFilter,
@@ -14,8 +19,12 @@
     faChevronDown
   } from '@fortawesome/free-solid-svg-icons';
 
-  let filters = ['node_modules', '.git', '*.tmp'];
-  let newFilter = '';
+  let excludedFolders = [];
+  let customExclusions = [];
+  let newExclusion = '';
+  let exclusionsLoading = false;
+  let exclusionsSaving = false;
+  let exclusionsError = '';
 
   let gcEnabled = true;
   let gcGraceMinutes = 60;
@@ -31,18 +40,6 @@
   let startupMode = 'startup';
   let mediaQuery;
 
-  const addFilter = () => {
-    const trimmed = newFilter.trim();
-    if (!trimmed) return;
-    if (!filters.includes(trimmed)) {
-      filters = [...filters, trimmed];
-    }
-    newFilter = '';
-  };
-
-  const removeFilter = (index) => {
-    filters = filters.filter((_, i) => i !== index);
-  };
 
   const toggleGc = () => {
     gcEnabled = !gcEnabled;
@@ -84,6 +81,7 @@
     resolvedTheme = resolveTheme(themeMode);
 
     loadSecuritySettings();
+    loadTrackingExclusions();
 
     return () => {
       if (mediaQuery.removeEventListener) {
@@ -110,6 +108,50 @@
     } finally {
       adminProtectionLoading = false;
     }
+  };
+
+  const loadTrackingExclusions = async () => {
+    exclusionsLoading = true;
+    exclusionsError = '';
+    try {
+      const data = await getTrackingExclusions();
+      excludedFolders = data.excluded_directories || [];
+      customExclusions = data.custom_exclusions || [];
+    } catch (e) {
+      exclusionsError = e.message || 'Failed to load tracking exclusions.';
+    } finally {
+      exclusionsLoading = false;
+    }
+  };
+
+  const persistExclusions = async (next) => {
+    exclusionsSaving = true;
+    exclusionsError = '';
+    try {
+      await setTrackingExclusions(next);
+      customExclusions = next;
+    } catch (e) {
+      exclusionsError = e.message || 'Failed to update exclusions.';
+    } finally {
+      exclusionsSaving = false;
+    }
+  };
+
+  const addCustomExclusion = async () => {
+    const trimmed = newExclusion.trim();
+    if (!trimmed) return;
+    if (customExclusions.includes(trimmed)) {
+      newExclusion = '';
+      return;
+    }
+    const next = [...customExclusions, trimmed];
+    newExclusion = '';
+    await persistExclusions(next);
+  };
+
+  const removeCustomExclusion = async (index) => {
+    const next = customExclusions.filter((_, i) => i !== index);
+    await persistExclusions(next);
   };
 
   const toggleAdminProtection = async () => {
@@ -144,29 +186,52 @@
         <Fa icon={faFilter} class="section-icon" />
         <div>
           <h2>Tracking Filters</h2>
-          <p class="muted">Exclude files or folders you never want LOCUS to track.</p>
+          <p class="muted">Exclude folders or file patterns from tracking.</p>
         </div>
       </div>
       <Fa icon={faChevronDown} class="section-chevron" />
     </summary>
     <div class="settings-content">
-      <div class="filter-input">
-        <input
-          type="text"
-          placeholder="Add a folder name or file pattern (e.g., node_modules)"
-          bind:value={newFilter}
-          on:keydown={(e) => e.key === 'Enter' && addFilter()}
-        />
-        <button class="btn btn-primary" on:click={addFilter}>Add</button>
-      </div>
-      <div class="chip-list">
-        {#each filters as filter, index}
-          <span class="chip">
-            {filter}
-            <button class="chip-remove" on:click={() => removeFilter(index)}>×</button>
-          </span>
-        {/each}
-      </div>
+      {#if exclusionsLoading}
+        <div class="settings-note">Loading exclusions…</div>
+      {:else if exclusionsError}
+        <div class="settings-note text-danger">{exclusionsError}</div>
+      {:else}
+        <details class="settings-note">
+          <summary>Default exclusion:
+            <Fa icon={faChevronDown} class="section-chevron" />
+          </summary>
+          <div class="chip-list" style="margin-top:8px;">
+            {#each excludedFolders as folder}
+              <span class="chip is-readonly">{folder}</span>
+            {/each}
+          </div>
+        </details>
+
+        <div class="settings-note" style="margin-top: 12px;">Custom exclusions:</div>
+        <div class="filter-input">
+          <input
+            type="text"
+            placeholder="Add a folder name or file pattern (e.g., node_modules)"
+            bind:value={newExclusion}
+            on:keydown={(e) => e.key === 'Enter' && addCustomExclusion()}
+            disabled={exclusionsSaving}
+          />
+          <button class="btn btn-primary" on:click={addCustomExclusion} disabled={exclusionsSaving}>
+            {exclusionsSaving ? 'Saving…' : 'Add'}
+          </button>
+        </div>
+        <div class="chip-list">
+          {#each customExclusions as folder, index}
+            <span class="chip">
+              {folder}
+              <button class="chip-remove" on:click={() => removeCustomExclusion(index)} disabled={exclusionsSaving}>
+                ×
+              </button>
+            </span>
+          {/each}
+        </div>
+      {/if}
     </div>
   </details>
 

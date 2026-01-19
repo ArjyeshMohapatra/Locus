@@ -17,6 +17,82 @@ CHUNK_SIZE_BYTES = 4 * 1024 * 1024
 CHUNKED_MIN_SIZE_BYTES = 16 * 1024 * 1024
 MANIFEST_EXT = ".manifest.json"
 
+# Default directories to exclude from tracking/snapshots.
+DEFAULT_EXCLUDED_DIRS = {
+    # Node / JS
+    "node_modules",
+    "npm-debug.log",
+    "yarn.lock",
+    # Python virtualenvs / caches
+    "venv",
+    ".venv",
+    "site-packages",
+    "__pycache__",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".tox",
+    # VCS / Editor / IDE
+    ".git",
+    ".svn",
+    ".hg",
+    ".idea",
+    ".vscode",
+    ".ropeproject",
+    # Build / packaging
+    "dist",
+    "build",
+    "target",
+    "pip-wheel-metadata",
+    ".eggs",
+    "egg-info",
+    # OS / misc files
+    ".cache",
+    ".DS_Store",
+    "Thumbs.db",
+    "desktop.ini",
+    # Tooling / other caches
+    ".sass-cache",
+    ".gradle",
+    "node_repl_history",
+    "cache",
+    # General extras
+    ".classpath",
+    ".project",
+    ".settings",
+}
+
+CUSTOM_EXCLUDED_DIRS: set[str] = set()
+
+
+def set_custom_exclusions(exclusions: list[str]) -> None:
+    cleaned: set[str] = set()
+    for item in exclusions:
+        if not item:
+            continue
+        value = str(item).strip()
+        if not value:
+            continue
+        cleaned.add(value)
+    CUSTOM_EXCLUDED_DIRS.clear()
+    CUSTOM_EXCLUDED_DIRS.update(cleaned)
+
+
+def get_all_excluded_dirs() -> set[str]:
+    return set(DEFAULT_EXCLUDED_DIRS).union(CUSTOM_EXCLUDED_DIRS)
+
+
+def is_excluded_path(path: str) -> bool:
+    try:
+        parts = Path(os.path.normcase(path)).parts
+    except Exception:
+        return False
+    excluded = get_all_excluded_dirs()
+    for part in parts:
+        if part in excluded:
+            return True
+    return False
+
 
 def init_storage():
     """Ensure storage directory exists"""

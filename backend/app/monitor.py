@@ -28,6 +28,8 @@ LAST_BACKUP_TS: dict[str, float] = {}
 
 
 def _process_backup(src_path: str):
+    if storage.is_excluded_path(src_path):
+        return
     if src_path.endswith(IGNORED_SUFFIXES):
         return
 
@@ -118,6 +120,10 @@ class LocusEventHandler(FileSystemEventHandler):
 
     # Persist a filesystem event (create/modify/delete/move) to the DB.
     def _log_event(self, event_type: str, src_path: str, dest_path: str = None):
+        if storage.is_excluded_path(src_path) or (
+            dest_path and storage.is_excluded_path(dest_path)
+        ):
+            return
         if src_path.endswith(IGNORED_SUFFIXES):
             return  # Ignore temp files
 
@@ -167,6 +173,10 @@ class LocusEventHandler(FileSystemEventHandler):
     # Watchdog callback: file or directory moved/renamed.
     def on_moved(self, event):
         if not event.is_directory:
+            if storage.is_excluded_path(event.src_path) or (
+                event.dest_path and storage.is_excluded_path(event.dest_path)
+            ):
+                return
             self._log_event("moved", event.src_path, event.dest_path)
 
             # Update the identity record so history follows the file

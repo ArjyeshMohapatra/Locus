@@ -122,3 +122,22 @@ export async function setSecuritySettings(enabled) {
   }
   return await res.json();
 }
+
+export async function getTrackingExclusions() {
+  const res = await fetch(`${BASE_URL}/settings/exclusions`);
+  if (!res.ok) throw new Error('Failed to fetch tracking exclusions');
+  return await res.json();
+}
+
+export async function setTrackingExclusions(exclusions) {
+  const res = await fetch(`${BASE_URL}/settings/exclusions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ exclusions: exclusions || [] })
+  });
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => ({}));
+    throw new Error(errorData.detail || 'Failed to update tracking exclusions');
+  }
+  return await res.json();
+}

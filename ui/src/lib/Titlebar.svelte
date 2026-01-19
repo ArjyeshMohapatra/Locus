@@ -39,6 +39,19 @@
 
   onMount(() => {
     eventSource = subscribeFileEvents((event) => {
+      if (event?.type === 'snapshot_start') {
+        snapshotProgress = {
+          watched_path: event.watched_path,
+          total: 0,
+          processed: 0,
+          skipped: 0,
+          error_count: 0,
+          eta_seconds: null,
+          scanning: true
+        };
+        return;
+      }
+
       if (event?.type === 'snapshot_progress') {
         snapshotProgress = {
           watched_path: event.watched_path,
@@ -46,7 +59,8 @@
           processed: Number(event.processed) || 0,
           skipped: Number(event.skipped) || 0,
           error_count: Number(event.error_count) || 0,
-          eta_seconds: event.eta_seconds
+          eta_seconds: event.eta_seconds,
+          scanning: false
         };
         return;
       }
@@ -84,13 +98,19 @@
       {@const total = Math.max(snapshotProgress.total, 1)}
       {@const completed = snapshotProgress.processed + snapshotProgress.skipped}
       {@const percent = Math.min(100, Math.round((completed / total) * 100))}
+      {@const scanning = snapshotProgress.scanning || snapshotProgress.total <= 0}
       <div class="snapshot-progress" title={snapshotProgress.watched_path}>
         <div class="snapshot-track" aria-label="Snapshot progress">
-          <div class="snapshot-fill" style={`width: ${percent}%`}></div>
+          <div
+            class="snapshot-fill {scanning ? 'is-indeterminate' : ''}"
+            style={scanning ? '' : `width: ${percent}%`}
+          ></div>
         </div>
         <div class="snapshot-meta">
-          <span class="snapshot-label">Snapshot</span>
-          <span class="snapshot-stats">{percent}% • {formatEta(snapshotProgress.eta_seconds)}</span>
+          <span class="snapshot-label">{scanning ? 'Scanning' : 'Snapshot'}</span>
+          <span class="snapshot-stats">
+            {scanning ? 'Preparing…' : `${percent}% • ${formatEta(snapshotProgress.eta_seconds)}`}
+          </span>
         </div>
       </div>
     {/if}
@@ -180,6 +200,12 @@
     transition: width 0.2s ease;
   }
 
+  .snapshot-fill.is-indeterminate {
+    position: relative;
+    width: 40%;
+    animation: indeterminate 1.2s ease-in-out infinite;
+  }
+
   .snapshot-meta {
     display: flex;
     justify-content: space-between;
@@ -191,6 +217,15 @@
   .snapshot-label {
     font-weight: 600;
     text-transform: uppercase;
+  }
+
+  @keyframes indeterminate {
+    0% {
+      transform: translateX(-120%);
+    }
+    100% {
+      transform: translateX(240%);
+    }
   }
 
   @media (max-width: 760px) {

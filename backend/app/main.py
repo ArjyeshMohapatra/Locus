@@ -68,6 +68,10 @@ class AdminProtectionToggle(BaseModel):
     enabled: bool
 
 
+class TrackingExclusions(BaseModel):
+    exclusions: list[str]
+
+
 # --- Background Service Placeholders ---
 def background_monitor_task():
     """
@@ -131,6 +135,14 @@ async def lifespan(app: FastAPI):
             ok, msg = storage.enable_admin_protection()
             if not ok:
                 print(f"[Security] Admin protection failed: {msg}")
+
+        raw_exclusions = crud.get_setting(db, "tracking_exclusions", "[]")
+        try:
+            parsed = json.loads(raw_exclusions or "[]")
+            if isinstance(parsed, list):
+                storage.set_custom_exclusions(parsed)
+        except Exception as exc:
+            print(f"[Settings] Failed to load exclusions: {exc}")
     finally:
         db.close()
 
@@ -162,7 +174,7 @@ app.add_middleware(
 
 # --- Snapshot Settings ---
 INITIAL_SNAPSHOT_ENABLED = True
-INITIAL_SNAPSHOT_BLOCKING = True
+INITIAL_SNAPSHOT_BLOCKING = False
 INITIAL_SNAPSHOT_SKIP_SYMLINKS = True
 INITIAL_SNAPSHOT_FAIL_ON_UNREADABLE = False
 SNAPSHOT_BATCH_SIZE = 200
@@ -216,6 +228,8 @@ def add_watched_path(path_data: PathCreate, db: Session = Depends(get_db)):
 def _check_snapshot_file(file_path: str) -> tuple[bool, list[str]]:
     errors: list[str] = []
     try:
+        if storage.is_excluded_path(file_path):
+            return False, []
         if INITIAL_SNAPSHOT_SKIP_SYMLINKS and os.path.islink(file_path):
             errors.append(f"Skipped symlink: {file_path}")
             return False, errors
@@ -232,9 +246,14 @@ def _scan_snapshot_targets(root_path: str) -> tuple[list[str], list[str]]:
     files: list[str] = []
     errors: list[str] = []
 
-    for current_root, _dirs, filenames in os.walk(root_path):
+    excluded_dirs = storage.get_all_excluded_dirs()
+
+    for current_root, dirs, filenames in os.walk(root_path):
+        dirs[:] = [d for d in dirs if d not in excluded_dirs]
         for name in filenames:
             full_path = os.path.join(current_root, name)
+            if storage.is_excluded_path(full_path):
+                continue
             include, errs = _check_snapshot_file(full_path)
             if errs:
                 errors.extend(errs)
@@ -249,6 +268,15 @@ def _publish_snapshot_error(watched_path: str, message: str) -> None:
             "type": "snapshot_error",
             "watched_path": watched_path,
             "message": message,
+        }
+    )
+
+
+def _publish_snapshot_start(watched_path: str) -> None:
+    event_stream.publish(
+        {
+            "type": "snapshot_start",
+            "watched_path": watched_path,
         }
     )
 
@@ -336,6 +364,7 @@ def _run_initial_snapshot(root_path: str) -> None:
     if not os.path.exists(root_path):
         raise HTTPException(status_code=400, detail="Watched path does not exist")
 
+    _publish_snapshot_start(root_path)
     storage_subdir = storage.storage_subdir_name(root_path)
     storage.ensure_snapshot_dir(storage_subdir)
 
@@ -673,6 +702,23 @@ def set_security_settings(
     return {
         "admin_protection_enabled": payload.enabled,
         "message": "updated",
+    }
+
+
+@app.get("/settings/exclusions")
+def get_tracking_exclusions():
+    return {
+        "excluded_directories": sorted(storage.DEFAULT_EXCLUDED_DIRS),
+        "custom_exclusions": sorted(storage.CUSTOM_EXCLUDED_DIRS),
+    }
+
+
+@app.post("/settings/exclusions")
+def set_tracking_exclusions(payload: TrackingExclusions, db: Session = Depends(get_db)):
+    storage.set_custom_exclusions(payload.exclusions)
+    crud.set_setting(db, "tracking_exclusions", json.dumps(payload.exclusions))
+    return {
+        "custom_exclusions": sorted(storage.CUSTOM_EXCLUDED_DIRS),
     }
 
 
