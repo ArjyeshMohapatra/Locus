@@ -1,0 +1,11 @@
+# Bandit configuration file
+# Exclude the virtual environment and other non-app directories
+exclude_dirs:
+  - ".venv"
+  - "node_modules"
+  - "target"
+  - "dist"
+  - "build"
+
+# Suppress B101 (assert used) for test files as we use pytest
+skips: ['B101']

@@ -1,0 +1,10 @@
+@import url('https://rsms.me/inter/inter.css');
+@import 'bootstrap/dist/css/bootstrap.min.css';
+@import './styles/variables.css';
+@import './styles/layout.css';
+@import './styles/components/cards.css';
+@import './styles/components/activity.css';
+@import './styles/components/settings.css';
+@import './styles/components/modals.css';
+@import './styles/components/consistency.css';
+@import './styles/utils.css';

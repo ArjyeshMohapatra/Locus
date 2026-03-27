@@ -1,0 +1,129 @@
+/* layout: shell, container, sidebar, view wrappers */
+.app-shell {
+  min-height: calc(100vh - 40px);
+  margin-top: 40px;
+}
+
+.app-container {
+  margin-left: 96px; /* 72px width + 12px margin*2 */
+  width: calc(100% - 96px);
+  padding: 40px 32px;
+  box-sizing: border-box;
+  min-height: calc(100vh - 40px);
+  overflow: auto;
+  transition: margin-left 0.3s cubic-bezier(0.4, 0, 0.2, 1), width 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.view-wrapper {
+  max-width: 1200px;
+  margin: 0 auto;
+  min-height: 60vh;
+}
+
+.sidebar {
+  background: var(--sidebar-bg);
+  color: var(--sidebar-text);
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  border: 1px solid var(--sidebar-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  position: fixed;
+  top: 52px; /* 40px + 12px margin */
+  left: 12px;
+  bottom: 12px;
+  z-index: 50;
+  overflow-y: auto;
+  width: 72px;
+}
+
+.sidebar.is-open {
+  width: 260px;
+}
+
+/* shift main content when sidebar state changes */
+.sidebar.is-open + .app-container {
+  margin-left: 284px; /* 260px + 12px + 12px */
+  width: calc(100% - 284px);
+}
+
+.hamburger {
+  background: transparent;
+  border: none;
+  padding: 24px 26px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  cursor: pointer;
+  margin-bottom: 8px;
+}
+
+.hamburger-icon {
+  font-size: 18px;
+  color: var(--sidebar-text);
+  opacity: 0.7;
+  transition: opacity 0.2s;
+}
+
+.hamburger:hover .hamburger-icon {
+  opacity: 1;
+}
+
+.sidebar-menu {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 0 12px;
+}
+
+.sidebar-item {
+  background: transparent;
+  border: none;
+  color: inherit;
+  padding: 12px 14px;
+  border-radius: var(--radius-md);
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  cursor: pointer;
+  text-align: left;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+.sidebar-item:hover {
+  background: var(--sidebar-hover);
+  color: var(--text-primary);
+}
+
+.sidebar-item.is-active {
+  background: var(--sidebar-active);
+  color: var(--sidebar-accent);
+}
+
+.sidebar-icon {
+  font-size: 18px;
+  width: 24px;
+  min-width: 24px;
+  display: inline-flex;
+  justify-content: center;
+}
+
+.sidebar-label {
+  opacity: 1;
+  transition: opacity 0.2s, transform 0.2s;
+  font-size: 0.95rem;
+  white-space: nowrap;
+}
+
+.is-collapsed .sidebar-label {
+  opacity: 0;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+  pointer-events: none;
+  position: absolute; /* Take out of flow so it doesn't push icons */
+}

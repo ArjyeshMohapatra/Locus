@@ -1,0 +1,92 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+pip-wheel-metadata/
+
+# Virtual Environments
+.venv/
+venv/
+env/
+ENV/
+bin/
+lib/
+include/
+share/
+pyvenv.cfg
+
+# SQLite / Database
+*.db
+*.db-shm
+*.db-wal
+*.db-journal
+*.sqlite
+*.sqlite3
+locus.db
+locus_test.db
+backend/locus.db
+backend/locus.db-shm
+backend/locus.db-wal
+
+# Locus Data & Snapshots
+.locus_storage/
+.locus_snapshot_images/
+**/ .locus_snapshot_images/
+backend/.locus_snapshot_images/
+backend/.locus_storage/
+
+# Node.js / Frontend
+node_modules/
+dist/
+build/
+.vite/
+npm-debug.log*
+yarn-debug.log*
+lerna-debug.log*
+
+# Tauri / Rust
+target/
+src-tauri/target/
+src-tauri/binaries/
+src-tauri/build/
+src-tauri/*.lock
+!src-tauri/Cargo.lock
+src-tauri/tauri.conf.json
+
+# PyInstaller / Build
+dist/
+build/
+*.spec
+*.exe
+*.dll
+*.dylib
+
+# IDE / Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*.sublime-workspace
+*.sublime-project
+
+# OS Files
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Secrets and env files
+.env
+.env.*
+secrets.*
+
+# Scratch scripts
+check_status.py
+reclaim_space.py
+

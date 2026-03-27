@@ -1,0 +1,167 @@
+:root {
+  /* color palette (Breeze Light) */
+  --app-bg: #eff0f1;
+  --text-primary: #232629;
+  --text-muted: #7f8c8d;
+  --card-bg: #fcfcfc;
+  --surface-elevated: #ffffff;
+  --surface-soft: #f3f4f5;
+  --border-subtle: rgba(0, 0, 0, 0.15); /* Light border */
+  --border-strong: rgba(0, 0, 0, 0.25);
+  
+  --accent: #3daee9; /* Plasma Blue */
+  --accent-strong: #1d99f3;
+  --accent-soft: rgba(61, 174, 233, 0.15);
+  
+  --success: #27ae60;
+  --danger: #ed1515;
+  
+  /* sidebar colors (Breeze Light) */
+  --sidebar-bg: #eff0f1;
+  --sidebar-text: #232629;
+  --sidebar-border: #c8c9ca;
+  --sidebar-hover: rgba(61, 174, 233, 0.15); /* Plasma accent hover */
+  --sidebar-active: rgba(61, 174, 233, 0.3);
+  --sidebar-accent: #3daee9;
+
+  /* spacing & radius (Plasma 6 style) */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+  
+  /* shadows (Plasma floating panels usually have a distinct shadow) */
+  --shadow-sm: 0 1px 3px rgba(0,0,0,0.15);
+  --shadow-md: 0 4px 8px rgba(0,0,0,0.2);
+  --shadow-lg: 0 8px 24px rgba(0,0,0,0.25);
+
+  /* typography */
+  --font-sans: 'Noto Sans', 'Inter', system-ui, -apple-system, sans-serif;
+  --font-size-caption: 0.8125rem;
+  --font-size-body: 0.9375rem;
+  --font-size-label: 0.875rem;
+  --font-size-title-3: 1rem;
+  --font-size-title-2: 1.25rem;
+  --font-size-title-1: 1.75rem;
+  --line-height-body: 1.5;
+}
+
+body.theme-dark {
+  /* color palette (Breeze Dark) */
+  --app-bg: #232629;
+  --text-primary: #fcfcfc;
+  --text-muted: #a1a9b1;
+  --card-bg: #2a2e32;
+  --surface-elevated: #31363b;
+  --surface-soft: #2e3136;
+  --border-subtle: rgba(255, 255, 255, 0.12); /* Light border for dark mode */
+  --border-strong: rgba(255, 255, 255, 0.2);
+  
+  --accent: #3daee9;
+  --accent-strong: #1d99f3;
+  --accent-soft: rgba(61, 174, 233, 0.2);
+  
+  --success: #27ae60;
+  --danger: #ed1515;
+
+  /* sidebar colors (Breeze Dark) */
+  --sidebar-bg: #232629;
+  --sidebar-text: #fcfcfc;
+  --sidebar-border: #4d5157;
+  --sidebar-hover: rgba(61, 174, 233, 0.2);
+  --sidebar-active: rgba(61, 174, 233, 0.4);
+  --sidebar-accent: #3daee9;
+
+  --shadow-sm: 0 1px 4px rgba(0,0,0,0.4);
+  --shadow-md: 0 4px 12px rgba(0,0,0,0.6);
+  --shadow-lg: 0 12px 24px rgba(0,0,0,0.8);
+}
+
+/* base layout and resets that rely on tokens */
+body {
+  background-color: var(--app-bg);
+  overscroll-behavior: none;
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-body);
+  line-height: var(--line-height-body);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  color: var(--text-primary);
+}
+
+html {
+  overscroll-behavior: none;
+}
+
+/* Hide scrollbars */
+::-webkit-scrollbar {
+  display: none;
+}
+
+* {
+  -ms-overflow-style: none;  /* IE and Edge */
+  scrollbar-width: none;  /* Firefox */
+}
+
+/* Global Form Control Overrides for Dark Mode */
+.theme-dark .form-control {
+  background-color: var(--border-subtle);
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+
+.theme-dark .form-control:focus {
+  background-color: var(--border-subtle);
+  border-color: var(--accent);
+  color: var(--text-primary);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.theme-dark .form-control::placeholder {
+  color: var(--text-muted);
+  opacity: 0.6;
+}
+
+/* Ensure input group text also looks good */
+.theme-dark .input-group-text {
+  background-color: var(--border-subtle);
+  border-color: var(--border-strong);
+  color: var(--text-muted);
+}
+
+/* Ensure List Group items have visible borders in dark mode */
+.theme-dark .list-group-item {
+  background-color: transparent;
+  border-color: var(--border-subtle);
+  color: var(--text-primary);
+}
+
+.theme-dark .list-group {
+  border-color: var(--border-subtle);
+}
+
+/* Modal borders in dark mode */
+.theme-dark .modal-content {
+  background-color: var(--card-bg);
+  border: 1px solid var(--border-strong);
+}
+
+.theme-dark .modal-header,
+.theme-dark .modal-footer {
+  border-color: var(--border-subtle);
+}
+
+/* Table borders in dark mode */
+.theme-dark .table {
+  color: var(--text-primary);
+  border-color: var(--border-subtle);
+}
+
+.theme-dark .table th,
+.theme-dark .table td {
+  border-color: var(--border-subtle);
+}
