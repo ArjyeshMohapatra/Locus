@@ -3,8 +3,6 @@
   import {
     checkHealth,
     getAuthStatus,
-    getWatchedPaths,
-    getRecentFileEvents,
     getDashboardSummary,
     lockAuth
   } from './api.js';
@@ -15,6 +13,7 @@
   import ActivityTimeline from './lib/ActivityTimeline.svelte';
   import SettingsPage from './lib/SettingsPage.svelte';
   import SnapshotHistoryPage from './lib/SnapshotHistoryPage.svelte';
+  import CheckpointSessionsPage from './lib/CheckpointSessionsPage.svelte';
   import Titlebar from './lib/Titlebar.svelte';
   import CustomDialog from './lib/CustomDialog.svelte';
   import LockScreen from './lib/LockScreen.svelte';
@@ -45,10 +44,7 @@
   let themeMode = 'system';
   let mediaQuery;
   let notificationsOpen = false;
-  let watchedCount = 0;
-  let activityDirCount = 0;
   let dashboardSummary = { total_files: 0, total_versions: 0, storage_bytes: 0, ram_usage_bytes: 0, db_size_bytes: 0, total_snapshots: 0, last_snapshot_time: null };
-  let recentEvents = [];
 
   let healthRefreshTimer;
 
@@ -252,28 +248,12 @@
     }).format(date);
   };
 
-  const getDirPath = (path) => {
-    if (!path) return null;
-    const cleaned = path.replace(/[\\/]+$/, '');
-    const parts = cleaned.split(/[\\/]/);
-    parts.pop();
-    return parts.join('/') || cleaned;
-  };
-
   const refreshDashboardSummaries = async () => {
     try {
-      const [paths, events, summaryData] = await Promise.all([
-        getWatchedPaths(),
-        getRecentFileEvents(5), // Top 5 recent events for dashboard
-        getDashboardSummary()
-      ]);
-      watchedCount = Array.isArray(paths) ? paths.length : 0;
-      recentEvents = Array.isArray(events) ? events : [];
+      const summaryData = await getDashboardSummary();
       dashboardSummary = summaryData || { total_files: 0, total_versions: 0, storage_bytes: 0, ram_usage_bytes: 0, db_size_bytes: 0, total_snapshots: 0, last_snapshot_time: null };
     } catch (e) {
       console.error('Failed to refresh dashboard summaries', e);
-      watchedCount = 0;
-      recentEvents = [];
       dashboardSummary = { total_files: 0, total_versions: 0, storage_bytes: 0, ram_usage_bytes: 0, db_size_bytes: 0, total_snapshots: 0, last_snapshot_time: null };
     }
   };
@@ -304,7 +284,8 @@
   <div class="app-shell">
   <aside class="sidebar {sidebarOpen ? 'is-open' : 'is-collapsed'}">
     <button class="hamburger" on:click={toggleSidebar} aria-label="Toggle menu">
-      <Fa icon={faBars} class="hamburger-icon" />
+      <span class="sidebar-icon hamburger-icon"><Fa icon={faBars} /></span>
+      <span class="sidebar-label sidebar-hamburger-label">Menu</span>
     </button>
 
     <nav class="sidebar-menu">
@@ -330,6 +311,13 @@
         <span class="sidebar-label">Activity Timeline</span>
       </button>
       <button
+        class="sidebar-item {currentView === 'checkpoints' ? 'is-active' : ''}"
+        on:click={() => setView('checkpoints')}
+      >
+        <span class="sidebar-icon"><Fa icon={faDatabase} /></span>
+        <span class="sidebar-label">Checkpoints</span>
+      </button>
+      <button
         class="sidebar-item {currentView === 'snapshots' ? 'is-active' : ''}"
         on:click={() => setView('snapshots')}
       >
@@ -347,7 +335,7 @@
   </aside>
 
   <main class="app-container">
-    <div class="view-wrapper">
+    <div class="view-wrapper {(currentView === 'dashboard' || currentView === 'snapshots') ? 'view-wrapper-no-scrollbar' : ''}">
       {#if currentView === 'settings'}
         <SettingsPage />
       {:else if currentView === 'watched'}
@@ -366,6 +354,8 @@
           </div>
         </header>
         <ActivityTimeline />
+      {:else if currentView === 'checkpoints'}
+        <CheckpointSessionsPage />
       {:else if currentView === 'snapshots'}
         <SnapshotHistoryPage />
       {:else}
@@ -471,47 +461,6 @@
                  </div>
              </div>
           </div>
-        </div>
-
-        <!-- Recent Activity Feed -->
-        <div class="card bg-glass border-0 rounded-4 shadow-sm mb-4">
-            <div class="card-header bg-transparent border-bottom-0 pt-4 pb-3 px-4 d-flex justify-content-between align-items-center">
-                <h5 class="fw-bold mb-0 d-flex align-items-center gap-2">
-                    Recent Activity
-                </h5>
-                <button class="btn btn-sm btn-link text-decoration-none text-muted fw-medium" on:click={() => setView('activity')}>Detailed Timeline &rarr;</button>
-            </div>
-            <div class="card-body p-0 pb-2">
-                {#if recentEvents.length === 0}
-                    <div class="p-5 text-center text-muted">
-                        <div class="mb-3 opacity-50"><Fa icon={faClock} size="2x"/></div>
-                        <p class="mb-0 fw-medium">No recent activity detected right now.</p>
-                        <p class="small opacity-75">When your watched files change, LOCUS will record them here.</p>
-                    </div>
-                {:else}
-                    <div class="list-group list-group-flush px-3">
-                        {#each recentEvents as ev}
-                            <div class="list-group-item px-3 py-3 border-0 border-bottom last-no-border bg-transparent">
-                                <div class="d-flex align-items-center gap-3">
-                                    <div class="text-primary bg-primary bg-opacity-10 rounded-circle p-2 d-flex align-items-center justify-content-center" style="width:36px; height:36px;">
-                                        <Fa icon={faFolderOpen} />
-                                    </div>
-                                    <div class="flex-grow-1 overflow-hidden">
-                                        <div class="d-flex justify-content-between align-items-center mb-1">
-                                            <span class="fw-bold text-truncate">{ev.src_path.split(/[\\/]/).pop()}</span>
-                                            <span class="small text-muted fw-medium">{formatTimestamp(ev.timestamp)}</span>
-                                        </div>
-                                        <div class="small text-muted text-truncate font-monospace border bg-light px-2 py-1 rounded-2 d-inline-block" title={getDirPath(ev.src_path)}>
-                                            {getDirPath(ev.src_path)}
-                                        </div>
-                                    </div>
-                                    <div class="badge bg-light text-dark border align-self-start mt-1 text-capitalize fw-bold">{ev.event_type}</div>
-                                </div>
-                            </div>
-                        {/each}
-                    </div>
-                {/if}
-            </div>
         </div>
 
       {/if}
@@ -722,7 +671,6 @@
   .bg-gradient-success { background: linear-gradient(135deg, #10b981 0%, #047857 100%); }
   .tracking-wider { letter-spacing: 0.05em; }
   .ls-1 { letter-spacing: 0.04em; }
-  .last-no-border:last-child { border-bottom: none !important; }
   .opacity-10 { opacity: 0.1; }
   .lock-btn { transition: all 0.2s ease; border-width: 2px; }
   .lock-btn:hover { background-color: var(--bs-danger); color: white; transform: translateY(-2px); box-shadow: 0 4px 12px rgba(220,53,69,0.2) !important; border-color: var(--bs-danger); }
@@ -730,5 +678,4 @@
   .metric-card:hover { transform: translateY(-5px); box-shadow: 0 14px 28px rgba(0,0,0,0.15) !important; }
   .bg-glass { background: var(--surface-soft, rgba(255, 255, 255, 0.8)); }
   :global(.theme-dark) .bg-glass { background: rgba(30, 41, 59, 0.5); }
-  :global(.theme-dark) .bg-light { background: rgba(255, 255, 255, 0.08) !important; border-color: rgba(255, 255, 255, 0.1) !important; color: #cbd5e1 !important; }
 </style>

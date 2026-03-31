@@ -115,6 +115,45 @@ class FileVersion(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
+class CheckpointSession(Base):
+    __tablename__ = "checkpoint_sessions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    watched_path = Column(String, nullable=False, index=True)
+    name = Column(String, nullable=False)
+    scope = Column(String, nullable=False, index=True)
+    item_count = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+    items = relationship(
+        "CheckpointSessionItem",
+        back_populates="session",
+        cascade="all, delete-orphan",
+    )
+
+
+class CheckpointSessionItem(Base):
+    __tablename__ = "checkpoint_session_items"
+
+    id = Column(Integer, primary_key=True, index=True)
+    session_id = Column(
+        Integer,
+        ForeignKey("checkpoint_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    file_path = Column(String, nullable=False, index=True)
+    file_record_id = Column(Integer, ForeignKey("file_records.id"), nullable=True)
+    file_version_id = Column(Integer, ForeignKey("file_versions.id"), nullable=False)
+    file_hash = Column(String, nullable=True)
+    file_size_bytes = Column(BigInteger, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    session = relationship("CheckpointSession", back_populates="items")
+    file_record = relationship("FileRecord")
+    file_version = relationship("FileVersion")
+
+
 # tracks what a user is doing on their system
 class ActivityLog(Base):
     __tablename__ = "activity_logs"

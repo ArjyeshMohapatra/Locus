@@ -184,6 +184,12 @@ def remove_watched_path_and_tracked_data(
 
     root_path = watched.path
 
+    checkpoint_sessions_deleted = (
+        db.query(models.CheckpointSession)
+        .filter(models.CheckpointSession.watched_path == root_path)
+        .delete(synchronize_session=False)
+    )
+
     file_records = (
         db.query(models.FileRecord)
         .filter(models.FileRecord.current_path.startswith(root_path))
@@ -290,6 +296,7 @@ def remove_watched_path_and_tracked_data(
         "file_events_deleted": events_deleted,
         "backup_tasks_deleted": backup_tasks_deleted,
         "snapshot_jobs_deleted": snapshot_jobs_deleted,
+        "checkpoint_sessions_deleted": checkpoint_sessions_deleted,
     }
 
 
@@ -664,6 +671,96 @@ def get_file_versions(db: Session, original_path: str):
         db.query(models.FileVersion)
         .filter(models.FileVersion.original_path == original_path)
         .order_by(models.FileVersion.version_number.desc())
+        .all()
+    )
+
+
+def get_latest_file_version(db: Session, original_path: str):
+    versions = get_file_versions(db, original_path)
+    if not versions:
+        return None
+    return versions[0]
+
+
+def create_checkpoint_session(
+    db: Session,
+    watched_path: str,
+    name: str,
+    scope: str,
+    items: list[dict[str, Any]],
+):
+    session = models.CheckpointSession(
+        watched_path=watched_path,
+        name=name,
+        scope=scope,
+        item_count=len(items),
+    )
+    db.add(session)
+    db.flush()
+
+    rows: list[models.CheckpointSessionItem] = []
+    for item in items:
+        row = models.CheckpointSessionItem(
+            session_id=int(cast(Any, session).id),
+            file_path=str(item["file_path"]),
+            file_record_id=item.get("file_record_id"),
+            file_version_id=int(item["file_version_id"]),
+            file_hash=item.get("file_hash"),
+            file_size_bytes=item.get("file_size_bytes"),
+        )
+        rows.append(row)
+
+    if rows:
+        db.add_all(rows)
+
+    db.commit()
+    db.refresh(session)
+    return session
+
+
+def list_checkpoint_sessions(
+    db: Session,
+    watched_path: str | None = None,
+    limit: int = 100,
+):
+    query = db.query(models.CheckpointSession)
+    if watched_path:
+        query = query.filter(models.CheckpointSession.watched_path == watched_path)
+
+    return (
+        query.order_by(
+            models.CheckpointSession.created_at.desc(),
+            models.CheckpointSession.id.desc(),
+        )
+        .limit(limit)
+        .all()
+    )
+
+
+def get_checkpoint_session(db: Session, session_id: int):
+    return (
+        db.query(models.CheckpointSession)
+        .filter(models.CheckpointSession.id == session_id)
+        .first()
+    )
+
+
+def rename_checkpoint_session(db: Session, session_id: int, new_name: str):
+    session = get_checkpoint_session(db, session_id)
+    if not session:
+        return None
+
+    session.name = new_name
+    db.commit()
+    db.refresh(session)
+    return session
+
+
+def get_checkpoint_session_items(db: Session, session_id: int):
+    return (
+        db.query(models.CheckpointSessionItem)
+        .filter(models.CheckpointSessionItem.session_id == session_id)
+        .order_by(models.CheckpointSessionItem.file_path.asc())
         .all()
     )
 

@@ -12,7 +12,7 @@ from app.snapshot_service import snapshot_service
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import sessionmaker, Session
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
-from typing import Annotated, Any, Awaitable, Callable
+from typing import Annotated, Any, Awaitable, Callable, Literal
 import threading
 import time
 import uvicorn
@@ -24,6 +24,7 @@ import shutil  # Added shutil for file operations
 import json
 import re
 import uuid
+import difflib
 from datetime import datetime, timezone
 
 
@@ -175,6 +176,14 @@ FILE_PREVIEW_MAX_BYTES = 1024 * 1024
 BINARY_PREVIEW_TEXT = "[Binary file - preview not available]"
 DEFAULT_API_PORT = 8000
 API_PORT_SEARCH_LIMIT = 20
+CHECKPOINT_SCOPE_SINGLE_FILE = "single_file"
+CHECKPOINT_SCOPE_SELECTED_FILES = "selected_files"
+CHECKPOINT_SCOPE_FULL_FOLDER = "full_folder"
+CHECKPOINT_NAME_MAX_LENGTH = 80
+CHECKPOINT_SESSION_NOT_FOUND_DETAIL = "Checkpoint session not found"
+CHECKPOINT_DIFF_MAX_BYTES = 1024 * 1024
+CHECKPOINT_DIFF_PREVIEW_LINES = 6
+CHECKPOINT_DIFF_MAX_HUNKS = 8
 
 
 def _build_cors_origins() -> list[str]:
@@ -287,6 +296,76 @@ class PathRelink(BaseModel):
     @classmethod
     def validate_paths(cls, value: str, info: ValidationInfo) -> str:
         return _validate_text_input(value, info.field_name or "path")
+
+
+class CheckpointCreatePayload(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    watched_path: str = Field(min_length=1, max_length=4096)
+    scope: Literal[
+        "single_file",
+        "selected_files",
+        "full_folder",
+    ] = CHECKPOINT_SCOPE_FULL_FOLDER
+    name: str | None = Field(default=None, max_length=CHECKPOINT_NAME_MAX_LENGTH)
+    file_paths: list[str] = Field(default_factory=list, max_length=5000)
+
+    @field_validator("watched_path")
+    @classmethod
+    def validate_watched_path(cls, value: str) -> str:
+        return _validate_text_input(value, "watched_path")
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = _validate_text_input(value, "name")
+        normalized = " ".join(cleaned.split())
+        return normalized or None
+
+    @field_validator("file_paths")
+    @classmethod
+    def validate_file_paths(cls, values: list[str]) -> list[str]:
+        validated: list[str] = []
+        for value in values:
+            validated.append(_validate_text_input(value, "file_paths"))
+        return validated
+
+
+class CheckpointRenamePayload(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+    name: str = Field(min_length=1, max_length=CHECKPOINT_NAME_MAX_LENGTH)
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        cleaned = _validate_text_input(value, "name")
+        normalized = " ".join(cleaned.split())
+        if not normalized:
+            raise ValueError("name cannot be empty")
+        return normalized
+
+
+class CheckpointDiffPayload(BaseModel):
+    from_session_id: int = Field(ge=1)
+    to_session_id: int = Field(ge=1)
+    include_unchanged: bool = False
+
+
+class CheckpointRestorePayload(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    destination_root: str | None = Field(default=None, max_length=4096)
+    conflict_strategy: Literal["rename", "overwrite", "skip"] = "rename"
+    dry_run: bool = False
+
+    @field_validator("destination_root")
+    @classmethod
+    def validate_destination_root(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return _validate_text_input(value, "destination_root")
 
 
 class FileRestore(BaseModel):
@@ -586,7 +665,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=_build_cors_origins(),
     allow_credentials=True,
-    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization"],
 )
 
@@ -671,6 +750,698 @@ def _build_watched_tree_node(path: str) -> dict[str, object]:
     return node
 
 
+def _default_checkpoint_name(now: datetime | None = None) -> str:
+    stamp = (now or datetime.now()).strftime("%Y-%m-%d %H:%M:%S")
+    return f"Checkpoint {stamp}"
+
+
+def _normalize_checkpoint_name(name: str | None) -> str:
+    if not name:
+        return _default_checkpoint_name()
+    return " ".join(name.strip().split())
+
+
+def _serialize_checkpoint_session(session: models.CheckpointSession) -> dict[str, Any]:
+    return {
+        "id": session.id,
+        "watched_path": session.watched_path,
+        "name": session.name,
+        "scope": session.scope,
+        "item_count": session.item_count,
+        "created_at": session.created_at,
+    }
+
+
+def _serialize_checkpoint_item(item: models.CheckpointSessionItem) -> dict[str, Any]:
+    return {
+        "id": item.id,
+        "file_path": item.file_path,
+        "file_record_id": item.file_record_id,
+        "file_version_id": item.file_version_id,
+        "file_hash": item.file_hash,
+        "file_size_bytes": item.file_size_bytes,
+        "created_at": item.created_at,
+    }
+
+
+def _dict_path(item: dict[str, Any]) -> str:
+    return str(item.get("file_path") or "")
+
+
+def _dict_hash(item: dict[str, Any], field: str) -> str:
+    return str(item.get(field) or "").strip()
+
+
+def _index_added_items_by_hash(
+    added: list[dict[str, Any]],
+) -> dict[str, list[dict[str, Any]]]:
+    indexed: dict[str, list[dict[str, Any]]] = {}
+    for item in added:
+        item_hash = _dict_hash(item, "to_hash")
+        if not item_hash:
+            continue
+        indexed.setdefault(item_hash, []).append(item)
+    return indexed
+
+
+def _detect_renames(
+    added: list[dict[str, Any]],
+    removed: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    added_by_hash = _index_added_items_by_hash(added)
+
+    renamed: list[dict[str, Any]] = []
+    renamed_added_paths: set[str] = set()
+    renamed_removed_paths: set[str] = set()
+
+    for removed_item in removed:
+        item_hash = _dict_hash(removed_item, "from_hash")
+        if not item_hash:
+            continue
+        candidates = added_by_hash.get(item_hash)
+        if not candidates:
+            continue
+
+        candidate = candidates.pop(0)
+        candidate_path = _dict_path(candidate)
+        removed_path = _dict_path(removed_item)
+
+        renamed_added_paths.add(candidate_path)
+        renamed_removed_paths.add(removed_path)
+        renamed.append(
+            {
+                "from_path": removed_path,
+                "to_path": candidate_path,
+                "file_hash": item_hash,
+                "from_file_version_id": removed_item.get("from_file_version_id"),
+                "to_file_version_id": candidate.get("to_file_version_id"),
+            }
+        )
+
+    filtered_added = [
+        item for item in added if _dict_path(item) not in renamed_added_paths
+    ]
+    filtered_removed = [
+        item
+        for item in removed
+        if _dict_path(item) not in renamed_removed_paths
+    ]
+
+    return filtered_added, filtered_removed, renamed
+
+
+def _diff_checkpoint_session_items(
+    from_items: list[models.CheckpointSessionItem],
+    to_items: list[models.CheckpointSessionItem],
+    include_unchanged: bool,
+) -> dict[str, Any]:
+    from_by_path = {item.file_path: item for item in from_items}
+    to_by_path = {item.file_path: item for item in to_items}
+
+    added: list[dict[str, Any]] = []
+    removed: list[dict[str, Any]] = []
+    modified: list[dict[str, Any]] = []
+    unchanged: list[dict[str, Any]] = []
+
+    for path, to_item in to_by_path.items():
+        from_item = from_by_path.get(path)
+        if not from_item:
+            added.append(
+                {
+                    "file_path": path,
+                    "to_file_version_id": to_item.file_version_id,
+                    "to_hash": to_item.file_hash,
+                    "to_size_bytes": to_item.file_size_bytes,
+                }
+            )
+            continue
+
+        if from_item.file_version_id != to_item.file_version_id:
+            modified.append(
+                {
+                    "file_path": path,
+                    "from_file_version_id": from_item.file_version_id,
+                    "to_file_version_id": to_item.file_version_id,
+                    "from_hash": from_item.file_hash,
+                    "to_hash": to_item.file_hash,
+                    "from_size_bytes": from_item.file_size_bytes,
+                    "to_size_bytes": to_item.file_size_bytes,
+                }
+            )
+        elif include_unchanged:
+            unchanged.append(
+                {
+                    "file_path": path,
+                    "file_version_id": to_item.file_version_id,
+                    "file_hash": to_item.file_hash,
+                    "file_size_bytes": to_item.file_size_bytes,
+                }
+            )
+
+    for path, from_item in from_by_path.items():
+        if path in to_by_path:
+            continue
+        removed.append(
+            {
+                "file_path": path,
+                "from_file_version_id": from_item.file_version_id,
+                "from_hash": from_item.file_hash,
+                "from_size_bytes": from_item.file_size_bytes,
+            }
+        )
+
+    added, removed, renamed = _detect_renames(added, removed)
+
+    return {
+        "summary": {
+            "added": len(added),
+            "removed": len(removed),
+            "modified": len(modified),
+            "renamed": len(renamed),
+            "unchanged": len(unchanged),
+        },
+        "added": sorted(added, key=lambda item: str(item.get("file_path") or "")),
+        "removed": sorted(
+            removed,
+            key=lambda item: str(item.get("file_path") or ""),
+        ),
+        "modified": sorted(
+            modified,
+            key=lambda item: str(item.get("file_path") or ""),
+        ),
+        "renamed": sorted(
+            renamed,
+            key=lambda item: f"{item.get('from_path','')}->{item.get('to_path','')}",
+        ),
+        "unchanged": sorted(
+            unchanged,
+            key=lambda item: str(item.get("file_path") or ""),
+        )
+        if include_unchanged
+        else [],
+    }
+
+
+def _read_checkpoint_version_text(
+    version: models.FileVersion,
+) -> tuple[str | None, str | None]:
+    storage_path = str(version.storage_path)
+    if not os.path.exists(storage_path):
+        return None, "stored_version_unavailable"
+
+    try:
+        if storage_path.endswith(".gz"):
+            with gzip.open(storage_path, "rb") as f:
+                content_bytes = f.read(CHECKPOINT_DIFF_MAX_BYTES + 1)
+        else:
+            with open(storage_path, "rb") as f:
+                content_bytes = f.read(CHECKPOINT_DIFF_MAX_BYTES + 1)
+    except Exception:
+        return None, "failed_to_read_stored_version"
+
+    if len(content_bytes) > CHECKPOINT_DIFF_MAX_BYTES:
+        return None, "file_too_large_for_line_diff"
+
+    if b"\x00" in content_bytes[:FILE_PREVIEW_SNIFF_BYTES]:
+        return None, "binary_file"
+
+    try:
+        return content_bytes.decode("utf-8"), None
+    except UnicodeDecodeError:
+        return None, "binary_file"
+
+
+def _build_checkpoint_line_diff(
+    from_version: models.FileVersion | None,
+    to_version: models.FileVersion | None,
+) -> dict[str, Any]:
+    if not from_version or not to_version:
+        return {
+            "available": False,
+            "reason": "missing_file_versions",
+            "added_lines": 0,
+            "removed_lines": 0,
+            "hunks": [],
+        }
+
+    from_text, from_error = _read_checkpoint_version_text(from_version)
+    if from_error:
+        return {
+            "available": False,
+            "reason": from_error,
+            "added_lines": 0,
+            "removed_lines": 0,
+            "hunks": [],
+        }
+
+    to_text, to_error = _read_checkpoint_version_text(to_version)
+    if to_error:
+        return {
+            "available": False,
+            "reason": to_error,
+            "added_lines": 0,
+            "removed_lines": 0,
+            "hunks": [],
+        }
+
+    from_lines = str(from_text or "").splitlines()
+    to_lines = str(to_text or "").splitlines()
+
+    added_lines = 0
+    removed_lines = 0
+    hunks: list[dict[str, Any]] = []
+
+    matcher = difflib.SequenceMatcher(a=from_lines, b=to_lines, autojunk=False)
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            continue
+
+        if tag in {"replace", "insert"}:
+            added_lines += j2 - j1
+        if tag in {"replace", "delete"}:
+            removed_lines += i2 - i1
+
+        if len(hunks) >= CHECKPOINT_DIFF_MAX_HUNKS:
+            continue
+
+        hunks.append(
+            {
+                "tag": tag,
+                "from_start": i1 + 1,
+                "from_count": i2 - i1,
+                "to_start": j1 + 1,
+                "to_count": j2 - j1,
+                "removed_preview": from_lines[i1 : i1 + CHECKPOINT_DIFF_PREVIEW_LINES],
+                "added_preview": to_lines[j1 : j1 + CHECKPOINT_DIFF_PREVIEW_LINES],
+            }
+        )
+
+    return {
+        "available": True,
+        "reason": None,
+        "added_lines": added_lines,
+        "removed_lines": removed_lines,
+        "hunks": hunks,
+        "truncated_hunks": len(hunks) >= CHECKPOINT_DIFF_MAX_HUNKS,
+    }
+
+
+def _attach_checkpoint_line_diffs(db: Session, modified: list[dict[str, Any]]) -> None:
+    if not modified:
+        return
+
+    version_ids: set[int] = set()
+    for item in modified:
+        from_version_id = item.get("from_file_version_id")
+        to_version_id = item.get("to_file_version_id")
+        if isinstance(from_version_id, int):
+            version_ids.add(from_version_id)
+        if isinstance(to_version_id, int):
+            version_ids.add(to_version_id)
+
+    if not version_ids:
+        return
+
+    versions = (
+        db.query(models.FileVersion)
+        .filter(models.FileVersion.id.in_(list(version_ids)))
+        .all()
+    )
+    version_map = {int(version.id): version for version in versions}
+
+    for item in modified:
+        from_version = version_map.get(int(item.get("from_file_version_id") or 0))
+        to_version = version_map.get(int(item.get("to_file_version_id") or 0))
+        line_diff = _build_checkpoint_line_diff(from_version, to_version)
+        item["line_diff"] = line_diff
+        item["added_lines"] = int(line_diff.get("added_lines") or 0)
+        item["removed_lines"] = int(line_diff.get("removed_lines") or 0)
+
+
+def _checkpoint_diff_line_totals(modified: list[dict[str, Any]]) -> dict[str, int]:
+    added = 0
+    removed = 0
+    for item in modified:
+        added += int(item.get("added_lines") or 0)
+        removed += int(item.get("removed_lines") or 0)
+    return {
+        "added_lines": added,
+        "removed_lines": removed,
+    }
+
+
+def _build_restore_conflict_path(target_path: str) -> str:
+    base, ext = os.path.splitext(target_path)
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    candidate = f"{base}.restored-{stamp}{ext}"
+    suffix = 1
+    while os.path.exists(candidate):
+        candidate = f"{base}.restored-{stamp}-{suffix}{ext}"
+        suffix += 1
+    return candidate
+
+
+def _resolve_restore_relative_path(
+    original_path: str,
+    watched_path: str,
+) -> tuple[str | None, str | None]:
+    try:
+        relative_path = os.path.relpath(original_path, watched_path)
+    except ValueError:
+        return None, "Path could not be mapped under checkpoint watched folder"
+
+    if relative_path in {".", ""}:
+        return None, "Invalid file path in checkpoint manifest"
+
+    if relative_path == os.pardir or relative_path.startswith(f"{os.pardir}{os.sep}"):
+        return None, "Path escapes checkpoint watched folder"
+
+    return relative_path, None
+
+
+def _resolve_restore_target_path(
+    relative_path: str,
+    destination_root: str,
+) -> tuple[str | None, str | None]:
+    target_path = os.path.normpath(os.path.abspath(os.path.join(destination_root, relative_path)))
+    if not _is_within_watched_paths(target_path, [destination_root]):
+        return None, "Resolved restore path escapes destination root"
+    return target_path, None
+
+
+def _resolve_conflict_action(
+    target_path: str,
+    conflict_strategy: str,
+) -> tuple[str, str, dict[str, Any] | None]:
+    if not os.path.exists(target_path):
+        return "restore", target_path, None
+
+    if conflict_strategy == "skip":
+        action = "skip"
+        resolved_target_path = target_path
+    elif conflict_strategy == "rename":
+        action = "rename"
+        resolved_target_path = _build_restore_conflict_path(target_path)
+    else:
+        action = "overwrite"
+        resolved_target_path = target_path
+
+    return (
+        action,
+        resolved_target_path,
+        {
+            "existing_target_path": target_path,
+            "resolved_target_path": resolved_target_path,
+            "action": action,
+        },
+    )
+
+
+def _build_checkpoint_restore_plan(
+    items: list[models.CheckpointSessionItem],
+    watched_path: str,
+    destination_root: str,
+    conflict_strategy: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    plan: list[dict[str, Any]] = []
+    conflicts: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+
+    for item in items:
+        original_path = os.path.normpath(os.path.abspath(str(item.file_path)))
+        relative_path, relative_error = _resolve_restore_relative_path(
+            original_path,
+            watched_path,
+        )
+        if relative_error or not relative_path:
+            skipped.append(
+                {
+                    "file_path": original_path,
+                    "reason": relative_error or "Invalid checkpoint restore path",
+                }
+            )
+            continue
+
+        target_path, target_error = _resolve_restore_target_path(
+            relative_path,
+            destination_root,
+        )
+        if target_error or not target_path:
+            skipped.append(
+                {
+                    "file_path": original_path,
+                    "reason": target_error or "Invalid restore target path",
+                }
+            )
+            continue
+
+        action, resolved_target_path, conflict_entry = _resolve_conflict_action(
+            target_path,
+            conflict_strategy,
+        )
+        if conflict_entry:
+            conflicts.append({"file_path": original_path, **conflict_entry})
+
+        plan.append(
+            {
+                "session_item_id": item.id,
+                "file_path": original_path,
+                "file_version_id": item.file_version_id,
+                "target_path": target_path,
+                "resolved_target_path": resolved_target_path,
+                "action": action,
+            }
+        )
+
+    return plan, conflicts, skipped
+
+
+def _load_restore_versions(
+    db: Session,
+    plan: list[dict[str, Any]],
+) -> dict[int, models.FileVersion]:
+    version_ids = [
+        int(entry["file_version_id"])
+        for entry in plan
+        if str(entry.get("action")) != "skip"
+    ]
+    if not version_ids:
+        return {}
+
+    versions = (
+        db.query(models.FileVersion)
+        .filter(models.FileVersion.id.in_(version_ids))
+        .all()
+    )
+    return {int(version.id): version for version in versions}
+
+
+def _build_restore_skip_result(entry: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "file_path": str(entry.get("file_path") or ""),
+        "target_path": str(entry.get("target_path") or ""),
+        "reason": "Skipped due to conflict strategy",
+    }
+
+
+def _build_restore_failure_result(entry: dict[str, Any], reason: str) -> dict[str, Any]:
+    return {
+        "file_path": str(entry.get("file_path") or ""),
+        "target_path": str(entry.get("resolved_target_path") or ""),
+        "reason": reason,
+    }
+
+
+def _execute_restore_plan_entry(
+    entry: dict[str, Any],
+    version_map: dict[int, models.FileVersion],
+) -> tuple[str, dict[str, Any]]:
+    action = str(entry.get("action") or "")
+    if action == "skip":
+        return "skipped", _build_restore_skip_result(entry)
+
+    version_id = int(entry["file_version_id"])
+    version = version_map.get(version_id)
+    if not version:
+        return "failed", _build_restore_failure_result(
+            entry,
+            f"Missing file version {version_id}",
+        )
+
+    resolved_target_path = str(entry.get("resolved_target_path") or "")
+    target_dir = os.path.dirname(resolved_target_path) or "."
+
+    try:
+        os.makedirs(target_dir, exist_ok=True)
+    except Exception as exc:
+        return "failed", _build_restore_failure_result(
+            entry,
+            f"Failed to create target directory: {exc}",
+        )
+
+    register_restore_start(resolved_target_path)
+    if not storage.restore_file_version(str(version.storage_path), resolved_target_path):
+        return "failed", _build_restore_failure_result(
+            entry,
+            "Failed to restore file from storage",
+        )
+
+    return (
+        "restored",
+        {
+            "file_path": str(entry.get("file_path") or ""),
+            "file_version_id": version_id,
+            "target_path": resolved_target_path,
+            "action": action,
+        },
+    )
+
+
+def _execute_checkpoint_restore_plan(
+    db: Session,
+    plan: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    restored: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    failed: list[dict[str, Any]] = []
+
+    version_map = _load_restore_versions(db, plan)
+
+    for entry in plan:
+        status, result = _execute_restore_plan_entry(entry, version_map)
+        if status == "restored":
+            restored.append(result)
+        elif status == "skipped":
+            skipped.append(result)
+        else:
+            failed.append(result)
+
+    return restored, skipped, failed
+
+
+def _collect_full_scope_files(watched_path: str) -> list[str]:
+    files, _errors = _scan_snapshot_targets(watched_path)
+    return files
+
+
+def _normalize_checkpoint_file_paths(paths: list[str]) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw in paths:
+        current = os.path.normpath(os.path.abspath(raw))
+        if current in seen:
+            continue
+        seen.add(current)
+        normalized.append(current)
+    return normalized
+
+
+def _resolve_checkpoint_target_files(
+    payload: CheckpointCreatePayload,
+    watched_path: str,
+    db: Session,
+) -> list[str]:
+    if payload.scope == CHECKPOINT_SCOPE_FULL_FOLDER:
+        return _collect_full_scope_files(watched_path)
+
+    normalized = _normalize_checkpoint_file_paths(payload.file_paths)
+    if payload.scope == CHECKPOINT_SCOPE_SINGLE_FILE and len(normalized) != 1:
+        raise HTTPException(
+            status_code=400,
+            detail="single_file scope requires exactly one file path",
+        )
+    if payload.scope == CHECKPOINT_SCOPE_SELECTED_FILES and not normalized:
+        raise HTTPException(
+            status_code=400,
+            detail="selected_files scope requires at least one file path",
+        )
+
+    validated: list[str] = []
+    for file_path in normalized:
+        if not os.path.isabs(file_path):
+            raise HTTPException(status_code=400, detail="File path must be absolute")
+        _assert_path_allowed(file_path, db)
+        if not _is_within_watched_paths(file_path, [watched_path]):
+            raise HTTPException(
+                status_code=403,
+                detail="File path must be within selected watched folder",
+            )
+        if not os.path.exists(file_path) or not os.path.isfile(file_path):
+            raise HTTPException(
+                status_code=400,
+                detail=f"File not found on disk: {file_path}",
+            )
+        if storage.is_excluded_path(file_path):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Excluded file cannot be checkpointed: {file_path}",
+            )
+        validated.append(file_path)
+
+    return validated
+
+
+def _ensure_file_has_version(
+    db: Session,
+    file_path: str,
+) -> tuple[models.FileVersion | None, int | None]:
+    current_hash = storage.calculate_file_hash(file_path)
+    if not current_hash:
+        return None, None
+
+    file_record = crud.create_file_record(db, file_path, content_hash=current_hash)
+    versions = crud.get_file_versions(db, file_path)
+    for version in versions:
+        if version.file_hash == current_hash and os.path.exists(str(version.storage_path)):
+            return version, file_record.id if file_record else None
+
+    meta = storage.save_file_version(file_path, known_hash=current_hash)
+    if not meta:
+        return None, file_record.id if file_record else None
+
+    version = crud.create_file_version(
+        db,
+        file_path,
+        str(meta["storage_path"]),
+        len(versions) + 1,
+        str(meta["file_hash"]),
+        int(meta["file_size"]),
+        file_record_id=(file_record.id if file_record else None),
+    )
+    return version, file_record.id if file_record else None
+
+
+def _build_checkpoint_items(
+    db: Session,
+    files: list[str],
+) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    items: list[dict[str, Any]] = []
+    skipped: list[dict[str, str]] = []
+
+    for file_path in files:
+        version, file_record_id = _ensure_file_has_version(db, file_path)
+        if not version:
+            skipped.append(
+                {
+                    "file_path": file_path,
+                    "reason": "No version could be captured for file",
+                }
+            )
+            continue
+
+        items.append(
+            {
+                "file_path": file_path,
+                "file_record_id": file_record_id,
+                "file_version_id": version.id,
+                "file_hash": version.file_hash,
+                "file_size_bytes": version.file_size_bytes,
+            }
+        )
+
+    return items, skipped
+
+
 @app.get("/files/watched/tree")
 def get_watched_tree(db: DbSession):
     roots = []
@@ -740,6 +1511,259 @@ def add_watched_path(path_data: PathCreate, db: DbSession):
     except Exception as e:
         logger.error(f"[API] add_watched_path failed: {e}", exc_info=True)
         raise HTTPException(status_code=400, detail="Invalid watched path")
+
+
+@app.post(
+    "/checkpoints/sessions",
+    responses={
+        400: {"description": "Invalid checkpoint request"},
+        403: {"description": "Path must be within a watched folder"},
+        404: {"description": "Watched folder not found"},
+    },
+)
+def create_checkpoint_session(payload: CheckpointCreatePayload, db: DbSession):
+    watched_path = os.path.normpath(os.path.abspath(payload.watched_path))
+
+    watched = (
+        db.query(models.WatchedPath)
+        .filter(
+            models.WatchedPath.path == watched_path,
+            models.WatchedPath.is_active,
+        )
+        .first()
+    )
+    if not watched:
+        raise HTTPException(status_code=404, detail="Watched folder not found")
+
+    target_files = _resolve_checkpoint_target_files(payload, watched_path, db)
+    if not target_files:
+        raise HTTPException(
+            status_code=400,
+            detail="No eligible files found for checkpoint scope",
+        )
+
+    items, skipped = _build_checkpoint_items(db, target_files)
+    if not items:
+        raise HTTPException(
+            status_code=400,
+            detail="Checkpoint captured no versions. Files may be excluded or oversized.",
+        )
+
+    session = crud.create_checkpoint_session(
+        db,
+        watched_path=watched_path,
+        name=_normalize_checkpoint_name(payload.name),
+        scope=payload.scope,
+        items=items,
+    )
+
+    return {
+        **_serialize_checkpoint_session(session),
+        "captured_count": len(items),
+        "skipped_count": len(skipped),
+        "skipped": skipped,
+    }
+
+
+@app.get(
+    "/checkpoints/sessions",
+    responses={
+        422: {"description": "Invalid path input"},
+    },
+)
+def list_checkpoint_sessions(
+    db: DbSession,
+    watched_path: Annotated[str | None, Query(max_length=4096)] = None,
+    limit: Annotated[int, Query(ge=1, le=500)] = 100,
+):
+    normalized_watched_path: str | None = None
+    if watched_path is not None:
+        try:
+            normalized_watched_path = os.path.normpath(
+                os.path.abspath(_validate_text_input(watched_path, "watched_path"))
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+
+    sessions = crud.list_checkpoint_sessions(
+        db,
+        watched_path=normalized_watched_path,
+        limit=limit,
+    )
+    return [_serialize_checkpoint_session(session) for session in sessions]
+
+
+@app.get(
+    "/checkpoints/sessions/{session_id}",
+    responses={
+        404: {"description": CHECKPOINT_SESSION_NOT_FOUND_DETAIL},
+    },
+)
+def get_checkpoint_session_detail(session_id: int, db: DbSession):
+    session = crud.get_checkpoint_session(db, session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail=CHECKPOINT_SESSION_NOT_FOUND_DETAIL)
+
+    items = crud.get_checkpoint_session_items(db, session_id)
+    return {
+        **_serialize_checkpoint_session(session),
+        "items": [_serialize_checkpoint_item(item) for item in items],
+    }
+
+
+@app.patch(
+    "/checkpoints/sessions/{session_id}",
+    responses={
+        404: {"description": CHECKPOINT_SESSION_NOT_FOUND_DETAIL},
+    },
+)
+def rename_checkpoint_session(
+    session_id: int,
+    payload: CheckpointRenamePayload,
+    db: DbSession,
+):
+    updated = crud.rename_checkpoint_session(
+        db,
+        session_id=session_id,
+        new_name=_normalize_checkpoint_name(payload.name),
+    )
+    if not updated:
+        raise HTTPException(status_code=404, detail=CHECKPOINT_SESSION_NOT_FOUND_DETAIL)
+
+    return _serialize_checkpoint_session(updated)
+
+
+@app.post(
+    "/checkpoints/sessions/diff",
+    responses={
+        400: {"description": "Cannot diff sessions from different watched folders"},
+        404: {"description": CHECKPOINT_SESSION_NOT_FOUND_DETAIL},
+    },
+)
+def diff_checkpoint_sessions(payload: CheckpointDiffPayload, db: DbSession):
+    from_session = crud.get_checkpoint_session(db, payload.from_session_id)
+    if not from_session:
+        raise HTTPException(status_code=404, detail="from_session not found")
+
+    to_session = crud.get_checkpoint_session(db, payload.to_session_id)
+    if not to_session:
+        raise HTTPException(status_code=404, detail="to_session not found")
+
+    if str(from_session.watched_path) != str(to_session.watched_path):
+        raise HTTPException(
+            status_code=400,
+            detail="Checkpoint sessions must belong to the same watched folder",
+        )
+
+    from_items = crud.get_checkpoint_session_items(db, payload.from_session_id)
+    to_items = crud.get_checkpoint_session_items(db, payload.to_session_id)
+
+    diff = _diff_checkpoint_session_items(
+        from_items,
+        to_items,
+        include_unchanged=payload.include_unchanged,
+    )
+    modified = diff.get("modified") or []
+    if isinstance(modified, list):
+        _attach_checkpoint_line_diffs(db, modified)
+        if isinstance(diff.get("summary"), dict):
+            diff["summary"] = {
+                **diff["summary"],
+                **_checkpoint_diff_line_totals(modified),
+            }
+
+    return {
+        "from_session": _serialize_checkpoint_session(from_session),
+        "to_session": _serialize_checkpoint_session(to_session),
+        **diff,
+    }
+
+
+@app.post(
+    "/checkpoints/sessions/{session_id}/restore",
+    responses={
+        400: {"description": "Invalid restore plan"},
+        403: {"description": "Destination must be within checkpoint watched folder"},
+        404: {"description": CHECKPOINT_SESSION_NOT_FOUND_DETAIL},
+    },
+)
+def restore_checkpoint_session(
+    session_id: int,
+    payload: CheckpointRestorePayload,
+    db: DbSession,
+):
+    session = crud.get_checkpoint_session(db, session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail=CHECKPOINT_SESSION_NOT_FOUND_DETAIL)
+
+    items = crud.get_checkpoint_session_items(db, session_id)
+    if not items:
+        raise HTTPException(status_code=400, detail="Checkpoint session has no items")
+
+    watched_path = os.path.normpath(os.path.abspath(str(session.watched_path)))
+    destination_root_raw = payload.destination_root or watched_path
+    destination_root = os.path.normpath(os.path.abspath(destination_root_raw))
+
+    _assert_path_allowed(destination_root, db)
+    if not _is_within_watched_paths(destination_root, [watched_path]):
+        raise HTTPException(
+            status_code=403,
+            detail="Destination must be within checkpoint watched folder",
+        )
+
+    plan, conflicts, pre_skipped = _build_checkpoint_restore_plan(
+        items,
+        watched_path=watched_path,
+        destination_root=destination_root,
+        conflict_strategy=payload.conflict_strategy,
+    )
+
+    if not plan and pre_skipped:
+        raise HTTPException(
+            status_code=400,
+            detail="No restorable files found for this destination",
+        )
+
+    if payload.dry_run:
+        would_restore = len([entry for entry in plan if str(entry.get("action")) != "skip"])
+        return {
+            "dry_run": True,
+            "session": _serialize_checkpoint_session(session),
+            "destination_root": destination_root,
+            "conflict_strategy": payload.conflict_strategy,
+            "summary": {
+                "total_manifest_items": len(items),
+                "planned": len(plan),
+                "would_restore": would_restore,
+                "conflicts": len(conflicts),
+                "skipped": len(pre_skipped),
+            },
+            "plan": plan,
+            "conflicts": conflicts,
+            "skipped": pre_skipped,
+        }
+
+    restored, runtime_skipped, failed = _execute_checkpoint_restore_plan(db, plan)
+    all_skipped = [*pre_skipped, *runtime_skipped]
+
+    return {
+        "dry_run": False,
+        "session": _serialize_checkpoint_session(session),
+        "destination_root": destination_root,
+        "conflict_strategy": payload.conflict_strategy,
+        "summary": {
+            "total_manifest_items": len(items),
+            "planned": len(plan),
+            "restored": len(restored),
+            "conflicts": len(conflicts),
+            "skipped": len(all_skipped),
+            "failed": len(failed),
+        },
+        "conflicts": conflicts,
+        "restored": restored,
+        "skipped": all_skipped,
+        "failed": failed,
+    }
 
 
 @app.delete(
@@ -1556,7 +2580,12 @@ class SetupPayload(BaseModel):
     master_password: str
 
 
-@app.post("/auth/setup")
+@app.post(
+    "/auth/setup",
+    responses={
+        400: {"description": "Already setup or invalid master password"},
+    },
+)
 def auth_setup(payload: SetupPayload, db: DbSession):
     verifier = crud.get_setting(db, "snapshot_key_verifier", None)
     if verifier:
@@ -1575,7 +2604,12 @@ class UnlockPayload(BaseModel):
     passphrase: str
 
 
-@app.post("/auth/unlock")
+@app.post(
+    "/auth/unlock",
+    responses={
+        401: {"description": "Invalid password or recovery key"},
+    },
+)
 def auth_unlock(payload: UnlockPayload, db: DbSession):
     ok = snapshot_service.unlock(payload.passphrase, db)
     if not ok:
@@ -1639,7 +2673,12 @@ def get_dashboard_summary(db: DbSession):
     }
 
 
-@app.post("/auth/reset")
+@app.post(
+    "/auth/reset",
+    responses={
+        500: {"description": "Factory reset failed"},
+    },
+)
 def auth_reset_factory(db: DbSession):
     """Factory reset: wipe all data and return to first-run setup."""
     import shutil

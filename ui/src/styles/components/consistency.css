@@ -98,6 +98,29 @@ small,
   box-shadow: var(--ui-focus-ring);
 }
 
+/* Keyboard focus affordance for custom interactive controls outside .btn */
+.top-nav-item:focus-visible,
+.diff-secondary-summary:focus-visible,
+.hamburger:focus-visible,
+.btn-close:focus-visible,
+.form-check-input:focus-visible {
+  outline: none;
+  box-shadow: var(--ui-focus-ring);
+}
+
+.top-nav-item:focus-visible,
+.hamburger:focus-visible {
+  border-radius: var(--ui-radius-control);
+}
+
+.diff-secondary-summary:focus-visible {
+  border-radius: 8px;
+}
+
+.btn-close:focus-visible {
+  border-radius: 999px;
+}
+
 .btn:disabled,
 .form-control:disabled,
 .settings-input:disabled,

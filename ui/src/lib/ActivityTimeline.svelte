@@ -273,7 +273,7 @@
   });
 </script>
 
-<div class="card h-100 rounded-4">
+<div class="card rounded-4 activity-card">
   <div class="card-header d-flex align-items-center justify-content-between py-3 px-4">
     <h5 class="card-title mb-0 fw-bold">Live Activity</h5>
     <span class="badge-soft badge-soft-secondary">{sortedRoots.length} Watched</span>
@@ -406,8 +406,14 @@
 <FileHistoryModal filePath={selectedFile} onClose={() => selectedFile = null} />
 
 <style>
+  .activity-card {
+    max-height: min(72vh, calc(100vh - 200px));
+    overflow: hidden;
+  }
+
   .activity-list {
-    max-height: 350px;
+    max-height: min(64vh, calc(100vh - 260px));
+    overflow: auto;
   }
 
   .activity-path {

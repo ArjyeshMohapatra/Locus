@@ -1,5 +1,5 @@
 <script>
-  import { onMount } from 'svelte';
+    import { onDestroy, onMount } from 'svelte';
     import { fade } from 'svelte/transition';
                 import { getFileVersions, restoreFileVersion, getFileVersionContent, getCurrentFileVersion, getCurrentFileContent } from '../api.js';
     import { showMessage, askQuestion } from '../dialogStore.js';
@@ -8,6 +8,11 @@
 
   export let filePath = null;
   export let onClose = () => {};
+
+    const setModalOpenState = (open) => {
+        if (typeof document === 'undefined') return;
+        document.body.classList.toggle('locus-modal-open', !!open);
+    };
 
   let versions = [];
   let loading = false;
@@ -29,14 +34,22 @@
     let currentContentType = 'text';
     let diffRows = [];
     let diffTooLarge = false;
+        let previewLines = [];
 
     const MAX_DIFF_TOTAL_LINES = 1600;
 
   // React to filePath changes
   $: if (filePath) {
+      setModalOpenState(true);
       loadVersions();
       closePreview();
+  } else {
+      setModalOpenState(false);
   }
+
+  onDestroy(() => {
+      setModalOpenState(false);
+  });
 
   function closePreview() {
       selectedVersion = null;
@@ -46,6 +59,7 @@
       currentContentType = 'text';
       diffRows = [];
       diffTooLarge = false;
+      previewLines = [];
       viewMode = 'preview';
   }
 
@@ -137,6 +151,7 @@
           const data = await getFileVersionContent(version.id);
           previewContent = data.content;
           previewType = data.type;
+          previewLines = splitLines(previewContent ?? '');
 
           if (currentVersionId !== version.id && previewType === 'text') {
               try {
@@ -170,7 +185,7 @@
       }
   }
 
-  $: showDiff = Boolean(
+    $: canShowDiffToggle = Boolean(
       selectedVersion &&
       currentVersionId !== selectedVersion.id &&
       previewType === 'text' &&
@@ -178,8 +193,13 @@
       !diffTooLarge
   );
 
+    $: showDiff = Boolean(canShowDiffToggle);
+
     $: diffAddedCount = diffRows.filter((row) => row.type === 'add').length;
     $: diffRemovedCount = diffRows.filter((row) => row.type === 'remove').length;
+    $: if (!selectedVersion) {
+        previewLines = [];
+    }
 
   async function loadVersions() {
     if (!filePath) return;
@@ -257,32 +277,55 @@
 <div class="modal-backdrop show" role="button" on:click|self={onClose} on:keydown={(e) => e.key === 'Escape' && onClose()} tabindex="-1"></div>
 
 <!-- Modal Dialog -->
-<div class="modal show d-block" tabindex="-1" role="dialog" aria-modal="true" on:click|self={onClose} on:keydown={(e) => e.key === 'Escape' && onClose()}>
-    <div class="modal-dialog modal-lg modal-dialog-centered" role="document">
+<div class="modal show" tabindex="-1" role="dialog" aria-modal="true" on:click|self={onClose} on:keydown={(e) => e.key === 'Escape' && onClose()}>
+        <div class="modal-dialog modal-xl" role="document">
     <div class="modal-content shadow-lg glass-modal">
-      <div class="modal-header">
-        <h5 class="modal-title">
-            {#if selectedVersion}
-                     <button class="btn btn-sm btn-outline-secondary me-2" on:click={closePreview}>
-                         <Fa icon={faArrowLeft} class="me-1" aria-hidden="true"/> Back
-                     </button>
-                File Preview (V{selectedVersion.version_number})
-            {:else}
-                                <Fa icon={faHistory} class="me-2" aria-hidden="true"/>File History
-                                {#if currentVersionNumber}
-                                    <span class="ms-2 small text-muted">(Current: V{currentVersionNumber})</span>
-                                {:else if currentHash}
-                                    <span class="ms-2 small text-muted">(Current: unsnapped changes)</span>
-                                {/if}
-            {/if}
-        </h5>
-        <!-- <button type="button" class="btn-close" aria-label="Close modal" on:click={onClose}></button> -->
+            <div class="modal-header modal-header-shell {selectedVersion ? 'preview-header' : 'history-header'}">
+                <div class="header-left">
+                    {#if selectedVersion}
+                        <button class="btn btn-sm btn-outline-secondary me-2" on:click={closePreview}>
+                            <Fa icon={faArrowLeft} class="me-1" aria-hidden="true"/> Back
+                        </button>
+                        <h5 class="modal-title mb-0">File Preview (V{selectedVersion.version_number})</h5>
+                    {:else}
+                        <h5 class="modal-title mb-0">
+                            <Fa icon={faHistory} class="me-2" aria-hidden="true"/>File History
+                            {#if currentVersionNumber}
+                                <span class="ms-2 small text-muted">(Current: V{currentVersionNumber})</span>
+                            {:else if currentHash}
+                                <span class="ms-2 small text-muted">(Current: unsnapped changes)</span>
+                            {/if}
+                        </h5>
+                    {/if}
+                </div>
+                <div class="header-right {selectedVersion ? 'with-controls' : 'close-only'}">
+                    {#if selectedVersion}
+                        <span class="recorded-chip">Recorded: {formatDate(selectedVersion.created_at)}</span>
+                        {#if canShowDiffToggle}
+                            <div class="btn-group btn-group-sm preview-mode-switch" role="group">
+                                <input type="radio" class="btn-check" id="radioPreview" bind:group={viewMode} value="preview">
+                                <label class="btn btn-outline-secondary" for="radioPreview">Preview</label>
+
+                                <input type="radio" class="btn-check" id="radioDiff" bind:group={viewMode} value="diff">
+                                <label class="btn btn-outline-secondary" for="radioDiff">Diff vs Current</label>
+                            </div>
+                        {/if}
+                    {/if}
+                    <button type="button" class="btn-close" aria-label="Close modal" on:click={onClose}></button>
+                </div>
       </div>
       
       <div class="modal-body">
-        <div class="mb-4">
-            <small class="text-uppercase fw-bold ls-1" style="font-size: 0.7rem; color: var(--accent); opacity: 0.8;">File Path</small>
-            <div class="text-break mt-1 fw-medium" style="color: var(--text-primary);">{filePath}</div>
+                <div class="file-meta-row mb-4">
+                        <div class="file-meta-main">
+                                <small class="text-uppercase fw-bold ls-1" style="font-size: 0.7rem; color: var(--accent); opacity: 0.8;">File Path</small>
+                                <div class="text-break mt-1 fw-medium" style="color: var(--text-primary);">{filePath}</div>
+                        </div>
+                        {#if selectedVersion}
+                                <button class="btn btn-primary btn-sm px-3" on:click={() => handleRestore(selectedVersion.id)}>
+                                        <Fa icon={faUndo} class="me-1" aria-hidden="true"/> Restore
+                                </button>
+                        {/if}
         </div>
 
         {#if successMsg}
@@ -302,24 +345,6 @@
             <!-- Preview View -->
             <div transition:fade={{ duration: 200 }}>
             <div class="preview-container">
-                <div class="d-flex justify-content-between align-items-center mb-3 p-3 rounded-3 preview-header">
-                    <div class="small text-muted fw-medium d-flex align-items-center gap-3">
-                        <span>Recorded: {formatDate(selectedVersion.created_at)}</span>
-                        {#if currentVersionId !== selectedVersion.id && previewType === 'text' && currentContentType === 'text' && !diffTooLarge}
-                            <div class="btn-group btn-group-sm" role="group">
-                                <input type="radio" class="btn-check" id="radioPreview" bind:group={viewMode} value="preview">
-                                <label class="btn btn-outline-secondary" for="radioPreview">Raw Preview</label>
-
-                                <input type="radio" class="btn-check" id="radioDiff" bind:group={viewMode} value="diff">
-                                <label class="btn btn-outline-secondary" for="radioDiff">Diff vs Current</label>
-                            </div>
-                        {/if}
-                    </div>
-                    <button class="btn btn-primary btn-sm px-3" on:click={() => handleRestore(selectedVersion.id)}>
-                        <Fa icon={faUndo} class="me-1" aria-hidden="true"/> Restore This Version
-                    </button>
-                </div>
-                
                 {#if previewLoading}
                     <div class="text-center py-5">
                         <div class="spinner-border text-primary" role="status"></div>
@@ -338,7 +363,7 @@
                                         <span class="badge badge-soft-danger px-2 py-1 rounded-pill">-{diffRemovedCount} deletions</span>
                                     </div>
                                 </div>
-                                <div class="m-0 p-3 overflow-auto preview-text diff-text">{#each diffRows as row}
+                                <div class="preview-scroll preview-text diff-text">{#each diffRows as row}
 <div class="diff-line diff-{row.type}">
     <span class="diff-gutter">{row.oldNo ?? ''}</span>
     <span class="diff-gutter">{row.newNo ?? ''}</span>
@@ -347,9 +372,27 @@
 </div>{/each}</div>
                             {:else if diffTooLarge}
                                 <div class="text-muted small px-3 pt-3">Diff is too large to render here. Showing raw historical content.</div>
-                                <pre class="m-0 p-3 overflow-auto preview-text">{previewContent}</pre>
+                                <div class="preview-scroll preview-text preview-lines-scroll">
+                                    <div class="preview-lines-wrap">
+                                        {#each previewLines as line, lineIndex}
+                                            <div class="preview-line">
+                                                <span class="preview-line-no">{lineIndex + 1}</span>
+                                                <span class="preview-line-code">{line || ' '}</span>
+                                            </div>
+                                        {/each}
+                                    </div>
+                                </div>
                             {:else}
-                                <pre class="m-0 p-3 overflow-auto preview-text">{previewContent}</pre>
+                                <div class="preview-scroll preview-text preview-lines-scroll">
+                                    <div class="preview-lines-wrap">
+                                        {#each previewLines as line, lineIndex}
+                                            <div class="preview-line">
+                                                <span class="preview-line-no">{lineIndex + 1}</span>
+                                                <span class="preview-line-code">{line || ' '}</span>
+                                            </div>
+                                        {/each}
+                                    </div>
+                                </div>
                             {/if}
                         </div>
                     </div>
@@ -416,9 +459,6 @@
         {/if}
       </div>
       
-      <div class="modal-footer border-top-0 pt-0">
-        <button type="button" class="btn btn-outline-secondary px-4" on:click={onClose}>Close</button>
-      </div>
     </div>
   </div>
 </div>
@@ -439,44 +479,162 @@
         z-index: 1050;
         position: fixed;
         inset: 0;
-        overflow-x: hidden;
-        overflow-y: auto;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 16px;
+        overflow: hidden;
     }
-    /* Ensure the dialog is well-constrained and centered */
     .modal-dialog {
-        max-width: 900px;
-        margin: auto;
+        width: min(940px, calc(100vw - 36px));
+        margin: 0;
     }
     .modal-content {
-        max-height: 85vh;
+        max-height: min(74vh, 740px);
         border: 1px solid rgba(128, 128, 128, 0.2);
         border-radius: var(--radius-xl, 24px);
         overflow: hidden;
+        display: flex;
+        flex-direction: column;
     }
     .glass-modal {
         background-color: var(--app-bg);
         box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
     }
+    .modal-header-shell {
+        padding: 12px 20px;
+        border-bottom: 1px solid var(--border-subtle);
+        display: flex;
+        flex-wrap: nowrap;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        background: color-mix(in srgb, var(--app-bg) 92%, var(--accent-soft));
+    }
+    .header-left {
+        min-width: 0;
+        display: flex;
+        align-items: center;
+        flex: 1 1 auto;
+    }
+    .header-right {
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 8px;
+        min-width: 0;
+    }
+    .header-right.with-controls {
+        flex: 1 1 auto;
+        flex-wrap: wrap;
+    }
+    .header-right.close-only {
+        flex: 0 0 auto;
+        flex-wrap: nowrap;
+    }
+    .recorded-chip {
+        display: inline-flex;
+        align-items: center;
+        font-size: 0.78rem;
+        font-weight: 600;
+        color: var(--text-muted);
+        background: var(--soft-bg-primary);
+        border: 1px solid var(--border-subtle);
+        border-radius: 999px;
+        padding: 5px 10px;
+        white-space: nowrap;
+        max-width: 100%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    .modal-header-shell .btn-close {
+        margin-left: 2px;
+        flex: 0 0 auto;
+    }
+    .preview-mode-switch {
+        flex: 0 1 auto;
+    }
+    .preview-mode-switch .btn {
+        font-size: 0.75rem;
+        font-weight: 600;
+    }
+    .file-meta-row {
+        display: flex;
+        align-items: end;
+        justify-content: space-between;
+        gap: 12px;
+        flex-wrap: wrap;
+    }
+    .file-meta-main {
+        min-width: 0;
+        flex: 1;
+    }
     .ls-1 {
         letter-spacing: 0.05em;
     }
-    .preview-header {
-        background: var(--app-bg);
-        border: 1px solid var(--border-subtle);
+    .preview-container {
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+        flex: 1;
     }
-    .preview-text {
-        max-height: 54vh; 
-        font-size: 0.86rem; 
-        line-height: 1.5;
-        background: var(--app-bg); 
-        color: var(--text-primary);
+    .preview-container .card {
+        border: none;
+        background: transparent;
+        min-height: 0;
+    }
+    .preview-container .card-body {
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+    }
+    .preview-scroll {
+        min-height: 200px;
+        max-height: calc(74vh - 235px);
+        overflow: auto;
         border: 1px solid var(--border-subtle);
         border-radius: var(--radius-sm);
+        background: var(--app-bg);
+    }
+    .preview-text {
+        font-size: 0.86rem;
+        line-height: 1.5;
+        color: var(--text-primary);
         font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    }
+    .preview-pre {
+        min-width: max-content;
+    }
+    .preview-lines-scroll {
+        padding: 8px 0;
+    }
+    .preview-lines-wrap {
+        min-width: max-content;
+        padding: 0 8px;
+    }
+    .preview-line {
+        display: grid;
+        grid-template-columns: 58px 1fr;
+        align-items: start;
+        column-gap: 10px;
+        padding: 0 4px;
+    }
+    .preview-line-no {
+        text-align: right;
+        color: var(--text-muted);
+        user-select: none;
+        font-variant-numeric: tabular-nums;
+        padding-right: 8px;
+        border-right: 1px solid color-mix(in srgb, var(--border-subtle) 85%, transparent);
+    }
+    .preview-line-code {
+        white-space: pre;
+        color: var(--text-primary);
     }
     .diff-text {
         white-space: pre;
-        padding-top: 8px !important;
+        padding: 8px 0;
+        min-width: max-content;
     }
     .diff-line {
         display: grid;
@@ -540,7 +698,7 @@
         border: 2px dashed var(--border-subtle);
     }
     .version-list-scroll {
-        max-height: 48vh;
+        max-height: calc(74vh - 165px);
         overflow-y: auto;
         /* Scroll fade mask effect */
         mask-image: linear-gradient(to bottom, transparent 0%, black 5%, black 95%, transparent 100%);
@@ -579,9 +737,74 @@
         background-color: var(--bs-primary);
         color: white;
     }
-    /* Precise control for modal body height and scrolling */
     .modal-body {
-        padding: 32px 32px 24px;
-        overflow-y: visible;
+        padding: 16px 20px 14px;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+    }
+    .modal,
+    .modal-body,
+    .preview-scroll,
+    .version-list-scroll {
+        scroll-behavior: auto;
+    }
+    :global(body.locus-modal-open .view-wrapper),
+    :global(body.locus-modal-open .app-container) {
+        overflow: hidden !important;
+    }
+    @media (max-width: 992px) {
+        .modal {
+            padding: 12px;
+        }
+        .modal-dialog {
+            width: calc(100vw - 24px);
+        }
+        .modal-header-shell.preview-header {
+            flex-direction: column;
+            align-items: stretch;
+        }
+        .modal-header-shell.history-header {
+            flex-direction: row;
+            align-items: center;
+        }
+        .header-right {
+            width: 100%;
+            justify-content: space-between;
+        }
+        .header-right.close-only {
+            width: auto;
+            justify-content: flex-end;
+            flex: 0 0 auto;
+        }
+        .preview-scroll {
+            max-height: calc(74vh - 255px);
+        }
+    }
+    @media (max-width: 640px) {
+        .modal {
+            padding: 8px;
+        }
+        .modal-dialog {
+            width: calc(100vw - 16px);
+        }
+        .modal-body {
+            padding: 14px 12px 12px;
+        }
+        .header-right {
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+        .preview-mode-switch {
+            width: 100%;
+        }
+        .preview-mode-switch .btn {
+            width: 50%;
+        }
+        .preview-scroll {
+            min-height: 160px;
+            max-height: calc(74vh - 285px);
+        }
     }
 </style>

@@ -1,7 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { BASE_URL, checkHealth, getWatchedPaths } from '../src/api.js';
+import {
+  BASE_URL,
+  checkHealth,
+  getWatchedPaths,
+  listCheckpointSessions,
+  renameCheckpointSession,
+  diffCheckpointSessions,
+  restoreCheckpointSession
+} from '../src/api.js';
 
 function createWindowMock({ globalUrl = '', storageUrl = '' } = {}) {
   return {
@@ -167,6 +175,198 @@ test('checkHealth falls back to default backend when negotiated port is unreacha
     assert.equal(result.background_service, 'active');
     assert.equal(globalThis.window.__LOCUS_BACKEND_URL, 'http://127.0.0.1:8000');
     assert.equal(storageState.value, 'http://127.0.0.1:8000');
+  } finally {
+    if (originalWindow === undefined) {
+      delete globalThis.window;
+    } else {
+      globalThis.window = originalWindow;
+    }
+
+    if (originalFetch === undefined) {
+      delete globalThis.fetch;
+    } else {
+      globalThis.fetch = originalFetch;
+    }
+  }
+});
+
+test('listCheckpointSessions includes watched_path and limit query params', async () => {
+  const originalWindow = globalThis.window;
+  const originalFetch = globalThis.fetch;
+
+  let seenUrl = '';
+  globalThis.window = createWindowMock({
+    globalUrl: 'http://127.0.0.1:8033',
+    storageUrl: ''
+  });
+
+  globalThis.fetch = async (url) => {
+    seenUrl = String(url);
+    return {
+      ok: true,
+      async json() {
+        return [];
+      }
+    };
+  };
+
+  try {
+    await listCheckpointSessions({ watchedPath: '/tmp/project', limit: 25 });
+    assert.equal(
+      seenUrl,
+      'http://127.0.0.1:8033/checkpoints/sessions?limit=25&watched_path=%2Ftmp%2Fproject'
+    );
+  } finally {
+    if (originalWindow === undefined) {
+      delete globalThis.window;
+    } else {
+      globalThis.window = originalWindow;
+    }
+
+    if (originalFetch === undefined) {
+      delete globalThis.fetch;
+    } else {
+      globalThis.fetch = originalFetch;
+    }
+  }
+});
+
+test('renameCheckpointSession uses PATCH with name payload', async () => {
+  const originalWindow = globalThis.window;
+  const originalFetch = globalThis.fetch;
+
+  globalThis.window = createWindowMock({
+    globalUrl: 'http://127.0.0.1:8033',
+    storageUrl: ''
+  });
+
+  let method = '';
+  let body = '';
+
+  globalThis.fetch = async (_url, options = {}) => {
+    method = String(options.method || '');
+    body = String(options.body || '');
+    return {
+      ok: true,
+      async json() {
+        return { id: 1, name: 'release candidate' };
+      }
+    };
+  };
+
+  try {
+    const result = await renameCheckpointSession(1, 'release candidate');
+    assert.equal(method, 'PATCH');
+    assert.equal(body, JSON.stringify({ name: 'release candidate' }));
+    assert.equal(result.name, 'release candidate');
+  } finally {
+    if (originalWindow === undefined) {
+      delete globalThis.window;
+    } else {
+      globalThis.window = originalWindow;
+    }
+
+    if (originalFetch === undefined) {
+      delete globalThis.fetch;
+    } else {
+      globalThis.fetch = originalFetch;
+    }
+  }
+});
+
+test('diffCheckpointSessions posts session ids and include_unchanged', async () => {
+  const originalWindow = globalThis.window;
+  const originalFetch = globalThis.fetch;
+
+  globalThis.window = createWindowMock({
+    globalUrl: 'http://127.0.0.1:8033',
+    storageUrl: ''
+  });
+
+  let method = '';
+  let body = '';
+
+  globalThis.fetch = async (_url, options = {}) => {
+    method = String(options.method || '');
+    body = String(options.body || '');
+    return {
+      ok: true,
+      async json() {
+        return { summary: { added: 1, removed: 0, modified: 1 } };
+      }
+    };
+  };
+
+  try {
+    const result = await diffCheckpointSessions(10, 11, true);
+    assert.equal(method, 'POST');
+    assert.equal(
+      body,
+      JSON.stringify({
+        from_session_id: 10,
+        to_session_id: 11,
+        include_unchanged: true
+      })
+    );
+    assert.equal(result.summary.added, 1);
+  } finally {
+    if (originalWindow === undefined) {
+      delete globalThis.window;
+    } else {
+      globalThis.window = originalWindow;
+    }
+
+    if (originalFetch === undefined) {
+      delete globalThis.fetch;
+    } else {
+      globalThis.fetch = originalFetch;
+    }
+  }
+});
+
+test('restoreCheckpointSession posts restore payload to session endpoint', async () => {
+  const originalWindow = globalThis.window;
+  const originalFetch = globalThis.fetch;
+
+  globalThis.window = createWindowMock({
+    globalUrl: 'http://127.0.0.1:8033',
+    storageUrl: ''
+  });
+
+  let seenUrl = '';
+  let method = '';
+  let body = '';
+
+  globalThis.fetch = async (url, options = {}) => {
+    seenUrl = String(url);
+    method = String(options.method || '');
+    body = String(options.body || '');
+    return {
+      ok: true,
+      async json() {
+        return { dry_run: true, summary: { planned: 1 } };
+      }
+    };
+  };
+
+  try {
+    const result = await restoreCheckpointSession(42, {
+      dry_run: true,
+      conflict_strategy: 'rename',
+      destination_root: '/tmp/project'
+    });
+
+    assert.equal(seenUrl, 'http://127.0.0.1:8033/checkpoints/sessions/42/restore');
+    assert.equal(method, 'POST');
+    assert.equal(
+      body,
+      JSON.stringify({
+        dry_run: true,
+        conflict_strategy: 'rename',
+        destination_root: '/tmp/project'
+      })
+    );
+    assert.equal(result.dry_run, true);
   } finally {
     if (originalWindow === undefined) {
       delete globalThis.window;

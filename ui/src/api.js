@@ -127,6 +127,86 @@ export async function relinkWatchedPath(oldPath, newPath, moveFiles = false) {
   return await res.json();
 }
 
+export async function createCheckpointSession(payload = {}) {
+  const res = await fetch(`${BASE_URL}/checkpoints/sessions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload || {})
+  });
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => ({}));
+    throw new Error(errorData.detail || 'Failed to create checkpoint session');
+  }
+  return await res.json();
+}
+
+export async function listCheckpointSessions({ watchedPath = null, limit = 100 } = {}) {
+  const url = new URL(`${BASE_URL}/checkpoints/sessions`);
+  url.searchParams.append('limit', String(limit));
+  if (watchedPath) {
+    url.searchParams.append('watched_path', watchedPath);
+  }
+
+  const res = await fetch(url);
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => ({}));
+    throw new Error(errorData.detail || 'Failed to list checkpoint sessions');
+  }
+  return await res.json();
+}
+
+export async function getCheckpointSessionDetail(sessionId) {
+  const res = await fetch(`${BASE_URL}/checkpoints/sessions/${sessionId}`);
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => ({}));
+    throw new Error(errorData.detail || 'Failed to fetch checkpoint session detail');
+  }
+  return await res.json();
+}
+
+export async function renameCheckpointSession(sessionId, name) {
+  const res = await fetch(`${BASE_URL}/checkpoints/sessions/${sessionId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name })
+  });
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => ({}));
+    throw new Error(errorData.detail || 'Failed to rename checkpoint session');
+  }
+  return await res.json();
+}
+
+export async function diffCheckpointSessions(fromSessionId, toSessionId, includeUnchanged = false) {
+  const res = await fetch(`${BASE_URL}/checkpoints/sessions/diff`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      from_session_id: fromSessionId,
+      to_session_id: toSessionId,
+      include_unchanged: !!includeUnchanged
+    })
+  });
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => ({}));
+    throw new Error(errorData.detail || 'Failed to diff checkpoint sessions');
+  }
+  return await res.json();
+}
+
+export async function restoreCheckpointSession(sessionId, payload = {}) {
+  const res = await fetch(`${BASE_URL}/checkpoints/sessions/${sessionId}/restore`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload || {})
+  });
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => ({}));
+    throw new Error(errorData.detail || 'Failed to restore checkpoint session');
+  }
+  return await res.json();
+}
+
 export async function getActivityTimeline(limit = 50) {
   const res = await fetch(`${BASE_URL}/activity/timeline?limit=${limit}`);
   return await res.json();
