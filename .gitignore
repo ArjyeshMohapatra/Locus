@@ -63,7 +63,6 @@ src-tauri/binaries/
 src-tauri/build/
 src-tauri/*.lock
 !src-tauri/Cargo.lock
-src-tauri/tauri.conf.json
 
 # PyInstaller / Build
 dist/

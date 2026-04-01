@@ -1,0 +1,72 @@
+{
+  "build": {
+    "beforeDevCommand": null,
+    "beforeBuildCommand": "npm --prefix ui run build",
+    "devPath": "http://localhost:5173",
+    "distDir": "../ui/dist"
+  },
+  "package": {
+    "productName": "Locus",
+    "version": "1.5.0"
+  },
+  "tauri": {
+    "allowlist": {
+      "all": false,
+      "os": {
+        "all": true
+      },
+      "shell": {
+        "all": false,
+        "open": true,
+        "execute": true
+      },
+      "dialog": {
+        "all": false,
+        "open": true,
+        "ask": true,
+        "message": true,
+        "confirm": true
+      },
+      "window": {
+        "all": false,
+        "close": true,
+        "hide": true,
+        "show": true,
+        "maximize": true,
+        "minimize": true,
+        "unmaximize": true,
+        "startDragging": true
+      }
+    },
+    "bundle": {
+      "active": true,
+      "targets": "all",
+      "identifier": "com.locus.app",
+      "icon": [
+        "icons/icon.png",
+        "icons/icon.ico"
+      ],
+      "externalBin": [
+        "binaries/locus-backend",
+        "binaries/locus-window-probe"
+      ]
+    },
+    "security": {
+      "csp": null
+    },
+    "systemTray": {
+      "iconPath": "icons/icon.png",
+      "iconAsTemplate": true
+    },
+    "windows": [
+      {
+        "fullscreen": false,
+        "resizable": true,
+        "title": "Locus",
+        "width": 1100,
+        "height": 750,
+        "decorations": false
+      }
+    ]
+  }
+}
