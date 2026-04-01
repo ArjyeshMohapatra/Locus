@@ -100,7 +100,6 @@ check_status.py
 reclaim_space.py
 
 # Branch-local extras to keep out of feature snapshot toggle commit
-.github/workflows/desktop-build.yml
 Makefile
 backend/requirements-dev.txt
 backend/tests/test_checkpoint_api_validation.py
