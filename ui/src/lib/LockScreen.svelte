@@ -1,4 +1,5 @@
 <script>
+  import { afterUpdate, onMount, tick } from 'svelte';
   import { createEventDispatcher } from 'svelte';
   import { setupAuth, unlockAuth, resetAuth } from '../api.js';
   import { askQuestion } from '../dialogStore.js';
@@ -14,6 +15,33 @@
   let recoveryKey = '';
   let showRecovery = false;
   let isForgotMode = false;
+
+  let setupPasswordInput;
+  let unlockPasswordInput;
+  let recoveryPasswordInput;
+
+  const focusPrimaryInput = () => {
+    if (showRecovery) return;
+
+    const target = isSetupRequired
+      ? setupPasswordInput
+      : isForgotMode
+        ? recoveryPasswordInput
+        : unlockPasswordInput;
+
+    if (target && document.activeElement !== target) {
+      target.focus();
+    }
+  };
+
+  onMount(async () => {
+    await tick();
+    focusPrimaryInput();
+  });
+
+  afterUpdate(() => {
+    focusPrimaryInput();
+  });
   
   const handleSetup = async () => {
     errorMsg = '';
@@ -31,7 +59,14 @@
       recoveryKey = res.recovery_key;
       showRecovery = true;
     } catch (e) {
-      errorMsg = e.message;
+      const message = e?.message || 'Failed to setup auth';
+      if (message.toLowerCase().includes('already setup')) {
+        errorMsg = 'Vault already exists. Please unlock to continue.';
+        confirmPassword = '';
+        dispatch('setup-exists');
+      } else {
+        errorMsg = message;
+      }
     } finally {
       isLoading = false;
     }
@@ -103,13 +138,13 @@
         <button class="btn btn-primary w-100 mt-3" on:click={finishSetup}>I have saved it secretly</button>
       
       {:else if isSetupRequired}
-        <input type="password" class="form-control mb-3 lock-input" bind:value={password} placeholder="Master Password (min 12 chars)" on:keydown={(e) => e.key === 'Enter' && handleSetup()} disabled={isLoading} />
+        <input type="password" class="form-control mb-3 lock-input" bind:this={setupPasswordInput} bind:value={password} placeholder="Master Password (min 12 chars)" on:keydown={(e) => e.key === 'Enter' && handleSetup()} disabled={isLoading} />
         <input type="password" class="form-control mb-3 lock-input" bind:value={confirmPassword} placeholder="Confirm Master Password" on:keydown={(e) => e.key === 'Enter' && handleSetup()} disabled={isLoading} />
         {#if errorMsg}<div class="text-danger small mb-3">{errorMsg}</div>{/if}
         <button class="btn btn-primary w-100" on:click={handleSetup} disabled={isLoading}>{isLoading ? 'Setting up...' : 'Create Vault'}</button>
       
       {:else if isForgotMode}
-        <input type="password" class="form-control mb-3 lock-input" bind:value={password} placeholder="Enter Recovery Key" on:keydown={(e) => e.key === 'Enter' && handleUnlock()} disabled={isLoading} />
+        <input type="password" class="form-control mb-3 lock-input" bind:this={recoveryPasswordInput} bind:value={password} placeholder="Enter Recovery Key" on:keydown={(e) => e.key === 'Enter' && handleUnlock()} disabled={isLoading} />
         {#if errorMsg}<div class="text-danger small mb-3">{errorMsg}</div>{/if}
         <button class="btn btn-primary w-100 mb-2" on:click={handleUnlock} disabled={isLoading}>{isLoading ? 'Unlocking...' : 'Unlock with Recovery Key'}</button>
         <button class="btn btn-outline-secondary w-100 mb-4" on:click={() => isForgotMode = false} disabled={isLoading}>Back to Login</button>
@@ -118,7 +153,7 @@
         <button class="btn btn-outline-danger w-100" on:click={handleReset} disabled={isLoading}>Factory Reset LOCUS</button>
       
       {:else}
-        <input type="password" class="form-control mb-3 lock-input" bind:value={password} placeholder="Master Password" on:keydown={(e) => e.key === 'Enter' && handleUnlock()} disabled={isLoading} />
+        <input type="password" class="form-control mb-3 lock-input" bind:this={unlockPasswordInput} bind:value={password} placeholder="Master Password" on:keydown={(e) => e.key === 'Enter' && handleUnlock()} disabled={isLoading} />
         {#if errorMsg}<div class="text-danger small mb-3">{errorMsg}</div>{/if}
         <button class="btn btn-primary w-100 mb-3" on:click={handleUnlock} disabled={isLoading}>{isLoading ? 'Unlocking...' : 'Unlock'}</button>
         <button class="btn btn-link w-100 text-muted" on:click={() => { isForgotMode = true; errorMsg = ''; password = ''; }} disabled={isLoading} style="font-size: 0.9rem;">Forgot password?</button>
@@ -129,7 +164,12 @@
 
 <style>
   .lock-screen-wrapper {
-    position: fixed; inset: 0; background: var(--surface);
+    position: fixed;
+    top: 40px;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: var(--surface);
     display: flex; align-items: center; justify-content: center; z-index: 10000;
   }
   .lock-card {

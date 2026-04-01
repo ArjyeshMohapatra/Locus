@@ -34,9 +34,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("locus")
 
 # --- Database Setup ---
-_APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # backend/
-_DB_PATH = os.path.join(_APP_DIR, "locus.db")
-DATABASE_URL = f"sqlite:///{_DB_PATH}"
+DATABASE_URL = models.DATABASE_URL
 engine = create_engine(
     DATABASE_URL,
     connect_args={
@@ -79,8 +77,19 @@ def _column_exists(conn, table_name: str, column_name: str) -> bool:
     return any(str(row.get("name")) == column_name for row in rows)
 
 
+def _table_exists(conn, table_name: str) -> bool:
+    row = conn.execute(
+        text(
+            "SELECT name FROM sqlite_master "
+            "WHERE type='table' AND name = :table_name LIMIT 1"
+        ),
+        {"table_name": table_name},
+    ).first()
+    return row is not None
+
+
 def _run_startup_migrations() -> None:
-    """Apply additive SQLite migrations for older user databases."""
+    """Apply additive SQLite migrations and remove legacy schema artifacts."""
     migrations: list[tuple[str, str, str]] = [
         (
             "file_versions",
@@ -157,6 +166,30 @@ def _run_startup_migrations() -> None:
                     print(f"[DB] Applied migration: {table_name}.{column_name}")
             except Exception as exc:
                 print(f"[DB] Migration skipped for {table_name}.{column_name}: {exc}")
+
+        legacy_tables = [
+            "assistant_messages",
+            "assistant_conversations",
+            "conversation_messages",
+            "conversation_threads",
+            "snapshots",
+        ]
+        for table_name in legacy_tables:
+            try:
+                if _table_exists(conn, table_name):
+                    conn.execute(text(f"DROP TABLE {table_name}"))
+                    print(f"[DB] Dropped legacy table: {table_name}")
+            except Exception as exc:
+                print(f"[DB] Legacy table cleanup skipped for {table_name}: {exc}")
+
+        try:
+            conn.execute(
+                text("DELETE FROM settings WHERE key = 'snapshot_nlp_always_on'")
+            )
+        except Exception as exc:
+            print(
+                f"[DB] Legacy setting cleanup skipped for snapshot_nlp_always_on: {exc}"
+            )
 
 
 # FastAPI dependency that yields a scoped DB session.
@@ -423,8 +456,12 @@ class SnapshotSettingsUpdate(BaseModel):
     interval_seconds: int | None = Field(default=None, ge=5, le=300)
     retention_days: int | None = Field(default=None, ge=1, le=365)
     exclude_private_browsing: bool | None = None
+    capture_on_window_change: bool | None = None
     allow_individual_delete: bool | None = None
-    nlp_always_on: bool | None = None
+
+
+class RuntimeSettingsUpdate(BaseModel):
+    run_in_background_service: bool | None = None
 
 
 class SnapshotHistoryQueryPayload(BaseModel):
@@ -529,8 +566,9 @@ def _ensure_snapshot_defaults(db: Session) -> None:
         "snapshot_interval_seconds": "10",
         "snapshot_retention_days": "10",
         "snapshot_exclude_private_browsing": "true",
+        "snapshot_capture_on_window_change": "true",
         "snapshot_allow_delete": "false",
-        "snapshot_nlp_always_on": "false",
+        "run_in_background_service": "true",
     }
     for key, default_value in defaults.items():
         if crud.get_setting(db, key, None) is None:
@@ -542,11 +580,20 @@ def _ensure_snapshot_defaults(db: Session) -> None:
 async def lifespan(app: FastAPI):
     # Startup: Initialize DB and start background threads
     logger.info("LOCUS System Starting...")
+    startup_started = time.perf_counter()
+
+    t0 = time.perf_counter()
     init_db()
+    logger.info("[Startup] init_db completed in %.2fs", time.perf_counter() - t0)
 
     db = SessionLocal()
     try:
+        t0 = time.perf_counter()
         _ensure_snapshot_defaults(db)
+        logger.info(
+            "[Startup] snapshot defaults ensured in %.2fs",
+            time.perf_counter() - t0,
+        )
 
         enabled = crud.get_setting(db, "admin_protection_enabled", "false")
         if enabled == "true":
@@ -576,6 +623,7 @@ async def lifespan(app: FastAPI):
         daemon=True,
     )
     monitor_thread.start()
+    logger.info("[Startup] monitor thread started")
 
     # Start GC thread
     gc_thread = threading.Thread(
@@ -584,8 +632,14 @@ async def lifespan(app: FastAPI):
         daemon=True,
     )
     gc_thread.start()
+    logger.info("[Startup] GC thread started")
 
     snapshot_service.start()
+    logger.info("[Startup] snapshot thread started")
+    logger.info(
+        "[Startup] lifespan startup completed in %.2fs",
+        time.perf_counter() - startup_started,
+    )
 
     yield
 
@@ -2548,15 +2602,45 @@ def update_snapshot_settings(payload: SnapshotSettingsUpdate, db: DbSession):
         updates["retention_days"] = payload.retention_days
     if payload.exclude_private_browsing is not None:
         updates["exclude_private_browsing"] = payload.exclude_private_browsing
+    if payload.capture_on_window_change is not None:
+        updates["capture_on_window_change"] = payload.capture_on_window_change
     if payload.allow_individual_delete is not None:
         updates["allow_individual_delete"] = payload.allow_individual_delete
-    if payload.nlp_always_on is not None:
-        updates["nlp_always_on"] = payload.nlp_always_on
 
     if not updates:
         raise HTTPException(status_code=400, detail="No settings provided")
 
     return snapshot_service.save_settings(db, updates)
+
+
+@app.get("/settings/runtime")
+def get_runtime_settings(db: DbSession):
+    run_in_background_service = (
+        crud.get_setting(db, "run_in_background_service", "true") == "true"
+    )
+    return {
+        "run_in_background_service": run_in_background_service,
+    }
+
+
+@app.post(
+    "/settings/runtime",
+    responses={
+        400: {"description": "Invalid runtime settings"},
+    },
+)
+def update_runtime_settings(payload: RuntimeSettingsUpdate, db: DbSession):
+    if payload.run_in_background_service is None:
+        raise HTTPException(status_code=400, detail="No settings provided")
+
+    crud.set_setting(
+        db,
+        "run_in_background_service",
+        "true" if payload.run_in_background_service else "false",
+    )
+    return {
+        "run_in_background_service": payload.run_in_background_service,
+    }
 
 
 @app.get("/auth/status")
@@ -2715,8 +2799,6 @@ def auth_reset_factory(db: DbSession):
     except Exception as e:
         print(f"[RESET] Factory reset FAILED: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
-
 
 
 @app.post(

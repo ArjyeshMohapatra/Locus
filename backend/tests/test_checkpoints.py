@@ -62,7 +62,9 @@ def test_create_full_folder_checkpoint_with_default_name(
     assert len(detail_body["items"]) == 2
 
 
-def test_single_file_scope_requires_exactly_one_path(client: TestClient, tmp_path: Path):
+def test_single_file_scope_requires_exactly_one_path(
+    client: TestClient, tmp_path: Path
+):
     watched = tmp_path / "watched"
     watched.mkdir()
     first = watched / "a.txt"
@@ -84,7 +86,9 @@ def test_single_file_scope_requires_exactly_one_path(client: TestClient, tmp_pat
     assert "exactly one" in resp.json()["detail"]
 
 
-def test_selected_files_checkpoint_allows_duplicate_names(client: TestClient, tmp_path: Path):
+def test_selected_files_checkpoint_allows_duplicate_names(
+    client: TestClient, tmp_path: Path
+):
     watched = tmp_path / "watched"
     watched.mkdir()
     target = watched / "target.txt"
@@ -266,7 +270,9 @@ def test_diff_checkpoint_sessions_reports_added_removed_modified(
     assert body["summary"]["added_lines"] >= 1
     assert body["summary"]["removed_lines"] >= 1
 
-    modified_entry = next(row for row in body["modified"] if row["file_path"] == str(file_a))
+    modified_entry = next(
+        row for row in body["modified"] if row["file_path"] == str(file_a)
+    )
     assert modified_entry["added_lines"] == 1
     assert modified_entry["removed_lines"] == 1
     assert modified_entry["line_diff"]["available"] is True

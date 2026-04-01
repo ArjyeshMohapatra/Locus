@@ -9,6 +9,7 @@ import os
 import re
 import shutil
 import subprocess  # nosec B404
+import sys
 import threading
 import time
 import uuid
@@ -30,7 +31,6 @@ PRIVATE_BROWSING_MARKERS = ("incognito", "inprivate", "private browsing")
 DEFAULT_INTERVAL_SECONDS = 10
 DEFAULT_RETENTION_DAYS = 10
 DEFAULT_HISTORY_LIMIT = 100
-SNAPSHOT_IMAGE_ROOT = Path("./.locus_snapshot_images").resolve()
 UNIGET_ALIAS_COMMANDS = ("unigetui", "wingetui", "unigetui.exe", "wingetui.exe")
 LEARNING_STATE_KEY = "snapshot_learning_state"
 LEARNING_MAX_WEIGHT = 8.0
@@ -40,6 +40,31 @@ UNSAFE_LAUNCH_CHARS_RE = re.compile(r"[&;<>`\"'|\r\n\t]")
 SAFE_COMMAND_CANDIDATE_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 logger = logging.getLogger(__name__)
 _WINDOW_CAPTURE_WARNING_EMITTED = False
+
+
+def _resolve_snapshot_image_root() -> Path:
+    explicit_images_dir = os.getenv("LOCUS_SNAPSHOT_IMAGE_DIR", "").strip()
+    if explicit_images_dir:
+        return Path(explicit_images_dir).expanduser().resolve()
+
+    explicit_data_dir = os.getenv("LOCUS_DATA_DIR", "").strip()
+    if explicit_data_dir:
+        return Path(explicit_data_dir).expanduser().resolve() / "snapshot_images"
+
+    if getattr(sys, "frozen", False):
+        if os.name == "nt":
+            base = os.getenv("APPDATA") or str(Path.home() / "AppData" / "Roaming")
+        elif sys.platform == "darwin":
+            base = str(Path.home() / "Library" / "Application Support")
+        else:
+            base = os.getenv("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
+
+        return Path(base).expanduser().resolve() / "locus" / "snapshot_images"
+
+    return Path("./.locus_snapshot_images").resolve()
+
+
+SNAPSHOT_IMAGE_ROOT = _resolve_snapshot_image_root()
 
 CATEGORY_KEYWORDS: dict[str, tuple[str, ...]] = {
     "Coding": ("code", "pycharm", "visual studio", "terminal", "github", "git"),
@@ -115,6 +140,25 @@ STOP_WORDS = {
     "today",
 }
 
+LINUX_APP_LABEL_ALIASES = {
+    "brave-browser": "Brave",
+    "brave": "Brave",
+    "google-chrome": "Google Chrome",
+    "chromium-browser": "Chromium",
+    "chromium": "Chromium",
+    "firefox": "Firefox",
+    "microsoft-edge": "Microsoft Edge",
+    "msedge": "Microsoft Edge",
+    "opera": "Opera",
+    "vivaldi": "Vivaldi",
+}
+
+SELF_WINDOW_APP_MARKERS = {
+    "locus",
+    "locus_tauri",
+    "com.locus.app",
+}
+
 
 class SnapshotService:
     def __init__(self) -> None:
@@ -124,13 +168,31 @@ class SnapshotService:
         self._fernet: Fernet | None = None
         self._last_fingerprint: str | None = None
         self._desktop_app_index: dict[str, str] = {}
-        self._build_desktop_app_index()
+        self._desktop_app_index_ready = False
         SNAPSHOT_IMAGE_ROOT.mkdir(parents=True, exist_ok=True)
+
+    def _ensure_desktop_app_index(self) -> None:
+        if os.name != "posix" or self._desktop_app_index_ready:
+            return
+
+        with self._lock:
+            if self._desktop_app_index_ready:
+                return
+            started = time.monotonic()
+            self._build_desktop_app_index()
+            self._desktop_app_index_ready = True
+            logger.info(
+                "[SnapshotService] Loaded desktop launcher index: %s entries in %.2fs",
+                len(self._desktop_app_index),
+                time.monotonic() - started,
+            )
 
     def _build_desktop_app_index(self) -> None:
         if os.name != "posix":
             return
-            
+
+        self._desktop_app_index.clear()
+
         search_dirs = [
             "/usr/share/applications",
             "/usr/local/share/applications",
@@ -140,11 +202,11 @@ class SnapshotService:
             os.path.expanduser("~/.local/share/flatpak/exports/share/applications"),
             "/snap/share/applications"
         ]
-        
+
         for d in search_dirs:
             if not os.path.exists(d):
                 continue
-                
+
             for root, _, files in os.walk(d):
                 for f in files:
                     if f.endswith(".desktop"):
@@ -160,16 +222,16 @@ class SnapshotService:
                                         continue
                                     elif line.startswith("[") and in_desktop_entry:
                                         break
-                                        
+
                                     if in_desktop_entry:
                                         if line.startswith("Name=") and not name:
                                             name = line[5:].strip()
                                         elif line.startswith("Exec=") and not exec_cmd:
                                             exec_cmd = line[5:].strip()
-                                            
+
                                         if name and exec_cmd:
                                             break
-                            
+
                             if name and exec_cmd:
                                 clean_exec = re.sub(r'%[a-zA-Z]', '', exec_cmd).strip()
                                 self._desktop_app_index[name.lower()] = clean_exec
@@ -320,7 +382,7 @@ class SnapshotService:
 
         with self._lock:
             self._fernet = candidate
-        
+
         self._trigger_orphaned_cleanup(db)
         return True
 
@@ -346,11 +408,11 @@ class SnapshotService:
             "exclude_private_browsing": self._to_bool(
                 crud.get_setting(db, "snapshot_exclude_private_browsing", "true")
             ),
+            "capture_on_window_change": self._to_bool(
+                crud.get_setting(db, "snapshot_capture_on_window_change", "true")
+            ),
             "allow_individual_delete": self._to_bool(
                 crud.get_setting(db, "snapshot_allow_delete", "false")
-            ),
-            "nlp_always_on": self._to_bool(
-                crud.get_setting(db, "snapshot_nlp_always_on", "false")
             ),
             "unlocked": self.is_unlocked(),
             "has_existing_key": bool(
@@ -378,17 +440,17 @@ class SnapshotService:
                 "snapshot_exclude_private_browsing",
                 "true" if updates["exclude_private_browsing"] else "false",
             )
+        if "capture_on_window_change" in updates:
+            crud.set_setting(
+                db,
+                "snapshot_capture_on_window_change",
+                "true" if updates["capture_on_window_change"] else "false",
+            )
         if "allow_individual_delete" in updates:
             crud.set_setting(
                 db,
                 "snapshot_allow_delete",
                 "true" if updates["allow_individual_delete"] else "false",
-            )
-        if "nlp_always_on" in updates:
-            crud.set_setting(
-                db,
-                "snapshot_nlp_always_on",
-                "true" if updates["nlp_always_on"] else "false",
             )
         return self.get_settings(db)
 
@@ -566,7 +628,10 @@ class SnapshotService:
                 if clean_value == "unknown":
                     return {
                         "ok": False,
-                        "message": "Cannot launch an unidentified application. Please install xdotool for full tracking.",
+                        "message": (
+                            "Cannot launch an unidentified application from snapshot metadata. "
+                            "Install optional Linux helpers like kdotool, xdotool, or xprop to improve app identification."
+                        ),
                     }
                 launch_result = self._launch_app(clean_value)
                 if not launch_result["ok"]:
@@ -667,6 +732,8 @@ class SnapshotService:
                 "message": "Unsafe launch value rejected",
             }
 
+        self._ensure_desktop_app_index()
+
         normalized_label = SnapshotService._normalize_app_label(value)
 
         # Direct executable/file path.
@@ -680,8 +747,12 @@ class SnapshotService:
                 cmd = self._desktop_app_index[normalized_label.lower()]
                 import shlex
                 import subprocess  # nosec B404
+
                 subprocess.Popen(shlex.split(cmd), close_fds=True)  # nosec B603
-                return {"ok": True, "message": f"Application launch requested via .desktop shortcut"}
+                return {
+                    "ok": True,
+                    "message": "Application launch requested via .desktop shortcut",
+                }
             except Exception as e:
                 logger.error(f"[SnapshotService] Failed to launch via .desktop: {e}")
 
@@ -867,15 +938,36 @@ class SnapshotService:
 
                 # PROACTIVE CHECK: Get current title to see if it changed
                 current_title = self._get_active_window_title()
-                
+
                 title_changed = (current_title != self._last_window_title_check)
                 time_elapsed = (now_monotonic - self._last_capture_time) >= interval
+                capture_on_window_change = bool(
+                    settings.get("capture_on_window_change", True)
+                )
 
-                # Trigger capture if:
-                # 1. Window title changed (and is not empty/Unknown)
-                # 2. OR it's been 'interval' seconds since the last capture
-                if (title_changed and current_title and current_title != "Unknown") or time_elapsed:
-                    self._capture_once(db, settings, current_title)
+                # Capture immediately on title changes; otherwise still capture on interval.
+                # This allows periodic snapshots for tabs/web apps whose title may not change.
+                if (
+                    capture_on_window_change
+                    and title_changed
+                    and current_title
+                    and current_title != "Unknown"
+                ):
+                    self._capture_once(
+                        db,
+                        settings,
+                        current_title,
+                        force_capture=False,
+                    )
+                    self._last_capture_time = now_monotonic
+                    self._last_window_title_check = current_title
+                elif time_elapsed:
+                    self._capture_once(
+                        db,
+                        settings,
+                        current_title,
+                        force_capture=True,
+                    )
                     self._last_capture_time = now_monotonic
                     self._last_window_title_check = current_title
 
@@ -890,7 +982,11 @@ class SnapshotService:
             time.sleep(2.0)  # Check window title every 2 seconds
 
     def _capture_once(
-        self, db, settings: dict[str, Any], window_title: str | None = None
+        self,
+        db,
+        settings: dict[str, Any],
+        window_title: str | None = None,
+        force_capture: bool = False,
     ) -> None:
         if window_title is None:
             window_title = self._get_active_window_title()
@@ -904,6 +1000,10 @@ class SnapshotService:
             return
 
         app_name = self._infer_app_name(window_title)
+        if self._is_locus_window(window_title, app_name):
+            logger.debug("[SnapshotService] Skipping self-window capture")
+            return
+
         url = self._infer_url(window_title)
         file_path = self._infer_file_path(window_title)
 
@@ -914,7 +1014,7 @@ class SnapshotService:
         # ONLY take a screenshot if the context has changed
         # EXCEPTION: If the title is "Unknown" (ambiguous on Wayland), we always allow capture
         # because the interval timer is already handled in the _loop.
-        if fingerprint == self._last_fingerprint and window_title != "Unknown":
+        if not force_capture and fingerprint == self._last_fingerprint and window_title != "Unknown":
             # We skip heavy screenshotting if nothing changed.
             logger.debug("[SnapshotService] Skipping capture: window context unchanged")
             return
@@ -1167,74 +1267,206 @@ class SnapshotService:
         return any(marker in title for marker in PRIVATE_BROWSING_MARKERS)
 
     @staticmethod
-    def _get_active_window_title() -> str:
-        global _WINDOW_CAPTURE_WARNING_EMITTED
-        import sys
+    def _is_locus_window(window_title: str, app_name: str) -> bool:
+        title = str(window_title or "").strip().lower()
+        app = str(app_name or "").strip().lower()
 
-        if sys.platform == "linux":
-            is_wayland = (
-                "wayland" in os.environ.get("WAYLAND_DISPLAY", "").lower()
-                or "wayland" in os.environ.get("XDG_SESSION_TYPE", "").lower()
-            )
-            try:
-                import subprocess  # nosec B404
-                import shutil
+        if app in SELF_WINDOW_APP_MARKERS:
+            return True
+        if any(marker in app for marker in ("locus_tauri", "com.locus.app")):
+            return True
 
-                title = ""
-                # On Wayland, prefer kdotool if available since xdotool is blind to native Wayland apps
-                if is_wayland and shutil.which("kdotool"):
-                    try:
-                        result = subprocess.run(
-                            ["kdotool", "getactivewindow", "getwindowname"],  # nosec B603 B607
-                            capture_output=True,
-                            text=True,
-                            timeout=2,
-                            check=True,
-                        )
-                        title = result.stdout.strip()
-                    except Exception as e:
-                        logger.debug(f"[SnapshotService] kdotool failed: {e}")
+        if title == "locus":
+            return True
+        if title.endswith(" - locus") or title.endswith(" | locus") or title.endswith(" • locus"):
+            return True
 
-                # Fallback to xdotool if title is empty or not Wayland
-                if not title and shutil.which("xdotool"):
-                    try:
-                        result = subprocess.run(
-                            ["xdotool", "getactivewindow", "getwindowname"],  # nosec B603 B607
-                            capture_output=True,
-                            text=True,
-                            timeout=2,
-                            check=True,
-                        )
-                        title = result.stdout.strip()
-                        # WAYLAND BLEED FIX: XWayland retains the last focused X11 app (like LOCUS)
-                        # even when a native Wayland app is focused. If we are on Wayland and
-                        # the title is exactly our app running in XWayland, it's highly likely stale.
-                        if is_wayland and "LOCUS" in title and "Visual Studio" not in title:
-                            title = ""
-                    except Exception as e:
-                        logger.debug(f"[SnapshotService] xdotool failed: {e}")
+        return False
 
-                if not title:
-                    if not _WINDOW_CAPTURE_WARNING_EMITTED:
-                        logger.warning(
-                            "Failed to get active window. Ensure kdotool (for Wayland) or xdotool (for X11) is installed."
-                        )
-                        _WINDOW_CAPTURE_WARNING_EMITTED = True
-                    return ""
+    @staticmethod
+    def _resolve_window_probe_command() -> str | None:
+        explicit = os.getenv("LOCUS_WINDOW_PROBE", "").strip()
+        if explicit:
+            if os.path.isabs(explicit) and os.path.exists(explicit):
+                return explicit
+            resolved_explicit = shutil.which(explicit)
+            if resolved_explicit:
+                return resolved_explicit
 
-                return title
-            except Exception as e:
-                logger.error(f"[SnapshotService] Title capture error: {e}")
-                return ""
+        return shutil.which("locus-window-probe")
 
-        if os.name != "nt":
-            if not _WINDOW_CAPTURE_WARNING_EMITTED:
-                logger.warning(
-                    "Active window title capture natively implemented for macOS is missing"
-                )
-                _WINDOW_CAPTURE_WARNING_EMITTED = True
+    @staticmethod
+    def _linux_title_from_bundled_probe() -> str:
+        command = SnapshotService._resolve_window_probe_command()
+        if not command:
             return ""
 
+        try:
+            result = subprocess.run(  # nosec B603
+                [command],
+                capture_output=True,
+                text=True,
+                timeout=2,
+                check=False,
+            )
+            output = (result.stdout or "").strip()
+            if not output:
+                return ""
+
+            payload = json.loads(output)
+            if not isinstance(payload, dict) or not payload.get("ok"):
+                return ""
+
+            title = str(payload.get("title") or "").strip()
+            app_class = str(payload.get("class") or payload.get("instance") or "").strip()
+
+            if title:
+                return title
+            if app_class:
+                return app_class
+            return ""
+        except Exception as e:
+            logger.debug(f"[SnapshotService] bundled probe failed: {e}")
+            return ""
+
+    @staticmethod
+    def _linux_title_from_kdotool() -> str:
+        import shutil
+        import subprocess  # nosec B404
+
+        if not shutil.which("kdotool"):
+            return ""
+
+        try:
+            result = subprocess.run(
+                ["kdotool", "getactivewindow", "getwindowname"],  # nosec B603 B607
+                capture_output=True,
+                text=True,
+                timeout=2,
+                check=True,
+            )
+            return result.stdout.strip()
+        except Exception as e:
+            logger.debug(f"[SnapshotService] kdotool failed: {e}")
+            return ""
+
+    @staticmethod
+    def _linux_title_from_xdotool(is_wayland: bool) -> str:
+        import shutil
+        import subprocess  # nosec B404
+
+        if not shutil.which("xdotool"):
+            return ""
+
+        try:
+            result = subprocess.run(
+                ["xdotool", "getactivewindow", "getwindowname"],  # nosec B603 B607
+                capture_output=True,
+                text=True,
+                timeout=2,
+                check=True,
+            )
+            title = result.stdout.strip()
+            # On Wayland, xdotool can return stale XWayland window titles.
+            if is_wayland and "LOCUS" in title and "Visual Studio" not in title:
+                return ""
+            return title
+        except Exception as e:
+            logger.debug(f"[SnapshotService] xdotool failed: {e}")
+            return ""
+
+    @staticmethod
+    def _linux_title_from_xprop() -> str:
+        import shutil
+        import subprocess  # nosec B404
+
+        if not shutil.which("xprop"):
+            return ""
+
+        try:
+            active_result = subprocess.run(
+                ["xprop", "-root", "_NET_ACTIVE_WINDOW"],  # nosec B603 B607
+                capture_output=True,
+                text=True,
+                timeout=2,
+                check=True,
+            )
+            active_match = re.search(
+                r"window id # (0x[0-9a-fA-F]+)",
+                active_result.stdout,
+            )
+            active_id = active_match.group(1) if active_match else ""
+            if not active_id or active_id == "0x0":
+                return ""
+
+            window_result = subprocess.run(
+                [
+                    "xprop",
+                    "-id",
+                    active_id,
+                    "_NET_WM_NAME",
+                    "WM_NAME",
+                    "WM_CLASS",
+                ],  # nosec B603 B607
+                capture_output=True,
+                text=True,
+                timeout=2,
+                check=True,
+            )
+
+            for line in window_result.stdout.splitlines():
+                if "WM_NAME" not in line and "_NET_WM_NAME" not in line:
+                    continue
+                title_match = re.search(r'=\s*"(.*)"', line)
+                if title_match and title_match.group(1).strip():
+                    return title_match.group(1).strip()
+
+            class_line = next(
+                (
+                    line
+                    for line in window_result.stdout.splitlines()
+                    if "WM_CLASS" in line
+                ),
+                "",
+            )
+            class_values = re.findall(r'"([^"]+)"', class_line)
+            return class_values[-1].strip() if class_values else ""
+        except Exception as e:
+            logger.debug(f"[SnapshotService] xprop fallback failed: {e}")
+            return ""
+
+    @staticmethod
+    def _get_active_window_title_linux() -> str:
+        global _WINDOW_CAPTURE_WARNING_EMITTED
+        is_wayland = (
+            "wayland" in os.environ.get("WAYLAND_DISPLAY", "").lower()
+            or "wayland" in os.environ.get("XDG_SESSION_TYPE", "").lower()
+        )
+        providers: list[Any] = [SnapshotService._linux_title_from_bundled_probe]
+        if is_wayland:
+            providers.append(SnapshotService._linux_title_from_kdotool)
+        providers.append(lambda: SnapshotService._linux_title_from_xdotool(is_wayland))
+        providers.append(SnapshotService._linux_title_from_xprop)
+
+        try:
+            for provider in providers:
+                title = str(provider() or "").strip()
+                if title:
+                    return title
+        except Exception as e:
+            logger.error(f"[SnapshotService] Title capture error: {e}")
+            return ""
+
+        if not _WINDOW_CAPTURE_WARNING_EMITTED:
+            logger.warning(
+                "Failed to get active window. Install Linux helpers like kdotool (Wayland), xdotool (X11), or xprop for better app labels."
+            )
+            _WINDOW_CAPTURE_WARNING_EMITTED = True
+
+        return ""
+
+    @staticmethod
+    def _get_active_window_title_windows() -> str:
         try:
             import ctypes
 
@@ -1255,12 +1487,33 @@ class SnapshotService:
             return ""
 
     @staticmethod
+    def _get_active_window_title() -> str:
+        global _WINDOW_CAPTURE_WARNING_EMITTED
+        import sys
+
+        if sys.platform == "linux":
+            return SnapshotService._get_active_window_title_linux()
+
+        if os.name != "nt":
+            if not _WINDOW_CAPTURE_WARNING_EMITTED:
+                logger.warning(
+                    "Active window title capture natively implemented for macOS is missing"
+                )
+                _WINDOW_CAPTURE_WARNING_EMITTED = True
+            return ""
+
+        return SnapshotService._get_active_window_title_windows()
+
+    @staticmethod
     def _infer_app_name(window_title: str) -> str:
         parts = re.split(r"\s[-|–—•]\s", window_title)
         clean = [p.strip() for p in parts if p.strip()]
         if not clean:
             return "Unknown"
-        return clean[-1]
+
+        candidate = clean[-1]
+        normalized = re.sub(r"[^a-z0-9]+", "-", candidate.lower()).strip("-")
+        return LINUX_APP_LABEL_ALIASES.get(normalized, candidate)
 
     @staticmethod
     def _infer_url(window_title: str) -> str | None:

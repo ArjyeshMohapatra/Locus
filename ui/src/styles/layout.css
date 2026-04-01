@@ -144,7 +144,6 @@
 .sidebar-item:hover {
   background: var(--sidebar-hover);
   color: var(--text-primary);
-  transform: translateX(2px);
 }
 
 .sidebar-item.is-active {

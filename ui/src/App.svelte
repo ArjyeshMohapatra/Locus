@@ -4,10 +4,10 @@
     checkHealth,
     getAuthStatus,
     getDashboardSummary,
-    lockAuth
+    lockAuth,
+    getRuntimeSettings
   } from './api.js';
   import { listen } from '@tauri-apps/api/event';
-  import { type } from '@tauri-apps/api/os';
   import { appWindow } from '@tauri-apps/api/window';
   import WatchedFolders from './lib/WatchedFolders.svelte';
   import ActivityTimeline from './lib/ActivityTimeline.svelte';
@@ -44,6 +44,7 @@
   let themeMode = 'system';
   let mediaQuery;
   let notificationsOpen = false;
+  let runInBackgroundService = true;
   let dashboardSummary = { total_files: 0, total_versions: 0, storage_bytes: 0, ram_usage_bytes: 0, db_size_bytes: 0, total_snapshots: 0, last_snapshot_time: null };
 
   let healthRefreshTimer;
@@ -76,6 +77,30 @@
 
   let handleSystemChange;
   let handleThemeEvent;
+  let handleRuntimeSettingsEvent;
+
+  const refreshAuthState = async () => {
+    try {
+      const authRes = await getAuthStatus();
+      isLocked = !!authRes.locked;
+      isSetupRequired = !!authRes.setup_required;
+    } catch (e) {
+      console.error('Auth status fetch failed:', e);
+      // Conservative fallback: if setup cannot be verified, prefer unlock screen over setup screen.
+      isSetupRequired = false;
+      isLocked = true;
+    }
+  };
+
+  const refreshRuntimeSettings = async () => {
+    try {
+      const runtime = await getRuntimeSettings();
+      runInBackgroundService = runtime?.run_in_background_service ?? true;
+    } catch (e) {
+      console.error('Runtime settings fetch failed:', e);
+      runInBackgroundService = true;
+    }
+  };
 
   const handleUnlocked = async () => {
     isLocked = false;
@@ -87,17 +112,13 @@
     }
   };
 
+  const handleSetupExists = async () => {
+    await refreshAuthState();
+  };
+
   onMount(async () => {
-    try {
-      const authRes = await getAuthStatus();
-      isLocked = authRes.locked;
-      isSetupRequired = authRes.setup_required;
-    } catch (e) {
-      console.error('Auth status fetch failed:', e);
-      // If we cannot reach the backend or the DB is empty, assume setup is required.
-      isSetupRequired = true;
-      isLocked = false;
-    }
+    await refreshAuthState();
+    await refreshRuntimeSettings();
     authChecked = true;
 
     await refreshHealthStatus({ retries: 10, retryDelayMs: 500 });
@@ -128,16 +149,15 @@
       applyTheme(themeMode);
     };
 
+    handleRuntimeSettingsEvent = (event) => {
+      runInBackgroundService = !!event.detail?.runInBackgroundService;
+    };
+
     window.addEventListener('locus-theme-change', handleThemeEvent);
+    window.addEventListener('locus-runtime-settings-change', handleRuntimeSettingsEvent);
 
     // Desktop app specifics
     try {
-      const osType = await type();
-      if (osType === 'Linux') {
-        document.documentElement.style.zoom = '1.25'; // Fix zoomed out UI in WebKitGTK
-        document.documentElement.style.fontSize = '18px'; // Fallback for stricter WebKitGTK versions
-      }
-
       await listen('tauri://theme-changed', (event) => {
         if (themeMode === 'system') {
           // payload is 'light' or 'dark'
@@ -212,6 +232,9 @@
     if (handleThemeEvent) {
       window.removeEventListener('locus-theme-change', handleThemeEvent);
     }
+    if (handleRuntimeSettingsEvent) {
+      window.removeEventListener('locus-runtime-settings-change', handleRuntimeSettingsEvent);
+    }
     if (healthRefreshTimer) {
       clearInterval(healthRefreshTimer);
     }
@@ -273,13 +296,13 @@
 {#if !authChecked}
   <div class="d-flex align-items-center justify-content-center" style="height: 100vh;">Loading LOCUS...</div>
 {:else if isLocked || isSetupRequired}
-  <Titlebar />
-  <LockScreen {isSetupRequired} on:unlocked={handleUnlocked} />
+  <Titlebar closeBehavior="shutdown" />
+  <LockScreen {isSetupRequired} on:unlocked={handleUnlocked} on:setup-exists={handleSetupExists} />
 {:else}
   {#if showUnlockToast}
     <div class="vault-toast">Vault Unlocked</div>
   {/if}
-  <Titlebar />
+  <Titlebar closeBehavior={runInBackgroundService ? 'tray' : 'shutdown'} />
 
   <div class="app-shell">
   <aside class="sidebar {sidebarOpen ? 'is-open' : 'is-collapsed'}">
@@ -534,10 +557,6 @@
     transition: box-shadow 0.15s ease, background-color 0.15s ease;
   }
 
-  .fab-button:hover {
-    box-shadow: 0 16px 32px rgba(0, 0, 0, 0.25);
-  }
-
   .fab-button:active {
     box-shadow: 0 10px 24px rgba(0, 0, 0, 0.2);
   }
@@ -673,9 +692,8 @@
   .ls-1 { letter-spacing: 0.04em; }
   .opacity-10 { opacity: 0.1; }
   .lock-btn { transition: all 0.2s ease; border-width: 2px; }
-  .lock-btn:hover { background-color: var(--bs-danger); color: white; transform: translateY(-2px); box-shadow: 0 4px 12px rgba(220,53,69,0.2) !important; border-color: var(--bs-danger); }
+  .lock-btn:hover { background-color: var(--bs-danger); color: white; border-color: var(--bs-danger); }
   .metric-card { transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1); }
-  .metric-card:hover { transform: translateY(-5px); box-shadow: 0 14px 28px rgba(0,0,0,0.15) !important; }
   .bg-glass { background: var(--surface-soft, rgba(255, 255, 255, 0.8)); }
   :global(.theme-dark) .bg-glass { background: rgba(30, 41, 59, 0.5); }
 </style>

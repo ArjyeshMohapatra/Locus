@@ -5,6 +5,7 @@ import {
   BASE_URL,
   checkHealth,
   getWatchedPaths,
+  setupAuth,
   listCheckpointSessions,
   renameCheckpointSession,
   diffCheckpointSessions,
@@ -134,14 +135,14 @@ test('API requests are sent to negotiated runtime backend port', async () => {
   }
 });
 
-test('checkHealth falls back to default backend when negotiated port is unreachable', async () => {
+test('checkHealth falls back to default backend when negotiated port is unreachable in web runtime', async () => {
   const originalWindow = globalThis.window;
   const originalFetch = globalThis.fetch;
 
   const storageState = { value: 'http://127.0.0.1:8033' };
   globalThis.window = {
     __LOCUS_BACKEND_URL: 'http://127.0.0.1:8033',
-    __TAURI_IPC__: {},
+    __TAURI_IPC__: null,
     localStorage: {
       getItem(key) {
         return key === 'locus-backend-url' ? storageState.value : null;
@@ -174,7 +175,44 @@ test('checkHealth falls back to default backend when negotiated port is unreacha
     const result = await checkHealth();
     assert.equal(result.background_service, 'active');
     assert.equal(globalThis.window.__LOCUS_BACKEND_URL, 'http://127.0.0.1:8000');
-    assert.equal(storageState.value, 'http://127.0.0.1:8000');
+    assert.equal(storageState.value, 'http://127.0.0.1:8033');
+  } finally {
+    if (originalWindow === undefined) {
+      delete globalThis.window;
+    } else {
+      globalThis.window = originalWindow;
+    }
+
+    if (originalFetch === undefined) {
+      delete globalThis.fetch;
+    } else {
+      globalThis.fetch = originalFetch;
+    }
+  }
+});
+
+test('checkHealth does not fallback to default backend in tauri runtime', async () => {
+  const originalWindow = globalThis.window;
+  const originalFetch = globalThis.fetch;
+
+  globalThis.window = {
+    __LOCUS_BACKEND_URL: 'http://127.0.0.1:8033',
+    __TAURI_IPC__: {},
+    localStorage: {
+      getItem() {
+        return null;
+      },
+      setItem() {}
+    }
+  };
+
+  globalThis.fetch = async () => {
+    throw new TypeError('Load failed');
+  };
+
+  try {
+    const result = await checkHealth();
+    assert.equal(result.background_service, 'offline');
   } finally {
     if (originalWindow === undefined) {
       delete globalThis.window;
@@ -367,6 +405,49 @@ test('restoreCheckpointSession posts restore payload to session endpoint', async
       })
     );
     assert.equal(result.dry_run, true);
+  } finally {
+    if (originalWindow === undefined) {
+      delete globalThis.window;
+    } else {
+      globalThis.window = originalWindow;
+    }
+
+    if (originalFetch === undefined) {
+      delete globalThis.fetch;
+    } else {
+      globalThis.fetch = originalFetch;
+    }
+  }
+});
+
+test('setupAuth retries transient desktop network failures before succeeding', async () => {
+  const originalWindow = globalThis.window;
+  const originalFetch = globalThis.fetch;
+
+  globalThis.window = createWindowMock({
+    globalUrl: 'http://127.0.0.1:8033',
+    storageUrl: ''
+  });
+
+  let attempts = 0;
+  globalThis.fetch = async () => {
+    attempts += 1;
+    if (attempts < 3) {
+      throw new TypeError('Load failed');
+    }
+    return {
+      ok: true,
+      async json() {
+        return { success: true, recovery_key: 'recovery-token' };
+      }
+    };
+  };
+
+  try {
+    const result = await setupAuth('123456789012');
+    assert.equal(result.success, true);
+    assert.equal(result.recovery_key, 'recovery-token');
+    assert.equal(attempts, 3);
   } finally {
     if (originalWindow === undefined) {
       delete globalThis.window;

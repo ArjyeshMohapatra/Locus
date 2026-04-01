@@ -1,13 +1,15 @@
 <script>
   import { onMount } from 'svelte';
-  import { showMessage, askQuestion } from '../dialogStore.js';
+  import { showMessage } from '../dialogStore.js';
   import {
     getSecuritySettings,
     setSecuritySettings,
     getTrackingExclusions,
     setTrackingExclusions,
     getSnapshotSettings,
-    updateSnapshotSettings
+    updateSnapshotSettings,
+    getRuntimeSettings,
+    updateRuntimeSettings
   } from '../api.js';
   import Fa from 'svelte-fa';
   import {
@@ -39,7 +41,6 @@
 
   let themeMode = 'system';
   let resolvedTheme = 'light';
-  let startupMode = 'startup';
   let mediaQuery;
 
   let snapshotSettingsLoading = false;
@@ -48,9 +49,14 @@
   let snapshotIntervalSeconds = 10;
   let snapshotRetentionDays = 10;
   let snapshotExcludePrivate = true;
+  let snapshotCaptureOnWindowChange = true;
   let snapshotAllowDelete = false;
-  let snapshotNlpAlwaysOn = false;
   let snapshotVaultInfo = '';
+
+  let runtimeSettingsLoading = false;
+  let runtimeSettingsSaving = false;
+  let runtimeSettingsError = '';
+  let runInBackgroundService = true;
 
 
   const toggleGc = () => {
@@ -67,10 +73,6 @@
     resolvedTheme = resolveTheme(mode);
     localStorage.setItem('locus-theme', themeMode);
     window.dispatchEvent(new CustomEvent('locus-theme-change', { detail: { mode } }));
-  };
-
-  const openStartupSettings = async () => {
-    await showMessage('Open Startup Settings (placeholder).', 'Settings');
   };
 
   onMount(() => {
@@ -95,6 +97,7 @@
     loadSecuritySettings();
     loadTrackingExclusions();
     loadSnapshotSettings();
+    loadRuntimeSettings();
 
     return () => {
       if (mediaQuery.removeEventListener) {
@@ -196,8 +199,8 @@
       snapshotIntervalSeconds = data.interval_seconds ?? 10;
       snapshotRetentionDays = data.retention_days ?? 10;
       snapshotExcludePrivate = !!data.exclude_private_browsing;
+      snapshotCaptureOnWindowChange = data.capture_on_window_change ?? true;
       snapshotAllowDelete = !!data.allow_individual_delete;
-      snapshotNlpAlwaysOn = !!data.nlp_always_on;
     } catch (e) {
       snapshotSettingsError = e.message || 'Failed to load snapshot settings.';
     } finally {
@@ -213,13 +216,47 @@
         interval_seconds: Number(snapshotIntervalSeconds),
         retention_days: Number(snapshotRetentionDays),
         exclude_private_browsing: !!snapshotExcludePrivate,
-        allow_individual_delete: !!snapshotAllowDelete,
-        nlp_always_on: !!snapshotNlpAlwaysOn
+        capture_on_window_change: !!snapshotCaptureOnWindowChange,
+        allow_individual_delete: !!snapshotAllowDelete
       });
     } catch (e) {
       snapshotSettingsError = e.message || 'Failed to save snapshot settings.';
     } finally {
       snapshotSettingsSaving = false;
+    }
+  };
+
+  const loadRuntimeSettings = async () => {
+    runtimeSettingsLoading = true;
+    runtimeSettingsError = '';
+    try {
+      const data = await getRuntimeSettings();
+      runInBackgroundService = data.run_in_background_service ?? true;
+    } catch (e) {
+      runtimeSettingsError = e.message || 'Failed to load runtime settings.';
+    } finally {
+      runtimeSettingsLoading = false;
+    }
+  };
+
+  const saveRuntimeSettings = async () => {
+    runtimeSettingsSaving = true;
+    runtimeSettingsError = '';
+    try {
+      const data = await updateRuntimeSettings({
+        run_in_background_service: !!runInBackgroundService
+      });
+      runInBackgroundService = data.run_in_background_service ?? runInBackgroundService;
+      window.dispatchEvent(
+        new CustomEvent('locus-runtime-settings-change', {
+          detail: { runInBackgroundService }
+        })
+      );
+      await showMessage('Runtime service preference saved.', 'Settings');
+    } catch (e) {
+      runtimeSettingsError = e.message || 'Failed to save runtime settings.';
+    } finally {
+      runtimeSettingsSaving = false;
     }
   };
 
@@ -293,7 +330,7 @@
         <Fa icon={faGears} class="section-icon" />
         <div>
           <h2>Snapshot Memory</h2>
-          <p class="muted">Tune interval, retention, privacy, and local NLP behavior.</p>
+          <p class="muted">Tune interval, retention, privacy, and deletion behavior.</p>
         </div>
       </div>
       <Fa icon={faChevronDown} class="section-chevron" />
@@ -333,6 +370,17 @@
 
         <div class="settings-row">
           <div>
+            <h3>Capture On Window Change</h3>
+            <p class="muted">Take an immediate snapshot when active app/window changes.</p>
+          </div>
+          <label class="switch">
+            <input type="checkbox" bind:checked={snapshotCaptureOnWindowChange} />
+            <span class="slider"></span>
+          </label>
+        </div>
+
+        <div class="settings-row">
+          <div>
             <h3>Allow Individual Snapshot Deletion</h3>
             <p class="muted">Off by default for integrity. Enable only if needed.</p>
           </div>
@@ -342,19 +390,8 @@
           </label>
         </div>
 
-        <div class="settings-row">
-          <div>
-            <h3>Always-On NLP Mode</h3>
-            <p class="muted">Off by default to save CPU/battery. Query mode remains on-demand.</p>
-          </div>
-          <label class="switch">
-            <input type="checkbox" bind:checked={snapshotNlpAlwaysOn} />
-            <span class="slider"></span>
-          </label>
-        </div>
-
         <div class="d-flex justify-content-end">
-          <button class="btn btn-primary" on:click={saveSnapshotSettings} disabled={snapshotSettingsSaving}>
+          <button class="btn btn-primary" style="min-width: 210px;" on:click={saveSnapshotSettings} disabled={snapshotSettingsSaving}>
             {snapshotSettingsSaving ? 'Saving…' : 'Save Snapshot Settings'}
           </button>
         </div>
@@ -514,31 +551,29 @@
       <Fa icon={faChevronDown} class="section-chevron" />
     </summary>
     <div class="settings-content">
-      <div class="radio-group">
-        <label class="radio-option">
-          <input type="radio" name="startup" value="startup" bind:group={startupMode} />
-          <span>
-            <strong>Startup App</strong>
-            <span class="muted">Launch LOCUS on login and show the main window.</span>
-          </span>
-        </label>
-        <label class="radio-option">
-          <input type="radio" name="startup" value="service" bind:group={startupMode} />
-          <span>
-            <strong>Background Service</strong>
-            <span class="muted">Run LOCUS silently as a service after login.</span>
-          </span>
-        </label>
-      </div>
-
-      {#if startupMode === 'startup'}
-        <button class="btn btn-outline-secondary" on:click={openStartupSettings}>
-          Open Startup Settings
-        </button>
+      {#if runtimeSettingsLoading}
+        <div class="settings-note">Loading runtime settings…</div>
       {:else}
-        <div class="settings-note">
-          Service installation will be available in a future update.
+        <div class="settings-row">
+          <div>
+            <h3>Run In Background Service Mode</h3>
+            <p class="muted">When enabled, closing LOCUS after unlock keeps it running in tray on Linux and Windows.</p>
+          </div>
+          <label class="switch">
+            <input type="checkbox" bind:checked={runInBackgroundService} />
+            <span class="slider"></span>
+          </label>
         </div>
+
+        <div class="d-flex justify-content-end">
+          <button class="btn btn-primary" style="min-width: 210px;" on:click={saveRuntimeSettings} disabled={runtimeSettingsSaving}>
+            {runtimeSettingsSaving ? 'Saving…' : 'Save Runtime Settings'}
+          </button>
+        </div>
+
+        {#if runtimeSettingsError}
+          <div class="settings-note text-danger" style="margin-top: 12px;">{runtimeSettingsError}</div>
+        {/if}
       {/if}
     </div>
   </details>

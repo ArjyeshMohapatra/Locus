@@ -36,6 +36,71 @@ export const BASE_URL = {
   }
 };
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isTransientNetworkError(error) {
+  const message = String(error?.message || '').toLowerCase();
+  return (
+    error instanceof TypeError ||
+    message.includes('load failed') ||
+    message.includes('failed to fetch') ||
+    message.includes('networkerror') ||
+    message.includes('network error') ||
+    message.includes('ecconnrefused')
+  );
+}
+
+async function fetchWithRetry(url, options = {}, { attempts = 1, retryDelayMs = 400 } = {}) {
+  let lastError = null;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await fetch(url, options);
+    } catch (error) {
+      lastError = error;
+      if (!isTransientNetworkError(error) || attempt >= attempts) {
+        throw error;
+      }
+      await sleep(retryDelayMs);
+    }
+  }
+
+  throw lastError || new Error('Request failed');
+}
+
+function toStartupHint(error, fallbackMessage) {
+  if (isTransientNetworkError(error)) {
+    return new Error('Local backend is still starting. Please wait a few seconds and try again.');
+  }
+  return new Error(error?.message || fallbackMessage);
+}
+
+async function resolveAuthBaseUrl() {
+  if (typeof window === 'undefined' || !isTauriRuntime()) {
+    return String(BASE_URL);
+  }
+
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const fromGlobal = String(window.__LOCUS_BACKEND_URL || '').trim();
+    if (fromGlobal) {
+      return fromGlobal;
+    }
+    await sleep(100);
+  }
+
+  try {
+    const fromStorage = String(window.localStorage.getItem('locus-backend-url') || '').trim();
+    if (fromStorage) {
+      return fromStorage;
+    }
+  } catch {
+    // Ignore localStorage access failures in hardened runtime contexts.
+  }
+
+  return DEFAULT_BASE_URL;
+}
+
 export async function checkHealth() {
   const requestHealth = async (baseUrl) => {
     const res = await fetch(`${baseUrl}/health`);
@@ -48,7 +113,9 @@ export async function checkHealth() {
     try {
       return await requestHealth(resolvedBase);
     } catch (primaryError) {
-      if (resolvedBase === DEFAULT_BASE_URL) {
+      // In desktop runtime, never silently pivot to localhost:8000.
+      // That can hit a different backend instance and cause auth state mismatch.
+      if (resolvedBase === DEFAULT_BASE_URL || isTauriRuntime()) {
         throw primaryError;
       }
 
@@ -341,35 +408,83 @@ export async function updateSnapshotSettings(updates) {
   return await res.json();
 }
 
-export async function getAuthStatus() {
-  const res = await fetch(`${BASE_URL}/auth/status`);
-  if (!res.ok) throw new Error('Failed to fetch auth status');
+export async function getRuntimeSettings() {
+  const res = await fetch(`${BASE_URL}/settings/runtime`);
+  if (!res.ok) throw new Error('Failed to fetch runtime settings');
   return await res.json();
 }
 
-export async function setupAuth(master_password) {
-  const res = await fetch(`${BASE_URL}/auth/setup`, {
+export async function updateRuntimeSettings(updates) {
+  const res = await fetch(`${BASE_URL}/settings/runtime`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ master_password })
+    body: JSON.stringify(updates || {})
   });
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => ({}));
+    throw new Error(errorData.detail || 'Failed to update runtime settings');
+  }
+  return await res.json();
+}
+
+export async function getAuthStatus() {
+  const baseUrl = await resolveAuthBaseUrl();
+  try {
+    const res = await fetchWithRetry(`${baseUrl}/auth/status`, {}, { attempts: 12, retryDelayMs: 500 });
+    if (!res.ok) throw new Error('Failed to fetch auth status');
+    return await res.json();
+  } catch (error) {
+    throw toStartupHint(error, 'Failed to fetch auth status');
+  }
+}
+
+export async function setupAuth(master_password) {
+  const baseUrl = await resolveAuthBaseUrl();
+  let res;
+  try {
+    res = await fetchWithRetry(
+      `${baseUrl}/auth/setup`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ master_password })
+      },
+      { attempts: 10, retryDelayMs: 500 }
+    );
+  } catch (error) {
+    throw toStartupHint(error, 'Failed to setup auth');
+  }
+
   if (!res.ok) {
     const errorData = await res.json().catch(() => ({}));
     throw new Error(errorData.detail || 'Failed to setup auth');
   }
+
   return await res.json();
 }
 
 export async function unlockAuth(passphrase) {
-  const res = await fetch(`${BASE_URL}/auth/unlock`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ passphrase })
-  });
+  const baseUrl = await resolveAuthBaseUrl();
+  let res;
+  try {
+    res = await fetchWithRetry(
+      `${baseUrl}/auth/unlock`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ passphrase })
+      },
+      { attempts: 8, retryDelayMs: 400 }
+    );
+  } catch (error) {
+    throw toStartupHint(error, 'Failed to unlock');
+  }
+
   if (!res.ok) {
     const errorData = await res.json().catch(() => ({}));
     throw new Error(errorData.detail || 'Failed to unlock');
   }
+
   return await res.json();
 }
 

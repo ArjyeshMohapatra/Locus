@@ -13,12 +13,50 @@ from sqlalchemy.orm import declarative_base, relationship, sessionmaker
 from sqlalchemy.sql import func
 
 import os as _os
+import sys as _sys
+from pathlib import Path as _Path
 
 # models.py is at backend/app/database/models.py → 3 dirname levels to reach backend/
 _APP_DIR = _os.path.dirname(
     _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
 )
-_DB_PATH = _os.path.join(_APP_DIR, "locus.db")
+_DB_FILENAME = "locus.db"
+
+
+def _default_user_data_dir() -> str:
+    if _os.name == "nt":
+        base = _os.getenv("APPDATA") or str(_Path.home() / "AppData" / "Roaming")
+    elif _sys.platform == "darwin":
+        base = str(_Path.home() / "Library" / "Application Support")
+    else:
+        base = _os.getenv("XDG_DATA_HOME") or str(_Path.home() / ".local" / "share")
+    return _os.path.join(base, "locus")
+
+
+def _resolve_db_path() -> str:
+    explicit_db = _os.getenv("LOCUS_DB_PATH", "").strip()
+    if explicit_db:
+        resolved = _os.path.abspath(explicit_db)
+        parent = _os.path.dirname(resolved)
+        if parent:
+            _os.makedirs(parent, exist_ok=True)
+        return resolved
+
+    explicit_data_dir = _os.getenv("LOCUS_DATA_DIR", "").strip()
+    if explicit_data_dir:
+        _os.makedirs(explicit_data_dir, exist_ok=True)
+        return _os.path.join(explicit_data_dir, _DB_FILENAME)
+
+    # Frozen/packaged runtime should never write DB next to extracted binaries.
+    if getattr(_sys, "frozen", False):
+        data_dir = _default_user_data_dir()
+        _os.makedirs(data_dir, exist_ok=True)
+        return _os.path.join(data_dir, _DB_FILENAME)
+
+    return _os.path.join(_APP_DIR, _DB_FILENAME)
+
+
+_DB_PATH = _resolve_db_path()
 DATABASE_URL = f"sqlite:///{_DB_PATH}"
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -167,19 +205,6 @@ class ActivityLog(Base):
     details = Column(Text, nullable=True)  # JSON or descriptive text
     start_time = Column(DateTime(timezone=True), server_default=func.now())
     end_time = Column(DateTime(timezone=True), nullable=True)
-
-
-# stores screenshots and context found in them
-class Snapshot(Base):
-    __tablename__ = "snapshots"
-
-    id = Column(Integer, primary_key=True, index=True)
-    image_path = Column(
-        String, nullable=True
-    )  # Can be null if we delete image after OCR
-    ocr_text = Column(Text, nullable=True)
-    timestamp = Column(DateTime(timezone=True), server_default=func.now())
-    app_context = Column(String, nullable=True)  # What app was open?
 
 
 class ActivitySnapshotRecord(Base):

@@ -4,6 +4,8 @@
   import Fa from 'svelte-fa';
   import { faMinus, faSquare, faXmark, faCloud } from '@fortawesome/free-solid-svg-icons';
 
+  export let closeBehavior = 'tray';
+
   let appWindow;
   let isMaximized = false;
   let eventSource;
@@ -87,7 +89,28 @@
     await appWindow?.toggleMaximize();
     isMaximized = await appWindow?.isMaximized();
   };
-  const close = () => appWindow?.close();
+  const close = async () => {
+    try {
+      if (closeBehavior === 'shutdown') {
+        if (window.__TAURI__) {
+          const { exit } = await import('@tauri-apps/api/process');
+          await exit(0);
+          return;
+        }
+        window.close();
+        return;
+      }
+
+      if (!appWindow) return;
+      if (typeof appWindow.hide === 'function') {
+        await appWindow.hide();
+        return;
+      }
+      await appWindow.close?.();
+    } catch (e) {
+      console.error('Failed to process close action:', e);
+    }
+  };
 </script>
 
 <div class="titlebar" data-tauri-drag-region>

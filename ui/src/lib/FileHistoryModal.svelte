@@ -724,8 +724,6 @@
     .version-row:hover {
         background-color: var(--sidebar-hover);
         border-color: var(--accent) !important;
-        transform: translateY(-2px);
-        box-shadow: 0 4px 12px rgba(0,0,0,0.05) !important;
     }
     .version-row:hover .text-muted {
         color: var(--text-muted) !important;

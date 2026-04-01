@@ -8,3 +8,7 @@ tauri-build = { version = "1.5", features = [] }
 
 [dependencies]
 tauri = { version = "1.5", features = [ "os-all", "system-tray", "window-close", "window-unmaximize", "window-show", "window-start-dragging", "window-maximize", "window-hide", "window-minimize", "dialog-message", "dialog-ask", "dialog-confirm", "shell-execute", "shell-open", "dialog-open"] }
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]

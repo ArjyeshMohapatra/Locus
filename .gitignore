@@ -46,6 +46,8 @@ node_modules/
 dist/
 build/
 .vite/
+ui/playwright-report/
+ui/test-results/
 npm-debug.log*
 yarn-debug.log*
 lerna-debug.log*
@@ -90,3 +92,14 @@ secrets.*
 check_status.py
 reclaim_space.py
 
+# Branch-local extras to keep out of feature snapshot toggle commit
+.github/workflows/desktop-build.yml
+Makefile
+backend/requirements-dev.txt
+backend/tests/test_checkpoint_api_validation.py
+backend/tests/test_settings_runtime_snapshot.py
+backend/tests/test_snapshot_self_filter.py
+src-tauri/pkgconfig-compat/
+tools/window-probe/
+ui/playwright.config.mjs
+ui/tests/e2e/
