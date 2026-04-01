@@ -1,168 +1,164 @@
-LOCUS — Local Context & Activity Memory
+# Locus
 
-Quick start (development):
+Locus is a local-first desktop memory and activity intelligence tool.
+It helps you track file evolution, capture work context, and recover historical state without sending your data to a cloud service.
 
-1. Backend (Python FastAPI)
+## Why this project exists
 
-```powershell
-cd backend
+For most of the dev's inlcuding me who are not so into git and github and work solo
+
+- You did something important but forgot how you did it.
+- You need to restore a previous state of a file or entire project but don't want to get involved with git and other versioning systems.
+- You want timeline-style memory of your desktop work, but with local control.
+
+Locus addresses this by combining file monitoring, snapshot memory, and checkpoint-based restore in one desktop app.
+
+## What Locus does
+
+- Watches selected folders and tracks file changes over time.
+- Preserves file versions for rollback and history inspection.
+- Captures active-window snapshots for timeline recall. (Mimics Windows 11's Recall feature with privacy first approach)
+- Supports checkpoint sessions with diff and restore workflows.
+- Includes lock screen authentication and recovery-key setup.
+- Runs in tray/background mode for continuous tracking.
+- Provides Linux and Windows service scripts for backend persistence.
+
+## Screenshots
+
+Dashboard
+
+![Locus Dashboard](docs/screenshots/dashboard.png)
+
+Settings
+
+![Locus Settings](docs/screenshots/settings.png)
+
+Checkpoint Sessions
+
+![Locus Checkpoints](docs/screenshots/checkpoints.png)
+
+Live Activity
+
+![Locus Live Activity](docs/screenshots/liveactivity.png)
+
+Snapshot History
+
+![Locus Snapshot History](docs/screenshots/snapshothistory.png)
+
+## Core architecture
+
+- Desktop shell: Tauri (Rust)
+- UI: Svelte + Vite
+- Backend API: FastAPI (Python)
+- Storage: SQLite
+
+This split keeps the backend reusable and independent from the UI runtime.
+
+## Privacy
+
+Locus is designed to keep core activity and file history data on your local machine and keeping these safe with your master password and recovery password so that no one else can have access to your activities.
+
+## Caution
+
+Try to store your master password and recovery password in a safe place otherwise there's no way to recover Locus's data at all, one has to redo everything from beginning.
+
+## Development setup
+
+### Prerequisites
+
+- Python 3.11+ (project currently tested with 3.13 in CI)
+- Node.js 20+
+- Rust stable toolchain
+- Cargo Tauri CLI
+
+Linux desktop build dependencies:
+
+- libwebkit2gtk-4.0-dev
+- libgtk-3-dev
+- libayatana-appindicator3-dev
+- librsvg2-dev
+- patchelf
+
+### Run in development
+
+Backend (from repo root):
+
+```bash
 python -m venv .venv
-.\.venv\Scripts\activate
-pip install -r requirements.txt
+source .venv/bin/activate
+pip install -r backend/requirements.txt
+cd backend
 uvicorn app.main:app --reload
 ```
 
-2. UI (Svelte + Vite)
-
-```powershell
-cd ui
-npm install
-npm run dev
-```
-
-3. Tauri (optional — dev tooling required)
-
-Install Rust toolchain and `@tauri-apps/cli` to build native apps. For now the UI can run independently in dev mode and talk to `http://127.0.0.1:8000`.
-
-Notes:
-- The backend is intentionally decoupled from the UI. If you need to switch to Electron later, the Python API remains unchanged.
-- `.gitignore` includes database and build artifacts.
-
-Testing & QA Matrix:
-
-1. Backend (pytest + black + ruff + mypy)
+UI (new terminal, from repo root):
 
 ```bash
-# from repo root
-pip install -r backend/requirements-dev.txt
-
-make backend-format
-make backend-lint
-make backend-type
-make backend-test
-```
-
-2. Frontend (unit + Playwright e2e)
-
-```bash
-# install once
 npm --prefix ui install
-npm --prefix ui run playwright:install
-
-# run checks
-npm --prefix ui run test:unit
-npm --prefix ui run test:e2e
+npm --prefix ui run dev
 ```
 
-3. Tauri (rust fmt + clippy + tests)
+Optional Tauri desktop shell (new terminal, from repo root):
 
 ```bash
-make tauri-fmt
-make tauri-clippy
-make tauri-test
+env PATH="$HOME/.cargo/bin:$PATH" \
+	PKG_CONFIG_PATH="$PWD/src-tauri/pkgconfig-compat:$PKG_CONFIG_PATH" \
+	LIBRARY_PATH="$PWD/src-tauri/lib-compat:$LIBRARY_PATH" \
+	LD_LIBRARY_PATH="$PWD/src-tauri/lib-compat:$LD_LIBRARY_PATH" \
+	RUSTFLAGS="-L native=$PWD/src-tauri/lib-compat $RUSTFLAGS" \
+	cargo tauri dev
 ```
 
-4. Quick core sweep
+## Service mode
+
+### Linux user service
+
+Install and start backend service:
 
 ```bash
-make qa
-```
-
-Desktop Release Builds:
-
-1. Linux (local)
-
-```bash
-# from repo root
-./.venv/bin/python -m PyInstaller backend/app/main.py \
-	--name locus-backend --onefile --paths backend \
-	--distpath backend/dist --workpath backend/build/pyinstaller \
-	--specpath backend/build --clean
-
-cp -f backend/dist/locus-backend src-tauri/binaries/locus-backend-x86_64-unknown-linux-gnu
-chmod +x src-tauri/binaries/locus-backend-x86_64-unknown-linux-gnu
-
-env PKG_CONFIG_PATH="$PWD/src-tauri/pkgconfig-compat:$PKG_CONFIG_PATH" \
-		LIBRARY_PATH="$PWD/src-tauri/lib-compat:$LIBRARY_PATH" \
-		LD_LIBRARY_PATH="$PWD/src-tauri/lib-compat:$LD_LIBRARY_PATH" \
-		RUSTFLAGS="-L native=$PWD/src-tauri/lib-compat $RUSTFLAGS" \
-		cargo tauri build --target x86_64-unknown-linux-gnu
-```
-
-Artifacts are generated under:
-
-- `src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage/`
-- `src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/deb/`
-- `src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/rpm/`
-
-2. Windows + Linux (CI)
-
-Use the GitHub Actions workflow `Desktop Release Builds` in `.github/workflows/desktop-build.yml`.
-
-- Trigger manually with `workflow_dispatch`, or
-- Push a tag like `v0.1.0`.
-
-The workflow builds backend sidecars per OS, runs Tauri bundles for:
-
-- `x86_64-unknown-linux-gnu`
-- `x86_64-pc-windows-msvc`
-
-and uploads artifacts for each platform.
-
-Service Mode (Linux + Windows):
-
-1. Linux (systemd user service)
-
-```bash
-cd /path/to/LOCUS
 chmod +x scripts/services/install-linux-user-service.sh
 ./scripts/services/install-linux-user-service.sh
+```
 
-# verify
+Verify:
+
+```bash
 systemctl --user status locus-backend.service
 journalctl --user -u locus-backend.service -f
 ```
 
-Stop/remove:
+Remove:
 
 ```bash
 chmod +x scripts/services/uninstall-linux-user-service.sh
 ./scripts/services/uninstall-linux-user-service.sh
 ```
 
-2. Windows (Windows Service)
+### Windows service
 
-Run elevated PowerShell:
+From elevated PowerShell:
 
 ```powershell
-cd C:\path\to\LOCUS
 powershell -ExecutionPolicy Bypass -File .\scripts\services\install-windows-service.ps1
-
-# verify
 sc.exe query LocusBackend
 ```
 
-Stop/remove:
+Remove:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\services\uninstall-windows-service.ps1
 ```
 
-Verify Runtime Settings from Terminal:
+## Troubleshooting
+
+Runtime settings and health:
 
 ```bash
 curl -sS http://127.0.0.1:8000/settings/runtime
 curl -sS http://127.0.0.1:8000/health
 ```
 
-Expected payload keys:
-
-- `run_in_background_service`
-- `ui_zoom_scale`
-
-App Name Detection Troubleshooting (Linux):
-
-If snapshots show `Unknown`, verify one of these providers is available:
+Linux app-name detection checks:
 
 ```bash
 command -v locus-window-probe || true
@@ -173,11 +169,9 @@ echo "DISPLAY=$DISPLAY"
 echo "XDG_SESSION_TYPE=$XDG_SESSION_TYPE"
 ```
 
-The backend now tries all of the following in order:
+If snapshots show Unknown app names, Locus will try providers in this order:
 
-1. bundled `locus-window-probe`
-2. `kdotool` (Wayland)
-3. `xdotool`
-4. `xprop`
-
-and falls back to WM class/instance app labels when window title is missing.
+1. bundled locus-window-probe
+2. kdotool
+3. xdotool
+4. xprop
