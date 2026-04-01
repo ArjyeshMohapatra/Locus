@@ -106,6 +106,6 @@ backend/tests/test_checkpoint_api_validation.py
 backend/tests/test_settings_runtime_snapshot.py
 backend/tests/test_snapshot_self_filter.py
 src-tauri/pkgconfig-compat/
-tools/window-probe/
+tools/window-probe/target/
 ui/playwright.config.mjs
 ui/tests/e2e/

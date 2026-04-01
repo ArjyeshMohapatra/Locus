@@ -65,6 +65,7 @@ jobs:
       - name: Build backend sidecar (Linux)
         if: runner.os == 'Linux'
         run: |
+          mkdir -p src-tauri/binaries
           python -m PyInstaller backend/app/main.py \
             --name locus-backend \
             --onefile \
@@ -83,6 +84,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
+          New-Item -ItemType Directory -Path src-tauri/binaries -Force | Out-Null
           python -m PyInstaller backend/app/main.py --name locus-backend --onefile --paths backend --distpath backend/dist --workpath backend/build/pyinstaller --specpath backend/build --clean
           Copy-Item -Path backend/dist/locus-backend.exe -Destination src-tauri/binaries/locus-backend-x86_64-pc-windows-msvc.exe -Force
           cargo build --release --manifest-path tools/window-probe/Cargo.toml --target x86_64-pc-windows-msvc
