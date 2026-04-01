@@ -38,6 +38,7 @@ MIN_SNAPSHOT_UNLOCK_COMPAT_LENGTH = 4
 MIN_SNAPSHOT_PASSPHRASE_LENGTH = 12
 UNSAFE_LAUNCH_CHARS_RE = re.compile(r"[&;<>`\"'|\r\n\t]")
 SAFE_COMMAND_CANDIDATE_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
+NON_ALNUM_LOWER_RE = re.compile(r"[^a-z0-9]+")
 logger = logging.getLogger(__name__)
 _WINDOW_CAPTURE_WARNING_EMITTED = False
 
@@ -793,7 +794,7 @@ class SnapshotService:
         if normalized:
             candidates.append(normalized)
 
-        compact = re.sub(r"[^a-z0-9]+", "", normalized)
+        compact = NON_ALNUM_LOWER_RE.sub("", normalized)
         if compact:
             candidates.append(compact)
 
@@ -988,8 +989,25 @@ class SnapshotService:
         window_title: str | None = None,
         force_capture: bool = False,
     ) -> None:
+        probe_payload: dict[str, Any] | None = None
+
         if window_title is None:
             window_title = self._get_active_window_title()
+
+        if (
+            sys.platform == "linux"
+            and (not window_title or str(window_title).strip().lower() == "unknown")
+        ):
+            probe_payload = self._linux_probe_payload()
+            if probe_payload:
+                probe_title = str(
+                    probe_payload.get("title")
+                    or probe_payload.get("class")
+                    or probe_payload.get("instance")
+                    or ""
+                ).strip()
+                if probe_title:
+                    window_title = probe_title
 
         if not window_title:
             window_title = "Unknown"
@@ -1000,6 +1018,8 @@ class SnapshotService:
             return
 
         app_name = self._infer_app_name(window_title)
+        if app_name == "Unknown" and sys.platform == "linux":
+            app_name = self._infer_app_name_from_probe_payload(probe_payload)
         if self._is_locus_window(window_title, app_name):
             logger.debug("[SnapshotService] Skipping self-window capture")
             return
@@ -1284,22 +1304,74 @@ class SnapshotService:
         return False
 
     @staticmethod
+    def _resolve_command_path(command_name: str) -> str | None:
+        if not command_name:
+            return None
+
+        resolved = shutil.which(command_name)
+        if resolved:
+            return resolved
+
+        home = Path.home()
+        candidates = [
+            home / ".cargo" / "bin" / command_name,
+            home / ".local" / "bin" / command_name,
+            Path("/usr/local/bin") / command_name,
+            Path("/usr/bin") / command_name,
+            Path("/bin") / command_name,
+        ]
+        for candidate in candidates:
+            if candidate.exists() and os.access(candidate, os.X_OK):
+                return str(candidate)
+
+        return None
+
+    @staticmethod
     def _resolve_window_probe_command() -> str | None:
         explicit = os.getenv("LOCUS_WINDOW_PROBE", "").strip()
         if explicit:
             if os.path.isabs(explicit) and os.path.exists(explicit):
                 return explicit
-            resolved_explicit = shutil.which(explicit)
+            resolved_explicit = SnapshotService._resolve_command_path(explicit)
             if resolved_explicit:
                 return resolved_explicit
 
-        return shutil.which("locus-window-probe")
+        from_path = SnapshotService._resolve_command_path("locus-window-probe")
+        if from_path:
+            return from_path
+
+        # Dev and desktop build fallbacks when binary exists in local artifacts.
+        repo_root = Path(__file__).resolve().parents[2]
+        local_candidates = [
+            repo_root
+            / "tools"
+            / "window-probe"
+            / "target"
+            / "release"
+            / "locus-window-probe",
+            repo_root
+            / "tools"
+            / "window-probe"
+            / "target"
+            / "x86_64-unknown-linux-gnu"
+            / "release"
+            / "locus-window-probe",
+            repo_root
+            / "src-tauri"
+            / "binaries"
+            / "locus-window-probe-x86_64-unknown-linux-gnu",
+        ]
+        for candidate in local_candidates:
+            if candidate.exists() and os.access(candidate, os.X_OK):
+                return str(candidate)
+
+        return None
 
     @staticmethod
-    def _linux_title_from_bundled_probe() -> str:
+    def _linux_probe_payload() -> dict[str, Any] | None:
         command = SnapshotService._resolve_window_probe_command()
         if not command:
-            return ""
+            return None
 
         try:
             result = subprocess.run(  # nosec B603
@@ -1311,12 +1383,23 @@ class SnapshotService:
             )
             output = (result.stdout or "").strip()
             if not output:
-                return ""
+                return None
 
             payload = json.loads(output)
             if not isinstance(payload, dict) or not payload.get("ok"):
-                return ""
+                return None
+            return payload
+        except Exception as e:
+            logger.debug(f"[SnapshotService] bundled probe failed: {e}")
+            return None
 
+    @staticmethod
+    def _linux_title_from_bundled_probe() -> str:
+        payload = SnapshotService._linux_probe_payload()
+        if not payload:
+            return ""
+
+        try:
             title = str(payload.get("title") or "").strip()
             app_class = str(payload.get("class") or payload.get("instance") or "").strip()
 
@@ -1325,21 +1408,39 @@ class SnapshotService:
             if app_class:
                 return app_class
             return ""
-        except Exception as e:
-            logger.debug(f"[SnapshotService] bundled probe failed: {e}")
+        except Exception:
             return ""
 
     @staticmethod
+    def _infer_app_name_from_probe_payload(payload: dict[str, Any] | None) -> str:
+        if not payload:
+            return "Unknown"
+
+        class_name = str(payload.get("class") or "").strip()
+        instance = str(payload.get("instance") or "").strip()
+        for raw in (class_name, instance):
+            if not raw:
+                continue
+            normalized = NON_ALNUM_LOWER_RE.sub("-", raw.lower()).strip("-")
+            mapped = LINUX_APP_LABEL_ALIASES.get(normalized)
+            if mapped:
+                return mapped
+            if raw.lower() not in {"unknown", "n/a"}:
+                return raw
+
+        return "Unknown"
+
+    @staticmethod
     def _linux_title_from_kdotool() -> str:
-        import shutil
         import subprocess  # nosec B404
 
-        if not shutil.which("kdotool"):
+        command = SnapshotService._resolve_command_path("kdotool")
+        if not command:
             return ""
 
         try:
             result = subprocess.run(
-                ["kdotool", "getactivewindow", "getwindowname"],  # nosec B603 B607
+                [command, "getactivewindow", "getwindowname"],  # nosec B603 B607
                 capture_output=True,
                 text=True,
                 timeout=2,
@@ -1352,15 +1453,15 @@ class SnapshotService:
 
     @staticmethod
     def _linux_title_from_xdotool(is_wayland: bool) -> str:
-        import shutil
         import subprocess  # nosec B404
 
-        if not shutil.which("xdotool"):
+        command = SnapshotService._resolve_command_path("xdotool")
+        if not command:
             return ""
 
         try:
             result = subprocess.run(
-                ["xdotool", "getactivewindow", "getwindowname"],  # nosec B603 B607
+                [command, "getactivewindow", "getwindowname"],  # nosec B603 B607
                 capture_output=True,
                 text=True,
                 timeout=2,
@@ -1377,15 +1478,15 @@ class SnapshotService:
 
     @staticmethod
     def _linux_title_from_xprop() -> str:
-        import shutil
         import subprocess  # nosec B404
 
-        if not shutil.which("xprop"):
+        command = SnapshotService._resolve_command_path("xprop")
+        if not command:
             return ""
 
         try:
             active_result = subprocess.run(
-                ["xprop", "-root", "_NET_ACTIVE_WINDOW"],  # nosec B603 B607
+                [command, "-root", "_NET_ACTIVE_WINDOW"],  # nosec B603 B607
                 capture_output=True,
                 text=True,
                 timeout=2,
@@ -1401,7 +1502,7 @@ class SnapshotService:
 
             window_result = subprocess.run(
                 [
-                    "xprop",
+                    command,
                     "-id",
                     active_id,
                     "_NET_WM_NAME",
@@ -1512,7 +1613,7 @@ class SnapshotService:
             return "Unknown"
 
         candidate = clean[-1]
-        normalized = re.sub(r"[^a-z0-9]+", "-", candidate.lower()).strip("-")
+        normalized = NON_ALNUM_LOWER_RE.sub("-", candidate.lower()).strip("-")
         return LINUX_APP_LABEL_ALIASES.get(normalized, candidate)
 
     @staticmethod

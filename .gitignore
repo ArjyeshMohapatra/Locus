@@ -21,6 +21,10 @@ include/
 share/
 pyvenv.cfg
 
+# Keep UI source library directory versioned.
+!ui/src/lib/
+!ui/src/lib/**
+
 # SQLite / Database
 *.db
 *.db-shm
@@ -68,6 +72,9 @@ build/
 *.exe
 *.dll
 *.dylib
+*.AppImage
+*.AppImage.zsync
+*.AppImage.sig
 
 # IDE / Editors
 .vscode/

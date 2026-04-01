@@ -108,3 +108,76 @@ The workflow builds backend sidecars per OS, runs Tauri bundles for:
 - `x86_64-pc-windows-msvc`
 
 and uploads artifacts for each platform.
+
+Service Mode (Linux + Windows):
+
+1. Linux (systemd user service)
+
+```bash
+cd /path/to/LOCUS
+chmod +x scripts/services/install-linux-user-service.sh
+./scripts/services/install-linux-user-service.sh
+
+# verify
+systemctl --user status locus-backend.service
+journalctl --user -u locus-backend.service -f
+```
+
+Stop/remove:
+
+```bash
+chmod +x scripts/services/uninstall-linux-user-service.sh
+./scripts/services/uninstall-linux-user-service.sh
+```
+
+2. Windows (Windows Service)
+
+Run elevated PowerShell:
+
+```powershell
+cd C:\path\to\LOCUS
+powershell -ExecutionPolicy Bypass -File .\scripts\services\install-windows-service.ps1
+
+# verify
+sc.exe query LocusBackend
+```
+
+Stop/remove:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\services\uninstall-windows-service.ps1
+```
+
+Verify Runtime Settings from Terminal:
+
+```bash
+curl -sS http://127.0.0.1:8000/settings/runtime
+curl -sS http://127.0.0.1:8000/health
+```
+
+Expected payload keys:
+
+- `run_in_background_service`
+- `ui_zoom_scale`
+
+App Name Detection Troubleshooting (Linux):
+
+If snapshots show `Unknown`, verify one of these providers is available:
+
+```bash
+command -v locus-window-probe || true
+command -v kdotool || true
+command -v xdotool || true
+command -v xprop || true
+echo "DISPLAY=$DISPLAY"
+echo "XDG_SESSION_TYPE=$XDG_SESSION_TYPE"
+```
+
+The backend now tries all of the following in order:
+
+1. bundled `locus-window-probe`
+2. `kdotool` (Wayland)
+3. `xdotool`
+4. `xprop`
+
+and falls back to WM class/instance app labels when window title is missing.

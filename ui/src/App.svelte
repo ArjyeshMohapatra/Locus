@@ -8,7 +8,6 @@
     getRuntimeSettings
   } from './api.js';
   import { listen } from '@tauri-apps/api/event';
-  import { appWindow } from '@tauri-apps/api/window';
   import WatchedFolders from './lib/WatchedFolders.svelte';
   import ActivityTimeline from './lib/ActivityTimeline.svelte';
   import SettingsPage from './lib/SettingsPage.svelte';
@@ -45,11 +44,40 @@
   let mediaQuery;
   let notificationsOpen = false;
   let runInBackgroundService = true;
+  let uiZoomScale = 1;
   let dashboardSummary = { total_files: 0, total_versions: 0, storage_bytes: 0, ram_usage_bytes: 0, db_size_bytes: 0, total_snapshots: 0, last_snapshot_time: null };
 
   let healthRefreshTimer;
+  let themeRefreshTimer;
+  let tauriThemeUnlisten;
+  let locusThemeUnlisten;
+  let linuxThemeUnlisten;
+  let systemThemeOverride = null;
+  const MIN_UI_ZOOM_SCALE = 0.5;
+  const MAX_UI_ZOOM_SCALE = 3;
+  const DEFAULT_UI_ZOOM_SCALE = 1;
 
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  const clampUiZoomScale = (value) => {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return DEFAULT_UI_ZOOM_SCALE;
+    return Math.min(MAX_UI_ZOOM_SCALE, Math.max(MIN_UI_ZOOM_SCALE, parsed));
+  };
+
+  const applyUiZoomScale = (value, { persist = false } = {}) => {
+    const clamped = clampUiZoomScale(value);
+    uiZoomScale = clamped;
+    document.documentElement.style.zoom = String(clamped);
+
+    if (persist) {
+      try {
+        localStorage.setItem('locus-ui-zoom', String(clamped));
+      } catch {
+        // Ignore storage errors in restricted runtime contexts.
+      }
+    }
+  };
 
   const refreshHealthStatus = async ({ retries = 1, retryDelayMs = 0 } = {}) => {
     let latest = { background_service: 'offline' };
@@ -67,8 +95,19 @@
     return latest;
   };
 
-  const getSystemTheme = () =>
-    window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  const normalizeThemeValue = (value) => {
+    if (value === 'dark' || value === 'light') return value;
+    if (typeof value !== 'string') return null;
+    const normalized = value.toLowerCase();
+    if (normalized.includes('dark')) return 'dark';
+    if (normalized.includes('light')) return 'light';
+    return null;
+  };
+
+  const getSystemTheme = () => {
+    if (systemThemeOverride) return systemThemeOverride;
+    return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  };
 
   const applyTheme = (mode) => {
     const nextTheme = mode === 'system' ? getSystemTheme() : mode;
@@ -96,6 +135,7 @@
     try {
       const runtime = await getRuntimeSettings();
       runInBackgroundService = runtime?.run_in_background_service ?? true;
+      applyUiZoomScale(runtime?.ui_zoom_scale ?? uiZoomScale, { persist: true });
     } catch (e) {
       console.error('Runtime settings fetch failed:', e);
       runInBackgroundService = true;
@@ -117,6 +157,9 @@
   };
 
   onMount(async () => {
+    const savedZoomScale = localStorage.getItem('locus-ui-zoom');
+    applyUiZoomScale(savedZoomScale ?? DEFAULT_UI_ZOOM_SCALE);
+
     await refreshAuthState();
     await refreshRuntimeSettings();
     authChecked = true;
@@ -133,6 +176,7 @@
     mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
     handleSystemChange = () => {
       if (themeMode === 'system') {
+        systemThemeOverride = null;
         applyTheme('system');
       }
     };
@@ -146,11 +190,19 @@
     handleThemeEvent = (event) => {
       themeMode = event.detail?.mode || 'system';
       localStorage.setItem('locus-theme', themeMode);
+      if (themeMode !== 'system') {
+        systemThemeOverride = null;
+      }
       applyTheme(themeMode);
     };
 
     handleRuntimeSettingsEvent = (event) => {
-      runInBackgroundService = !!event.detail?.runInBackgroundService;
+      if (typeof event.detail?.runInBackgroundService === 'boolean') {
+        runInBackgroundService = event.detail.runInBackgroundService;
+      }
+      if (event.detail?.uiZoomScale !== undefined) {
+        applyUiZoomScale(event.detail.uiZoomScale, { persist: true });
+      }
     };
 
     window.addEventListener('locus-theme-change', handleThemeEvent);
@@ -158,22 +210,30 @@
 
     // Desktop app specifics
     try {
-      await listen('tauri://theme-changed', (event) => {
+      const applyThemePayload = (payload) => {
+        const normalizedTheme = normalizeThemeValue(payload);
+        if (!normalizedTheme) return;
+        systemThemeOverride = normalizedTheme;
         if (themeMode === 'system') {
-          // payload is 'light' or 'dark'
-          document.body.classList.toggle('theme-dark', event.payload === 'dark');
+          applyTheme('system');
         }
+      };
+
+      tauriThemeUnlisten = await listen('tauri://theme-changed', (event) => {
+        applyThemePayload(event.payload);
       });
 
-      setInterval(async () => {
+      locusThemeUnlisten = await listen('locus://theme-changed', (event) => {
+        applyThemePayload(event.payload);
+      });
+
+      linuxThemeUnlisten = await listen('locus://linux-system-theme-changed', (event) => {
+        applyThemePayload(event.payload);
+      });
+
+      themeRefreshTimer = setInterval(() => {
         if (themeMode === 'system') {
-          let isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-          try {
-            const wTheme = await appWindow.theme();
-            if (wTheme === 'dark') isDark = true;
-            if (wTheme === 'light') isDark = false;
-          } catch {}
-          document.body.classList.toggle('theme-dark', isDark);
+          applyTheme('system');
         }
       }, 2000);
     } catch {
@@ -235,6 +295,18 @@
     if (handleRuntimeSettingsEvent) {
       window.removeEventListener('locus-runtime-settings-change', handleRuntimeSettingsEvent);
     }
+    if (typeof tauriThemeUnlisten === 'function') {
+      tauriThemeUnlisten();
+    }
+    if (typeof locusThemeUnlisten === 'function') {
+      locusThemeUnlisten();
+    }
+    if (typeof linuxThemeUnlisten === 'function') {
+      linuxThemeUnlisten();
+    }
+    if (themeRefreshTimer) {
+      clearInterval(themeRefreshTimer);
+    }
     if (healthRefreshTimer) {
       clearInterval(healthRefreshTimer);
     }
@@ -294,7 +366,7 @@
 <CustomDialog />
 
 {#if !authChecked}
-  <div class="d-flex align-items-center justify-content-center" style="height: 100vh;">Loading LOCUS...</div>
+  <div class="d-flex align-items-center justify-content-center" style="height: 100vh;">Loading Locus...</div>
 {:else if isLocked || isSetupRequired}
   <Titlebar closeBehavior="shutdown" />
   <LockScreen {isSetupRequired} on:unlocked={handleUnlocked} on:setup-exists={handleSetupExists} />
@@ -385,7 +457,7 @@
         <header class="d-flex justify-content-between align-items-center mb-5">
           <div>
             <h1 class="fw-bold mb-1">Command Center</h1>
-            <p class="text-muted mb-0">Real-time overview of your LOCUS ecosystem.</p>
+            <p class="text-muted mb-0">Real-time overview of your Locus ecosystem.</p>
           </div>
           <div class="d-flex align-items-center gap-3">
             <div class="d-flex align-items-center gap-2 px-3 py-2 rounded-pill status-pill">

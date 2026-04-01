@@ -17,6 +17,7 @@ import threading
 import time
 import uvicorn
 import os
+import errno
 import gzip
 import asyncio
 import socket
@@ -217,6 +218,9 @@ CHECKPOINT_SESSION_NOT_FOUND_DETAIL = "Checkpoint session not found"
 CHECKPOINT_DIFF_MAX_BYTES = 1024 * 1024
 CHECKPOINT_DIFF_PREVIEW_LINES = 6
 CHECKPOINT_DIFF_MAX_HUNKS = 8
+MIN_UI_ZOOM_SCALE = 0.5
+MAX_UI_ZOOM_SCALE = 3.0
+DEFAULT_UI_ZOOM_SCALE = 1.0
 
 
 def _build_cors_origins() -> list[str]:
@@ -265,6 +269,85 @@ def _pick_api_port(host: str, preferred_port: int) -> int:
     raise RuntimeError(
         f"No available port found in range {preferred_port}-{preferred_port + API_PORT_SEARCH_LIMIT}"
     )
+
+
+def _is_process_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+
+    if os.name == "nt":
+        try:
+            import ctypes
+
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            STILL_ACTIVE = 259
+
+            handle = ctypes.windll.kernel32.OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION,
+                False,
+                pid,
+            )
+            if not handle:
+                return False
+            try:
+                exit_code = ctypes.c_ulong()
+                if (
+                    ctypes.windll.kernel32.GetExitCodeProcess(
+                        handle,
+                        ctypes.byref(exit_code),
+                    )
+                    == 0
+                ):
+                    return True
+                return int(exit_code.value) == STILL_ACTIVE
+            finally:
+                ctypes.windll.kernel32.CloseHandle(handle)
+        except Exception:
+            return True
+
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError as exc:
+        return exc.errno != errno.ESRCH
+
+
+def _start_parent_watchdog_if_configured() -> None:
+    raw_parent_pid = os.getenv("LOCUS_PARENT_PID", "").strip()
+    if not raw_parent_pid:
+        return
+
+    try:
+        parent_pid = int(raw_parent_pid)
+    except ValueError:
+        logger.warning(
+            "[Startup] Ignoring invalid LOCUS_PARENT_PID value: %s",
+            raw_parent_pid,
+        )
+        return
+
+    if parent_pid <= 1:
+        return
+
+    logger.info("[Startup] Parent watchdog enabled for pid %s", parent_pid)
+
+    def _watch_parent() -> None:
+        while True:
+            time.sleep(2.0)
+            if _is_process_alive(parent_pid):
+                continue
+            logger.warning(
+                "[Startup] Parent process %s exited; terminating backend",
+                parent_pid,
+            )
+            os._exit(0)
+
+    thread = threading.Thread(
+        target=_watch_parent,
+        name="locus-parent-watchdog",
+        daemon=True,
+    )
+    thread.start()
 
 
 # --- Pydantic Models (Validation) ---
@@ -462,6 +545,11 @@ class SnapshotSettingsUpdate(BaseModel):
 
 class RuntimeSettingsUpdate(BaseModel):
     run_in_background_service: bool | None = None
+    ui_zoom_scale: float | None = Field(
+        default=None,
+        ge=MIN_UI_ZOOM_SCALE,
+        le=MAX_UI_ZOOM_SCALE,
+    )
 
 
 class SnapshotHistoryQueryPayload(BaseModel):
@@ -504,6 +592,19 @@ def _is_within_watched_paths(target_path: str, watched_paths: list[str]) -> bool
             # Different drive letters on Windows
             continue
     return False
+
+
+def _clamp_ui_zoom_scale(value: float) -> float:
+    return max(MIN_UI_ZOOM_SCALE, min(MAX_UI_ZOOM_SCALE, float(value)))
+
+
+def _read_ui_zoom_scale(db: Session) -> float:
+    raw_value = crud.get_setting(db, "ui_zoom_scale", str(DEFAULT_UI_ZOOM_SCALE))
+    try:
+        parsed = float(str(raw_value))
+    except (TypeError, ValueError):
+        return DEFAULT_UI_ZOOM_SCALE
+    return _clamp_ui_zoom_scale(parsed)
 
 
 # --- Background Service Placeholders ---
@@ -569,6 +670,7 @@ def _ensure_snapshot_defaults(db: Session) -> None:
         "snapshot_capture_on_window_change": "true",
         "snapshot_allow_delete": "false",
         "run_in_background_service": "true",
+        "ui_zoom_scale": str(DEFAULT_UI_ZOOM_SCALE),
     }
     for key, default_value in defaults.items():
         if crud.get_setting(db, key, None) is None:
@@ -652,7 +754,7 @@ async def lifespan(app: FastAPI):
     logger.info("LOCUS System Shutting down...")
 
 
-app = FastAPI(title="LOCUS API", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="Locus API", version="1.5.0", lifespan=lifespan)
 
 # CORS middleware to allow frontend requests
 
@@ -2620,6 +2722,7 @@ def get_runtime_settings(db: DbSession):
     )
     return {
         "run_in_background_service": run_in_background_service,
+        "ui_zoom_scale": _read_ui_zoom_scale(db),
     }
 
 
@@ -2630,17 +2733,24 @@ def get_runtime_settings(db: DbSession):
     },
 )
 def update_runtime_settings(payload: RuntimeSettingsUpdate, db: DbSession):
-    if payload.run_in_background_service is None:
+    if (
+        payload.run_in_background_service is None
+        and payload.ui_zoom_scale is None
+    ):
         raise HTTPException(status_code=400, detail="No settings provided")
 
-    crud.set_setting(
-        db,
-        "run_in_background_service",
-        "true" if payload.run_in_background_service else "false",
-    )
-    return {
-        "run_in_background_service": payload.run_in_background_service,
-    }
+    if payload.run_in_background_service is not None:
+        crud.set_setting(
+            db,
+            "run_in_background_service",
+            "true" if payload.run_in_background_service else "false",
+        )
+
+    if payload.ui_zoom_scale is not None:
+        clamped_zoom = _clamp_ui_zoom_scale(payload.ui_zoom_scale)
+        crud.set_setting(db, "ui_zoom_scale", str(clamped_zoom))
+
+    return get_runtime_settings(db)
 
 
 @app.get("/auth/status")
@@ -2916,5 +3026,7 @@ if __name__ == "__main__":
         print(
             f"[Startup] Preferred port {preferred_port} unavailable, using {selected_port} instead"
         )
+
+    _start_parent_watchdog_if_configured()
 
     uvicorn.run(app, host=host, port=selected_port)

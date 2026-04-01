@@ -57,6 +57,10 @@
   let runtimeSettingsSaving = false;
   let runtimeSettingsError = '';
   let runInBackgroundService = true;
+  let uiZoomScale = 1;
+  const MIN_UI_ZOOM_SCALE = 0.5;
+  const MAX_UI_ZOOM_SCALE = 3;
+  const UI_ZOOM_STEP = 0.05;
 
 
   const toggleGc = () => {
@@ -220,7 +224,7 @@
         allow_individual_delete: !!snapshotAllowDelete
       });
     } catch (e) {
-      snapshotSettingsError = e.message || 'Failed to save snapshot settings.';
+      snapshotSettingsError = e.message || 'Failed to apply snapshot settings.';
     } finally {
       snapshotSettingsSaving = false;
     }
@@ -232,6 +236,10 @@
     try {
       const data = await getRuntimeSettings();
       runInBackgroundService = data.run_in_background_service ?? true;
+      const parsedZoom = Number(data.ui_zoom_scale ?? 1);
+      uiZoomScale = Number.isFinite(parsedZoom)
+        ? Math.min(MAX_UI_ZOOM_SCALE, Math.max(MIN_UI_ZOOM_SCALE, parsedZoom))
+        : 1;
     } catch (e) {
       runtimeSettingsError = e.message || 'Failed to load runtime settings.';
     } finally {
@@ -239,22 +247,61 @@
     }
   };
 
-  const saveRuntimeSettings = async () => {
+  const emitRuntimeSettingsChange = () => {
+    window.dispatchEvent(
+      new CustomEvent('locus-runtime-settings-change', {
+        detail: {
+          runInBackgroundService,
+          uiZoomScale
+        }
+      })
+    );
+  };
+
+  const previewUiZoomScale = () => {
+    emitRuntimeSettingsChange();
+  };
+
+  const clampUiZoomScale = (value) => {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return 1;
+    return Math.min(MAX_UI_ZOOM_SCALE, Math.max(MIN_UI_ZOOM_SCALE, parsed));
+  };
+
+  const normalizeUiZoomScale = (value) =>
+    Number(clampUiZoomScale(value).toFixed(2));
+
+  const nudgeUiZoomScale = async (delta) => {
+    uiZoomScale = normalizeUiZoomScale(Number(uiZoomScale) + delta);
+    previewUiZoomScale();
+    await saveRuntimeSettings({ silent: true });
+  };
+
+  const commitUiZoomScaleInput = async () => {
+    uiZoomScale = normalizeUiZoomScale(uiZoomScale);
+    previewUiZoomScale();
+    await saveRuntimeSettings({ silent: true });
+  };
+
+  const saveRuntimeSettings = async ({ silent = false } = {}) => {
     runtimeSettingsSaving = true;
     runtimeSettingsError = '';
     try {
       const data = await updateRuntimeSettings({
-        run_in_background_service: !!runInBackgroundService
+        run_in_background_service: !!runInBackgroundService,
+        ui_zoom_scale: Number(uiZoomScale)
       });
       runInBackgroundService = data.run_in_background_service ?? runInBackgroundService;
-      window.dispatchEvent(
-        new CustomEvent('locus-runtime-settings-change', {
-          detail: { runInBackgroundService }
-        })
-      );
-      await showMessage('Runtime service preference saved.', 'Settings');
+      const parsedZoom = Number(data.ui_zoom_scale ?? uiZoomScale);
+      uiZoomScale = Number.isFinite(parsedZoom)
+        ? Math.min(MAX_UI_ZOOM_SCALE, Math.max(MIN_UI_ZOOM_SCALE, parsedZoom))
+        : uiZoomScale;
+      emitRuntimeSettingsChange();
+      if (!silent) {
+        await showMessage('Runtime preferences applied.', 'Settings');
+      }
     } catch (e) {
-      runtimeSettingsError = e.message || 'Failed to save runtime settings.';
+      runtimeSettingsError = e.message || 'Failed to apply runtime settings.';
     } finally {
       runtimeSettingsSaving = false;
     }
@@ -266,7 +313,7 @@
 <section class="settings-page">
   <div class="settings-header">
     <h1>Settings</h1>
-    <p class="muted">Customize how LOCUS monitors, stores, and displays your activity.</p>
+    <p class="muted">Customize how Locus monitors, stores, and displays your activity.</p>
   </div>
 
   <details class="settings-section" open>
@@ -391,8 +438,8 @@
         </div>
 
         <div class="d-flex justify-content-end">
-          <button class="btn btn-primary" style="min-width: 210px;" on:click={saveSnapshotSettings} disabled={snapshotSettingsSaving}>
-            {snapshotSettingsSaving ? 'Saving…' : 'Save Snapshot Settings'}
+          <button class="btn btn-primary apply-btn" style="min-width: 210px;" on:click={saveSnapshotSettings} disabled={snapshotSettingsSaving}>
+            {snapshotSettingsSaving ? 'Applying…' : 'Apply'}
           </button>
         </div>
 
@@ -444,7 +491,7 @@
 
       {#if !isAdminUser}
         <div class="settings-note">
-          Admin mode not detected. To enable protection, reopen LOCUS as Administrator.
+          Admin mode not detected. To enable protection, reopen Locus as Administrator.
         </div>
       {/if}
     </div>
@@ -545,7 +592,7 @@
         <Fa icon={faPowerOff} class="section-icon" />
         <div>
           <h2>Startup & Service</h2>
-          <p class="muted">Choose how LOCUS starts when you log in.</p>
+          <p class="muted">Choose how Locus starts when you log in.</p>
         </div>
       </div>
       <Fa icon={faChevronDown} class="section-chevron" />
@@ -556,8 +603,46 @@
       {:else}
         <div class="settings-row">
           <div>
+            <h3>UI Zoom</h3>
+            <p class="muted">Scale the Locus interface from 0.5x to 3.0x.</p>
+          </div>
+          <div class="d-flex align-items-center gap-2 zoom-control-group" style="min-width: 240px; justify-content: flex-end;">
+            <button
+              class="btn zoom-step-btn"
+              type="button"
+              on:click={() => nudgeUiZoomScale(-UI_ZOOM_STEP)}
+              aria-label="Decrease UI zoom"
+              disabled={runtimeSettingsSaving}
+            >
+              -
+            </button>
+            <input
+              class="settings-input zoom-value-input"
+              type="number"
+              min={MIN_UI_ZOOM_SCALE}
+              max={MAX_UI_ZOOM_SCALE}
+              step={UI_ZOOM_STEP}
+              bind:value={uiZoomScale}
+              on:input={previewUiZoomScale}
+              on:change={commitUiZoomScaleInput}
+              disabled={runtimeSettingsSaving}
+            />
+            <button
+              class="btn zoom-step-btn"
+              type="button"
+              on:click={() => nudgeUiZoomScale(UI_ZOOM_STEP)}
+              aria-label="Increase UI zoom"
+              disabled={runtimeSettingsSaving}
+            >
+              +
+            </button>
+          </div>
+        </div>
+
+        <div class="settings-row">
+          <div>
             <h3>Run In Background Service Mode</h3>
-            <p class="muted">When enabled, closing LOCUS after unlock keeps it running in tray on Linux and Windows.</p>
+            <p class="muted">When enabled, closing Locus after unlock keeps it running in tray on Linux and Windows.</p>
           </div>
           <label class="switch">
             <input type="checkbox" bind:checked={runInBackgroundService} />
@@ -566,8 +651,8 @@
         </div>
 
         <div class="d-flex justify-content-end">
-          <button class="btn btn-primary" style="min-width: 210px;" on:click={saveRuntimeSettings} disabled={runtimeSettingsSaving}>
-            {runtimeSettingsSaving ? 'Saving…' : 'Save Runtime Settings'}
+          <button class="btn btn-primary apply-btn" style="min-width: 210px;" on:click={saveRuntimeSettings} disabled={runtimeSettingsSaving}>
+            {runtimeSettingsSaving ? 'Applying…' : 'Apply'}
           </button>
         </div>
 
@@ -594,3 +679,56 @@
     </div>
   </details>
 </section>
+
+<style>
+  .zoom-control-group {
+    gap: 10px;
+  }
+
+  .zoom-step-btn {
+    width: 42px;
+    height: 42px;
+    border-radius: 12px;
+    border: 1px solid var(--border-subtle);
+    background: linear-gradient(180deg, var(--surface-elevated), var(--surface));
+    color: var(--text-primary);
+    font-size: 1.2rem;
+    font-weight: 600;
+    line-height: 1;
+    box-shadow: 0 10px 18px rgba(15, 23, 42, 0.08);
+    transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+  }
+
+  .zoom-step-btn:hover:not(:disabled) {
+    transform: translateY(-1px);
+    border-color: rgba(59, 130, 246, 0.5);
+    box-shadow: 0 12px 24px rgba(37, 99, 235, 0.18);
+  }
+
+  .zoom-step-btn:disabled {
+    opacity: 0.65;
+    transform: none;
+    box-shadow: none;
+  }
+
+  .zoom-value-input {
+    width: 120px;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .apply-btn {
+    border-radius: 12px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    box-shadow: 0 12px 24px rgba(37, 99, 235, 0.24);
+  }
+
+  .apply-btn:hover:not(:disabled) {
+    transform: translateY(-1px);
+  }
+
+  .apply-btn:disabled {
+    box-shadow: none;
+  }
+</style>

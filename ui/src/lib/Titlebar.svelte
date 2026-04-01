@@ -118,7 +118,7 @@
     <span class="titlebar-icon">
       <Fa icon={faCloud} size="xs" />
     </span>
-    <span class="titlebar-text">LOCUS</span>
+    <span class="titlebar-text">Locus</span>
   </div>
 
   <div class="titlebar-center" data-tauri-drag-region>

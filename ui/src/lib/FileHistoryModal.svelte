@@ -412,7 +412,7 @@
             {:else if versions.length === 0}
                 <div class="text-center py-5 text-muted empty-state rounded-4">
                     <p class="mb-0 fw-medium">No version history found for this file.</p>
-                    <small>Modifications are tracked automatically by LOCUS.</small>
+                    <small>Modifications are tracked automatically by Locus.</small>
                 </div>
             {:else}
                 <div class="version-list-scroll">

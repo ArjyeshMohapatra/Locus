@@ -93,7 +93,7 @@
   const handleReset = async () => {
     const ok = await askQuestion(
       'Are you absolutely sure? This will permanently delete ALL your tracked data and snapshots.',
-      'Factory Reset LOCUS',
+      'Factory Reset Locus',
       { type: 'danger', okLabel: 'Yes, Wipe Everything', cancelLabel: 'Cancel' }
     );
     if (ok) {
@@ -113,7 +113,7 @@
   <div class="lock-card">
     <div class="lock-header">
       <div class="logo-box">L</div>
-      <h2>{isSetupRequired ? 'Welcome to LOCUS' : 'LOCUS Locked'}</h2>
+      <h2>{isSetupRequired ? 'Welcome to Locus' : 'Locus Locked'}</h2>
       <p class="text-muted">
         {#if showRecovery}
           Save your Recovery Key!
@@ -150,7 +150,7 @@
         <button class="btn btn-outline-secondary w-100 mb-4" on:click={() => isForgotMode = false} disabled={isLoading}>Back to Login</button>
         <hr />
         <p class="text-muted small text-center mt-3">If you lost both, you must wipe all data.</p>
-        <button class="btn btn-outline-danger w-100" on:click={handleReset} disabled={isLoading}>Factory Reset LOCUS</button>
+        <button class="btn btn-outline-danger w-100" on:click={handleReset} disabled={isLoading}>Factory Reset Locus</button>
       
       {:else}
         <input type="password" class="form-control mb-3 lock-input" bind:this={unlockPasswordInput} bind:value={password} placeholder="Master Password" on:keydown={(e) => e.key === 'Enter' && handleUnlock()} disabled={isLoading} />

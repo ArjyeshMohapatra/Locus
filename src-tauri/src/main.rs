@@ -8,6 +8,9 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
 
+#[cfg(target_os = "linux")]
+use std::collections::HashSet;
+
 use tauri::{
     CustomMenuItem, Manager, RunEvent, State, SystemTray, SystemTrayEvent, SystemTrayMenu,
     SystemTrayMenuItem, WindowEvent,
@@ -37,10 +40,139 @@ fn pick_backend_port(preferred: u16) -> u16 {
 fn stop_backend_process(state: &BackendState) {
     if let Ok(mut guard) = state.child.lock() {
         if let Some(mut child) = guard.take() {
+            #[cfg(target_os = "linux")]
+            terminate_process_tree(child.id());
+
             let _ = child.kill();
             let _ = child.wait();
         }
     }
+}
+
+#[cfg(target_os = "linux")]
+fn read_child_pids(pid: u32) -> Vec<u32> {
+    let children_file = format!("/proc/{0}/task/{0}/children", pid);
+    let content = match std::fs::read_to_string(children_file) {
+        Ok(content) => content,
+        Err(_) => return Vec::new(),
+    };
+
+    content
+        .split_whitespace()
+        .filter_map(|part| part.parse::<u32>().ok())
+        .collect()
+}
+
+#[cfg(target_os = "linux")]
+fn collect_process_tree(root_pid: u32) -> Vec<u32> {
+    let mut visited: HashSet<u32> = HashSet::new();
+    let mut stack = vec![root_pid];
+    let mut ordered = Vec::new();
+
+    while let Some(pid) = stack.pop() {
+        if !visited.insert(pid) {
+            continue;
+        }
+        ordered.push(pid);
+
+        for child in read_child_pids(pid) {
+            stack.push(child);
+        }
+    }
+
+    ordered
+}
+
+#[cfg(target_os = "linux")]
+fn pid_exists(pid: u32) -> bool {
+    PathBuf::from(format!("/proc/{}", pid)).exists()
+}
+
+#[cfg(target_os = "linux")]
+fn terminate_process_tree(root_pid: u32) {
+    let mut pids = collect_process_tree(root_pid);
+    pids.reverse();
+
+    for pid in &pids {
+        let _ = Command::new("kill")
+            .arg("-TERM")
+            .arg(pid.to_string())
+            .status();
+    }
+
+    thread::sleep(Duration::from_millis(400));
+
+    for pid in &pids {
+        if pid_exists(*pid) {
+            let _ = Command::new("kill")
+                .arg("-KILL")
+                .arg(pid.to_string())
+                .status();
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn read_gsettings_string(schema: &str, key: &str) -> Option<String> {
+    let output = Command::new("gsettings")
+        .arg("get")
+        .arg(schema)
+        .arg(key)
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let raw = String::from_utf8_lossy(&output.stdout);
+    let value = raw.trim().trim_matches('\'').to_lowercase();
+    if value.is_empty() {
+        return None;
+    }
+
+    Some(value)
+}
+
+#[cfg(target_os = "linux")]
+fn detect_linux_system_theme() -> Option<String> {
+    if let Some(color_scheme) =
+        read_gsettings_string("org.gnome.desktop.interface", "color-scheme")
+    {
+        if color_scheme.contains("dark") {
+            return Some(String::from("dark"));
+        }
+        if color_scheme.contains("light") || color_scheme.contains("default") {
+            return Some(String::from("light"));
+        }
+    }
+
+    if let Some(gtk_theme) = read_gsettings_string("org.gnome.desktop.interface", "gtk-theme") {
+        if gtk_theme.contains("dark") {
+            return Some(String::from("dark"));
+        }
+        return Some(String::from("light"));
+    }
+
+    None
+}
+
+#[cfg(target_os = "linux")]
+fn start_linux_theme_watcher(app: tauri::AppHandle) {
+    thread::spawn(move || {
+        let mut last_theme: Option<String> = None;
+
+        loop {
+            if let Some(current_theme) = detect_linux_system_theme() {
+                if last_theme.as_deref() != Some(current_theme.as_str()) {
+                    let _ = app.emit_all("locus://linux-system-theme-changed", current_theme.clone());
+                    last_theme = Some(current_theme);
+                }
+            }
+
+            thread::sleep(Duration::from_millis(900));
+        }
+    });
 }
 
 fn backend_healthcheck_once(port: u16) -> bool {
@@ -180,7 +312,8 @@ fn start_release_backend(port: u16) -> Child {
     let mut backend_command = Command::new(&backend_bin);
     backend_command
         .env("LOCUS_PORT", port.to_string())
-        .env("LOCUS_DATA_DIR", data_dir);
+        .env("LOCUS_DATA_DIR", data_dir)
+        .env("LOCUS_PARENT_PID", std::process::id().to_string());
 
     if let Some(window_probe_bin) = resolve_optional_window_probe_bin_path() {
         backend_command.env("LOCUS_WINDOW_PROBE", window_probe_bin);
@@ -261,6 +394,11 @@ fn main() {
                 println!("[tauri] Dev mode: Skipping sidecar spawn, expecting backend on port {}", DEFAULT_BACKEND_PORT);
             }
 
+            #[cfg(target_os = "linux")]
+            {
+                start_linux_theme_watcher(app.handle());
+            }
+
             if let Some(window) = app.get_window("main") {
                 let _ = window.set_decorations(false);
             }
@@ -277,11 +415,24 @@ fn main() {
             let _ = window.eval(script.as_str());
         })
         .on_window_event(|event| {
-            if let WindowEvent::CloseRequested { api, .. } = event.event() {
-                if let Err(err) = event.window().hide() {
-                    eprintln!("[tauri] failed to hide window on close request: {}", err);
+            match event.event() {
+                WindowEvent::CloseRequested { api, .. } => {
+                    if let Err(err) = event.window().hide() {
+                        eprintln!("[tauri] failed to hide window on close request: {}", err);
+                    }
+                    api.prevent_close();
                 }
-                api.prevent_close();
+
+                WindowEvent::ThemeChanged(theme) => {
+                    let payload = if matches!(theme, tauri::Theme::Dark) {
+                        "dark"
+                    } else {
+                        "light"
+                    };
+                    let _ = event.window().emit("locus://theme-changed", payload);
+                }
+
+                _ => {}
             }
         })
         .build(tauri::generate_context!())
