@@ -96,7 +96,17 @@ jobs:
       - name: Install Tauri CLI
         run: cargo install tauri-cli --version "=1.6.6" --locked --force
 
-      - name: Build desktop bundle
+      - name: Build desktop bundle (Linux)
+        if: runner.os == 'Linux'
+        env:
+          PKG_CONFIG_PATH: ${{ github.workspace }}/src-tauri/pkgconfig-compat:${{ env.PKG_CONFIG_PATH }}
+          LIBRARY_PATH: ${{ github.workspace }}/src-tauri/lib-compat:${{ env.LIBRARY_PATH }}
+          LD_LIBRARY_PATH: ${{ github.workspace }}/src-tauri/lib-compat:${{ env.LD_LIBRARY_PATH }}
+          RUSTFLAGS: -L native=${{ github.workspace }}/src-tauri/lib-compat ${{ env.RUSTFLAGS }}
+        run: cargo tauri build --target ${{ matrix.rust_target }}
+
+      - name: Build desktop bundle (Windows)
+        if: runner.os == 'Windows'
         run: cargo tauri build --target ${{ matrix.rust_target }}
 
       - name: Upload desktop artifacts
