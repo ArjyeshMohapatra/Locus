@@ -470,6 +470,7 @@ fn main() {
 
             if let Some(window) = app.get_window("main") {
                 let _ = window.set_decorations(false);
+                let _ = window.maximize();
             }
 
             Ok(())

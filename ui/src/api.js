@@ -455,6 +455,27 @@ export async function updateRuntimeSettings(updates) {
   return await res.json();
 }
 
+export async function sendTelemetryEvent(eventPayload) {
+  const payload = eventPayload && typeof eventPayload === 'object' ? eventPayload : {};
+  const res = await fetchWithTimeout(
+    `${BASE_URL}/telemetry/events`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    },
+    {
+      timeoutMs: 5000,
+      attempts: 1
+    }
+  );
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => ({}));
+    throw new Error(errorData.detail || 'Failed to send telemetry event');
+  }
+  return await res.json();
+}
+
 export async function getAuthStatus() {
   const baseUrl = await resolveAuthBaseUrl();
   try {

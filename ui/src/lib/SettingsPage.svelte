@@ -58,6 +58,7 @@
   let runtimeSettingsError = '';
   let runInBackgroundService = true;
   let uiZoomScale = 1;
+  let shareCrashDiagnostics = false;
   const MIN_UI_ZOOM_SCALE = 0.5;
   const MAX_UI_ZOOM_SCALE = 3;
   const UI_ZOOM_STEP = 0.05;
@@ -246,6 +247,7 @@
       uiZoomScale = Number.isFinite(parsedZoom)
         ? Math.min(MAX_UI_ZOOM_SCALE, Math.max(MIN_UI_ZOOM_SCALE, parsedZoom))
         : 1;
+      shareCrashDiagnostics = !!data.share_crash_diagnostics;
     } catch (e) {
       runtimeSettingsError = e.message || 'Failed to load runtime settings.';
     } finally {
@@ -258,7 +260,8 @@
       new CustomEvent('locus-runtime-settings-change', {
         detail: {
           runInBackgroundService,
-          uiZoomScale
+          uiZoomScale,
+          shareCrashDiagnostics
         }
       })
     );
@@ -295,13 +298,15 @@
     try {
       const data = await updateRuntimeSettings({
         run_in_background_service: !!runInBackgroundService,
-        ui_zoom_scale: Number(uiZoomScale)
+        ui_zoom_scale: Number(uiZoomScale),
+        share_crash_diagnostics: !!shareCrashDiagnostics
       });
       runInBackgroundService = data.run_in_background_service ?? runInBackgroundService;
       const parsedZoom = Number(data.ui_zoom_scale ?? uiZoomScale);
       uiZoomScale = Number.isFinite(parsedZoom)
         ? Math.min(MAX_UI_ZOOM_SCALE, Math.max(MIN_UI_ZOOM_SCALE, parsedZoom))
         : uiZoomScale;
+      shareCrashDiagnostics = !!data.share_crash_diagnostics;
       emitRuntimeSettingsChange();
       if (!silent) {
         await showMessage(
@@ -449,7 +454,7 @@
         </div>
 
         <div class="d-flex justify-content-end">
-          <button class="btn btn-primary apply-btn" style="min-width: 210px;" on:click={saveSnapshotSettings} disabled={snapshotSettingsSaving}>
+          <button class="btn btn-primary apply-btn" on:click={saveSnapshotSettings} disabled={snapshotSettingsSaving}>
             {snapshotSettingsSaving ? 'Applying…' : 'Apply'}
           </button>
         </div>
@@ -661,8 +666,19 @@
           </label>
         </div>
 
+        <div class="settings-row">
+          <div>
+            <h3>Share Crash Diagnostics</h3>
+            <p class="muted">Allow detailed crash reports to be forwarded to developers.</p>
+          </div>
+          <label class="switch">
+            <input type="checkbox" bind:checked={shareCrashDiagnostics} />
+            <span class="slider"></span>
+          </label>
+        </div>
+
         <div class="d-flex justify-content-end">
-          <button class="btn btn-primary apply-btn" style="min-width: 210px;" on:click={saveRuntimeSettings} disabled={runtimeSettingsSaving}>
+          <button class="btn btn-primary apply-btn" on:click={saveRuntimeSettings} disabled={runtimeSettingsSaving}>
             {runtimeSettingsSaving ? 'Applying…' : 'Apply'}
           </button>
         </div>
@@ -699,26 +715,19 @@
   .zoom-step-btn {
     width: 42px;
     height: 42px;
-    border-radius: 12px;
+    border-radius: 10px;
     border: 1px solid var(--border-subtle);
-    background: linear-gradient(180deg, var(--surface-elevated), var(--surface));
+    background: var(--surface-elevated);
     color: var(--text-primary);
-    font-size: 1.2rem;
+    font-size: 1.05rem;
     font-weight: 600;
     line-height: 1;
-    box-shadow: 0 10px 18px rgba(15, 23, 42, 0.08);
-    transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
-  }
-
-  .zoom-step-btn:hover:not(:disabled) {
-    transform: translateY(-1px);
-    border-color: rgba(59, 130, 246, 0.5);
-    box-shadow: 0 12px 24px rgba(37, 99, 235, 0.18);
+    box-shadow: none;
+    transition: none;
   }
 
   .zoom-step-btn:disabled {
     opacity: 0.65;
-    transform: none;
     box-shadow: none;
   }
 
@@ -729,14 +738,17 @@
   }
 
   .apply-btn {
-    border-radius: 12px;
-    font-weight: 600;
-    letter-spacing: 0.02em;
-    box-shadow: 0 12px 24px rgba(37, 99, 235, 0.24);
+    border-radius: var(--ui-radius-control, 999px);
+    font-weight: 700;
+    letter-spacing: 0.01em;
+    box-shadow: none;
+    min-width: 0;
+    width: auto;
+    padding-inline: 1.2rem;
   }
 
   .apply-btn:hover:not(:disabled) {
-    transform: translateY(-1px);
+    transform: none;
   }
 
   .apply-btn:disabled {

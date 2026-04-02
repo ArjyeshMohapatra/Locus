@@ -26,6 +26,9 @@ import json
 import re
 import uuid
 import difflib
+import traceback
+import urllib.parse
+import urllib.request
 from datetime import datetime, timezone
 
 
@@ -221,6 +224,16 @@ CHECKPOINT_DIFF_MAX_HUNKS = 8
 MIN_UI_ZOOM_SCALE = 0.5
 MAX_UI_ZOOM_SCALE = 3.0
 DEFAULT_UI_ZOOM_SCALE = 1.0
+TELEMETRY_MESSAGE_MAX_LENGTH = 4000
+TELEMETRY_STACK_MAX_LENGTH = 32000
+TELEMETRY_CONTEXT_VALUE_MAX_LENGTH = 800
+TELEMETRY_CONTEXT_MAX_KEYS = 20
+DIAGNOSTICS_MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024
+DIAGNOSTICS_LOG_FILE_NAME = "stability-events.jsonl"
+DIAGNOSTICS_ARCHIVE_FILE_NAME = "stability-events.prev.jsonl"
+APP_VERSION = "1.5.0"
+
+_diagnostics_log_lock = threading.Lock()
 
 
 def _build_cors_origins() -> list[str]:
@@ -550,6 +563,51 @@ class RuntimeSettingsUpdate(BaseModel):
         ge=MIN_UI_ZOOM_SCALE,
         le=MAX_UI_ZOOM_SCALE,
     )
+    share_crash_diagnostics: bool | None = None
+
+
+class TelemetryEventPayload(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    source: str = Field(default="ui", min_length=1, max_length=32)
+    event_type: str = Field(min_length=1, max_length=64)
+    severity: Literal["info", "warning", "error", "critical"] = "error"
+    message: str = Field(min_length=1, max_length=TELEMETRY_MESSAGE_MAX_LENGTH)
+    stack: str | None = Field(default=None, max_length=TELEMETRY_STACK_MAX_LENGTH)
+    context: dict[str, Any] | None = None
+    timestamp: str | None = Field(default=None, max_length=64)
+
+    @field_validator("source", "event_type")
+    @classmethod
+    def validate_label(cls, value: str, info: ValidationInfo) -> str:
+        normalized = _validate_text_input(value, info.field_name or "field")
+        return normalized.lower().replace(" ", "_")
+
+    @field_validator("message")
+    @classmethod
+    def validate_message(cls, value: str) -> str:
+        return _validate_text_input(value, "message")
+
+    @field_validator("stack")
+    @classmethod
+    def validate_stack(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            return None
+        if _CONTROL_CHARS_RE.search(normalized):
+            raise ValueError("stack contains invalid control characters")
+        return normalized
+
+    @field_validator("context")
+    @classmethod
+    def validate_context(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
+        if value is None:
+            return None
+        if not isinstance(value, dict):
+            raise ValueError("context must be an object")
+        return value
 
 
 class SnapshotHistoryQueryPayload(BaseModel):
@@ -605,6 +663,212 @@ def _read_ui_zoom_scale(db: Session) -> float:
     except (TypeError, ValueError):
         return DEFAULT_UI_ZOOM_SCALE
     return _clamp_ui_zoom_scale(parsed)
+
+
+def _read_bool_setting(db: Session, key: str, default: bool) -> bool:
+    fallback = "true" if default else "false"
+    raw_value = crud.get_setting(db, key, fallback)
+    return str(raw_value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _read_crash_reporting_endpoint(db: Session) -> str:
+    raw_value = crud.get_setting(db, "crash_reporting_endpoint", "")
+    if raw_value is None:
+        return ""
+
+    endpoint = str(raw_value).strip()
+    if not endpoint:
+        return ""
+
+    parsed = urllib.parse.urlparse(endpoint)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return ""
+
+    return endpoint
+
+
+def _resolve_crash_reporting_endpoint(db: Session) -> str:
+    # Keep endpoint configuration backend-only via env var, with a legacy DB fallback.
+    env_endpoint = os.getenv("LOCUS_TELEMETRY_ENDPOINT", "")
+    if env_endpoint:
+        parsed = urllib.parse.urlparse(str(env_endpoint).strip())
+        if parsed.scheme in {"http", "https"} and parsed.netloc:
+            return str(env_endpoint).strip()
+        return ""
+
+    return _read_crash_reporting_endpoint(db)
+
+
+def _resolve_diagnostics_dir() -> str:
+    explicit_data_dir = os.getenv("LOCUS_DATA_DIR", "").strip()
+    if explicit_data_dir:
+        base_dir = os.path.abspath(explicit_data_dir)
+    else:
+        db_path = getattr(models, "_DB_PATH", "")
+        if db_path:
+            base_dir = os.path.dirname(os.path.abspath(str(db_path)))
+        else:
+            base_dir = os.path.abspath(os.getcwd())
+
+    diagnostics_dir = os.path.join(base_dir, "diagnostics")
+    os.makedirs(diagnostics_dir, exist_ok=True)
+    return diagnostics_dir
+
+
+def _diagnostics_log_path() -> str:
+    return os.path.join(_resolve_diagnostics_dir(), DIAGNOSTICS_LOG_FILE_NAME)
+
+
+def _diagnostics_archive_path() -> str:
+    return os.path.join(_resolve_diagnostics_dir(), DIAGNOSTICS_ARCHIVE_FILE_NAME)
+
+
+def _sanitize_telemetry_context(context: dict[str, Any] | None) -> dict[str, Any]:
+    if not context:
+        return {}
+
+    sanitized: dict[str, Any] = {}
+    for index, (key, value) in enumerate(context.items()):
+        if index >= TELEMETRY_CONTEXT_MAX_KEYS:
+            break
+
+        normalized_key = str(key).strip()
+        if not normalized_key:
+            normalized_key = f"context_{index + 1}"
+        normalized_key = normalized_key[:80]
+
+        if isinstance(value, str):
+            sanitized_value: Any = value[:TELEMETRY_CONTEXT_VALUE_MAX_LENGTH]
+        elif value is None or isinstance(value, (bool, int, float)):
+            sanitized_value = value
+        else:
+            try:
+                serialized = json.dumps(value, ensure_ascii=True, default=str)
+            except TypeError:
+                serialized = str(value)
+            sanitized_value = serialized[:TELEMETRY_CONTEXT_VALUE_MAX_LENGTH]
+
+        sanitized[normalized_key] = sanitized_value
+
+    return sanitized
+
+
+def _rotate_diagnostics_log_if_needed(log_path: str, archive_path: str) -> None:
+    if not os.path.exists(log_path):
+        return
+
+    if os.path.getsize(log_path) < DIAGNOSTICS_MAX_FILE_SIZE_BYTES:
+        return
+
+    try:
+        if os.path.exists(archive_path):
+            os.remove(archive_path)
+    except OSError:
+        pass
+
+    os.replace(log_path, archive_path)
+
+
+def _append_diagnostics_record(record: dict[str, Any]) -> None:
+    log_path = _diagnostics_log_path()
+    archive_path = _diagnostics_archive_path()
+    serialized = json.dumps(record, ensure_ascii=True, separators=(",", ":"))
+
+    with _diagnostics_log_lock:
+        _rotate_diagnostics_log_if_needed(log_path, archive_path)
+        with open(log_path, "a", encoding="utf-8") as handle:
+            handle.write(serialized + "\n")
+
+
+def _post_diagnostics_payload(endpoint: str, payload: dict[str, Any]) -> None:
+    body = json.dumps(payload, ensure_ascii=True).encode("utf-8")
+    request = urllib.request.Request(endpoint, data=body, method="POST")
+    request.add_header("Content-Type", "application/json")
+    request.add_header("User-Agent", f"locus-backend/{APP_VERSION}")
+    with urllib.request.urlopen(request, timeout=4.0) as response:
+        status_code = int(getattr(response, "status", 200))
+        if status_code >= 400:
+            raise RuntimeError(f"Remote endpoint responded with {status_code}")
+
+
+def _dispatch_remote_diagnostics(record: dict[str, Any]) -> None:
+    db = SessionLocal()
+    try:
+        sharing_enabled = _read_bool_setting(db, "share_crash_diagnostics", False)
+        endpoint = _resolve_crash_reporting_endpoint(db)
+    finally:
+        db.close()
+
+    if not sharing_enabled or not endpoint:
+        return
+
+    def _send() -> None:
+        try:
+            _post_diagnostics_payload(endpoint, record)
+        except Exception as exc:
+            logger.warning(
+                "[Diagnostics] Remote crash report delivery failed: %s",
+                exc,
+            )
+
+    threading.Thread(
+        target=_send,
+        name="locus-diagnostics-forwarder",
+        daemon=True,
+    ).start()
+
+
+def _record_stability_event(
+    payload: TelemetryEventPayload,
+    request: Request | None = None,
+) -> dict[str, Any]:
+    record: dict[str, Any] = {
+        "id": str(uuid.uuid4()),
+        "recorded_at": datetime.now(timezone.utc).isoformat(),
+        "source": payload.source,
+        "event_type": payload.event_type,
+        "severity": payload.severity,
+        "message": payload.message[:TELEMETRY_MESSAGE_MAX_LENGTH],
+        "stack": (
+            payload.stack[:TELEMETRY_STACK_MAX_LENGTH]
+            if payload.stack is not None
+            else None
+        ),
+        "context": _sanitize_telemetry_context(payload.context),
+        "app_version": APP_VERSION,
+    }
+
+    if payload.timestamp:
+        record["reported_at"] = payload.timestamp
+
+    if request is not None:
+        record["request"] = {
+            "path": request.url.path,
+            "method": request.method,
+            "client": request.client.host if request.client else None,
+        }
+
+    _append_diagnostics_record(record)
+    _dispatch_remote_diagnostics(record)
+    return record
+
+
+def _report_backend_exception(exc: Exception, request: Request) -> None:
+    message = str(exc).strip() or exc.__class__.__name__
+    stack = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+    payload = TelemetryEventPayload(
+        source="backend",
+        event_type="unhandled_exception",
+        severity="critical",
+        message=message,
+        stack=stack,
+        context={
+            "path": request.url.path,
+            "method": request.method,
+            "query": str(request.url.query or "")[:400],
+        },
+    )
+    _record_stability_event(payload, request=request)
 
 
 # --- Background Service Placeholders ---
@@ -671,6 +935,8 @@ def _ensure_snapshot_defaults(db: Session) -> None:
         "snapshot_allow_delete": "false",
         "run_in_background_service": "true",
         "ui_zoom_scale": str(DEFAULT_UI_ZOOM_SCALE),
+        "share_crash_diagnostics": "false",
+        "crash_reporting_endpoint": "",
     }
     for key, default_value in defaults.items():
         if crud.get_setting(db, key, None) is None:
@@ -755,6 +1021,24 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Locus API", version="1.5.0", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def capture_unhandled_backend_exceptions(
+    request: Request,
+    call_next: Callable[[Request], Awaitable[Response]],
+):
+    try:
+        return await call_next(request)
+    except Exception as exc:
+        try:
+            _report_backend_exception(exc, request)
+        except Exception:
+            logger.error(
+                "[Diagnostics] Failed to record unhandled backend exception",
+                exc_info=True,
+            )
+        raise
 
 # CORS middleware to allow frontend requests
 
@@ -2717,12 +3001,15 @@ def update_snapshot_settings(payload: SnapshotSettingsUpdate, db: DbSession):
 
 @app.get("/settings/runtime")
 def get_runtime_settings(db: DbSession):
-    run_in_background_service = (
-        crud.get_setting(db, "run_in_background_service", "true") == "true"
-    )
+    run_in_background_service = _read_bool_setting(db, "run_in_background_service", True)
     return {
         "run_in_background_service": run_in_background_service,
         "ui_zoom_scale": _read_ui_zoom_scale(db),
+        "share_crash_diagnostics": _read_bool_setting(
+            db,
+            "share_crash_diagnostics",
+            False,
+        ),
     }
 
 
@@ -2736,6 +3023,7 @@ def update_runtime_settings(payload: RuntimeSettingsUpdate, db: DbSession):
     if (
         payload.run_in_background_service is None
         and payload.ui_zoom_scale is None
+        and payload.share_crash_diagnostics is None
     ):
         raise HTTPException(status_code=400, detail="No settings provided")
 
@@ -2750,7 +3038,34 @@ def update_runtime_settings(payload: RuntimeSettingsUpdate, db: DbSession):
         clamped_zoom = _clamp_ui_zoom_scale(payload.ui_zoom_scale)
         crud.set_setting(db, "ui_zoom_scale", str(clamped_zoom))
 
+    if payload.share_crash_diagnostics is not None:
+        crud.set_setting(
+            db,
+            "share_crash_diagnostics",
+            "true" if payload.share_crash_diagnostics else "false",
+        )
+
     return get_runtime_settings(db)
+
+
+@app.post(
+    "/telemetry/events",
+    status_code=202,
+    responses={
+        500: {"description": "Failed to persist telemetry event"},
+    },
+)
+def ingest_telemetry_event(payload: TelemetryEventPayload, request: Request):
+    try:
+        recorded = _record_stability_event(payload, request=request)
+    except Exception as exc:
+        logger.error("[Diagnostics] Failed to persist telemetry event: %s", exc)
+        raise HTTPException(status_code=500, detail="Failed to persist telemetry event")
+
+    return {
+        "status": "accepted",
+        "event_id": recorded["id"],
+    }
 
 
 @app.get("/auth/status")
@@ -2817,11 +3132,76 @@ def auth_lock(db: DbSession):
     return {"locked": True}
 
 
+def _safe_rss_bytes(process: Any) -> int:
+    try:
+        return int(process.memory_info().rss)
+    except Exception:
+        return 0
+
+
+def _try_parse_positive_pid(raw_value: str | None) -> int | None:
+    raw = str(raw_value or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = int(raw)
+    except Exception:
+        return None
+    return parsed if parsed > 1 else None
+
+
+def _try_add_process_tree(psutil_module: Any, root_pid: int, pids: set[int]) -> bool:
+    try:
+        root_process = psutil_module.Process(root_pid)
+    except Exception:
+        return False
+
+    pids.add(int(root_process.pid))
+    try:
+        for child in root_process.children(recursive=True):
+            pids.add(int(child.pid))
+    except Exception:
+        # Child enumeration can fail for short-lived or protected processes.
+        pass
+
+    return True
+
+
+def _collect_runtime_ram_usage_bytes() -> int:
+    import psutil
+
+    current_pid = os.getpid()
+    candidate_pids: set[int] = {current_pid}
+
+    parent_pid = _try_parse_positive_pid(os.getenv("LOCUS_PARENT_PID", ""))
+    parent_tree_added = False
+    if parent_pid is not None:
+        parent_tree_added = _try_add_process_tree(psutil, parent_pid, candidate_pids)
+
+    # Dev/manual mode fallback: include backend process tree when parent PID is unavailable.
+    if not parent_tree_added:
+        _try_add_process_tree(psutil, current_pid, candidate_pids)
+
+    total_rss_bytes = 0
+    for pid in sorted(candidate_pids):
+        try:
+            process = psutil.Process(pid)
+        except Exception:
+            continue
+        total_rss_bytes += _safe_rss_bytes(process)
+
+    if total_rss_bytes > 0:
+        return total_rss_bytes
+
+    try:
+        return _safe_rss_bytes(psutil.Process(current_pid))
+    except Exception:
+        return 0
+
+
 @app.get("/dashboard/summary")
 def get_dashboard_summary(db: DbSession):
     from app.database import models
-    import psutil
-    import os
 
     from app.snapshot_service import SNAPSHOT_IMAGE_ROOT
 
@@ -2833,9 +3213,8 @@ def get_dashboard_summary(db: DbSession):
     snapshot_bytes = storage.get_total_storage_usage(SNAPSHOT_IMAGE_ROOT)
     total_storage_bytes = storage_bytes + snapshot_bytes
 
-    # 1. RAM Usage
-    process = psutil.Process(os.getpid())
-    ram_usage_bytes = process.memory_info().rss
+    # 1. RAM Usage (combined runtime footprint)
+    ram_usage_bytes = _collect_runtime_ram_usage_bytes()
 
     # 2. DB Size
     try:

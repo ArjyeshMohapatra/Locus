@@ -273,168 +273,307 @@
   });
 </script>
 
-<div class="card rounded-4 activity-card">
-  <div class="card-header d-flex align-items-center justify-content-between py-3 px-4">
-    <h5 class="card-title mb-0 fw-bold">Live Activity</h5>
-    <span class="badge-soft badge-soft-secondary">{sortedRoots.length} Watched</span>
-  </div>
-  <div class="card-body p-0">
-    <div class="activity-list overflow-auto">
-      {#each sortedRoots as root}
-        {@const rootPath = root.path}
-        {@const rootRows = visibleRowsByRoot[rootPath] || []}
-        {@const rootLatest = getRootLatestTimestamp(rootPath)}
+<section class="activity-card">
+  <header class="activity-card-head">
+    <h2>Live Activity</h2>
+    <span class="badge-soft badge-soft-secondary">{sortedRoots.length} watched</span>
+  </header>
 
-        <div class="activity-item {expandedRoots.has(rootPath) ? 'is-expanded' : ''}">
-          <div class="d-flex justify-content-between align-items-center w-100">
-            <button
-              class="d-flex align-items-center flex-grow-1 text-start border-0 bg-transparent p-0"
-              on:click={() => toggleRoot(rootPath)}
-              type="button"
-            >
-              <div class="d-flex align-items-center">
-                <span class="section-chevron me-3 {expandedRoots.has(rootPath) ? 'rotated' : ''}">
-                  <Fa icon={faChevronRight} aria-hidden="true" />
-                </span>
-                <div class="text-truncate">
-                  <span class="activity-details d-block fw-semibold" style="color: var(--text-primary);">
-                    {root.tree?.name || rootPath}
-                  </span>
-                  <small class="activity-path text-muted d-block text-truncate">
-                    {rootPath}
-                  </small>
-                </div>
-              </div>
-            </button>
+  <div class="activity-list">
+    {#each sortedRoots as root}
+      {@const rootPath = root.path}
+      {@const rootRows = visibleRowsByRoot[rootPath] || []}
+      {@const rootLatest = getRootLatestTimestamp(rootPath)}
 
-            <div class="d-flex align-items-center ms-2 gap-2">
-              {#if rootLatest && isNewEvent(rootLatest)}
-                <span class="badge-soft badge-soft-success">NEW</span>
-              {/if}
-              <span class="badge-soft badge-soft-secondary badge-stack">{root.tree?.file_count || 0}</span>
+      <article class="activity-item activity-root {expandedRoots.has(rootPath) ? 'is-expanded' : ''}">
+        <div class="activity-row-main">
+          <button
+            class="activity-row-btn"
+            on:click={() => toggleRoot(rootPath)}
+            type="button"
+          >
+            <span class="section-chevron activity-chevron {expandedRoots.has(rootPath) ? 'rotated' : ''}">
+              <Fa icon={faChevronRight} aria-hidden="true" />
+            </span>
+            <div class="activity-title-wrap">
+              <span class="activity-title">{root.tree?.name || rootPath}</span>
+              <small class="activity-path text-truncate">{rootPath}</small>
             </div>
+          </button>
+
+          <div class="activity-row-meta">
+            {#if rootLatest && isNewEvent(rootLatest)}
+              <span class="badge-soft badge-soft-success">NEW</span>
+            {/if}
+            <span class="badge-soft badge-soft-secondary badge-stack">{root.tree?.file_count || 0}</span>
           </div>
+        </div>
 
-          {#if expandedRoots.has(rootPath)}
-            <div class="event-list mt-2" transition:slide={{ duration: 200 }}>
-              {#if rootRows.length === 0}
-                <div class="text-muted small py-2 px-2">No files found in this watched folder.</div>
-              {:else}
-                {#each rootRows as row (row.key)}
-                  {#if row.type === 'dir'}
-                    <div class="activity-item" style="padding: 8px 0 8px {12 + row.depth * 18}px;">
-                      <div class="d-flex justify-content-between align-items-center w-100">
-                        <button
-                          class="d-flex align-items-center flex-grow-1 text-start border-0 bg-transparent p-0"
-                          on:click={() => toggleDir(row.key)}
-                          type="button"
-                        >
-                          <span class="section-chevron me-3 {expandedDirs.has(row.key) ? 'rotated' : ''}">
-                            <Fa icon={faChevronRight} aria-hidden="true" />
-                          </span>
-                          <span class="activity-details d-block fw-semibold" style="color: var(--text-primary);">
-                            {row.node.name}
-                          </span>
-                        </button>
-                        <span class="badge-soft badge-soft-secondary badge-stack">{row.node.file_count || 0}</span>
-                      </div>
+        {#if expandedRoots.has(rootPath)}
+          <div class="event-list" transition:slide={{ duration: 200 }}>
+            {#if rootRows.length === 0}
+              <div class="tree-empty" style="--tree-indent: 10px;">No files found in this watched folder.</div>
+            {:else}
+              {#each rootRows as row (row.key)}
+                {#if row.type === 'dir'}
+                  <div class="activity-item activity-child-row" style="--tree-indent: {12 + row.depth * 18}px;">
+                    <div class="activity-row-main">
+                      <button
+                        class="activity-row-btn"
+                        on:click={() => toggleDir(row.key)}
+                        type="button"
+                      >
+                        <span class="section-chevron activity-chevron {expandedDirs.has(row.key) ? 'rotated' : ''}">
+                          <Fa icon={faChevronRight} aria-hidden="true" />
+                        </span>
+                        <span class="activity-title">{row.node.name}</span>
+                      </button>
+                      <span class="badge-soft badge-soft-secondary badge-stack">{row.node.file_count || 0}</span>
                     </div>
-                  {:else if row.type === 'file'}
-                    <div class="activity-item {expandedFiles.has(row.node.path) ? 'is-expanded' : ''}" style="padding: 8px 0 8px {12 + row.depth * 18}px;">
-                      <div class="d-flex justify-content-between align-items-center w-100">
-                        <button
-                          class="d-flex align-items-center flex-grow-1 text-start border-0 bg-transparent p-0"
-                          on:click={() => toggleFile(row.node.path)}
-                          type="button"
-                        >
-                          <span class="section-chevron me-3 {expandedFiles.has(row.node.path) ? 'rotated' : ''}">
-                            <Fa icon={faChevronRight} aria-hidden="true" />
-                          </span>
-                          <div class="text-truncate">
-                            <span class="activity-details d-block fw-semibold" style="color: var(--text-primary);">
-                              {row.node.name}
-                            </span>
-                            <small class="activity-path text-muted d-block text-truncate">{row.node.path}</small>
-                          </div>
-                        </button>
-
-                        <div class="d-flex align-items-center ms-2">
-                          <button
-                            class="btn btn-sm btn-outline-primary me-3"
-                            on:click={(e) => { e.stopPropagation(); selectedFile = row.node.path; }}
-                            title="View History / Restore"
-                          >
-                            History
-                          </button>
-                          <span class="badge-soft badge-soft-secondary badge-stack">{row.events.length}</span>
+                  </div>
+                {:else if row.type === 'file'}
+                  <div class="activity-item activity-child-row {expandedFiles.has(row.node.path) ? 'is-expanded' : ''}" style="--tree-indent: {12 + row.depth * 18}px;">
+                    <div class="activity-row-main">
+                      <button
+                        class="activity-row-btn"
+                        on:click={() => toggleFile(row.node.path)}
+                        type="button"
+                      >
+                        <span class="section-chevron activity-chevron {expandedFiles.has(row.node.path) ? 'rotated' : ''}">
+                          <Fa icon={faChevronRight} aria-hidden="true" />
+                        </span>
+                        <div class="activity-title-wrap">
+                          <span class="activity-title">{row.node.name}</span>
+                          <small class="activity-path text-truncate">{row.node.path}</small>
                         </div>
+                      </button>
+
+                      <div class="activity-row-meta">
+                        <button
+                          class="btn btn-sm btn-outline-primary activity-history-btn"
+                          on:click={(e) => { e.stopPropagation(); selectedFile = row.node.path; }}
+                          title="View History / Restore"
+                        >
+                          History
+                        </button>
+                        <span class="badge-soft badge-soft-secondary badge-stack">{row.events.length}</span>
                       </div>
                     </div>
-                  {:else if row.type === 'event'}
-                    <div class="event-row" style="margin-left: {12 + row.depth * 18}px;">
-                      <span class="badge-soft badge-soft-secondary me-3" style="min-width: 80px; justify-content: center;">{row.event.event_type}</span>
-                      <span class="activity-time me-auto">{formatTime(row.event.timestamp)}</span>
-                      {#if row.event.dest_path}
-                        <small class="activity-path text-muted ms-2 text-truncate">&rarr; {row.event.dest_path.split(/[\\/]/).pop()}</small>
-                      {/if}
-                    </div>
-                  {:else if row.type === 'dir-empty'}
-                    <div class="text-muted small" style="padding: 4px 0 8px {12 + row.depth * 18}px;">
-                      No visible items in this folder.
-                    </div>
-                  {:else if row.type === 'file-empty'}
-                    <div class="text-muted small" style="padding: 4px 0 8px {12 + row.depth * 18}px;">
-                      No tracked events yet for this file.
-                    </div>
-                  {/if}
-                {/each}
-              {/if}
-            </div>
-          {/if}
-        </div>
-      {/each}
+                  </div>
+                {:else if row.type === 'event'}
+                  <div class="event-row" style="--tree-indent: {12 + row.depth * 18}px;">
+                    <span class="badge-soft badge-soft-secondary event-kind">{row.event.event_type}</span>
+                    <span class="activity-time">{formatTime(row.event.timestamp)}</span>
+                    {#if row.event.dest_path}
+                      <small class="activity-path text-truncate">&rarr; {row.event.dest_path.split(/[\\/]/).pop()}</small>
+                    {/if}
+                  </div>
+                {:else if row.type === 'dir-empty'}
+                  <div class="tree-empty" style="--tree-indent: {12 + row.depth * 18}px;">
+                    No visible items in this folder.
+                  </div>
+                {:else if row.type === 'file-empty'}
+                  <div class="tree-empty" style="--tree-indent: {12 + row.depth * 18}px;">
+                    No tracked events yet for this file.
+                  </div>
+                {/if}
+              {/each}
+            {/if}
+          </div>
+        {/if}
+      </article>
+    {/each}
 
-      {#if sortedRoots.length === 0}
-        <div class="text-center text-muted py-4">
-          <em>No watched folders found</em>
-        </div>
-      {/if}
-    </div>
+    {#if sortedRoots.length === 0}
+      <div class="activity-empty">
+        <em>No watched folders found</em>
+      </div>
+    {/if}
   </div>
-</div>
+</section>
 
 <FileHistoryModal filePath={selectedFile} onClose={() => selectedFile = null} />
 
 <style>
   .activity-card {
-    max-height: min(72vh, calc(100vh - 200px));
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-lg);
+    background: var(--surface-elevated);
+    box-shadow: var(--shadow-sm);
+    max-height: min(74vh, calc(100vh - 190px));
     overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .activity-card-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.6rem;
+    padding: 0.82rem 0.95rem;
+    border-bottom: 1px solid var(--border-subtle);
+    background: var(--surface-soft);
+  }
+
+  .activity-card-head h2 {
+    margin: 0;
+    font-size: 0.92rem;
+    letter-spacing: 0.05em;
+    text-transform: none;
+    color: var(--text-muted);
+    font-weight: 700;
   }
 
   .activity-list {
-    max-height: min(64vh, calc(100vh - 260px));
+    max-height: min(66vh, calc(100vh - 250px));
     overflow: auto;
+    padding: 0.3rem 0;
+  }
+
+  .activity-item {
+    border-bottom: 1px solid var(--border-subtle);
+    padding: 0.15rem 0.62rem;
+  }
+
+  .activity-item:last-child {
+    border-bottom: none;
+  }
+
+  .activity-root {
+    padding-top: 0.34rem;
+    padding-bottom: 0.34rem;
+  }
+
+  .activity-child-row {
+    padding-left: var(--tree-indent);
+  }
+
+  .activity-row-main {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+  }
+
+  .activity-row-btn {
+    flex: 1;
+    min-width: 0;
+    border: 0;
+    background: transparent;
+    padding: 0.32rem 0;
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    text-align: left;
+    color: inherit;
+  }
+
+  .activity-chevron {
+    color: var(--text-muted);
+    margin: 0;
+  }
+
+  .activity-title-wrap {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+  }
+
+  .activity-title {
+    font-size: 0.84rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    line-height: 1.25;
+  }
+
+  .activity-row-meta {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
   }
 
   .activity-path {
-    font-size: 0.7rem;
-    max-width: 220px;
+    font-size: 0.71rem;
+    max-width: 340px;
     line-height: 1.2;
     color: var(--text-muted);
   }
 
-  .activity-path::after {
-    content: '';
+  .activity-history-btn {
+    min-width: 86px;
   }
 
   .activity-time {
-    font-size: 0.72rem;
+    font-size: 0.71rem;
+    color: var(--text-muted);
+    margin-right: auto;
+  }
+
+  .event-list {
+    margin: 0.12rem 0 0.42rem;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--surface-soft);
+    overflow: hidden;
+  }
+
+  .event-row {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    padding: 0.42rem 0.58rem 0.42rem var(--tree-indent);
+    border-bottom: 1px solid var(--border-subtle);
+  }
+
+  .event-row:last-child {
+    border-bottom: none;
+  }
+
+  .event-kind {
+    min-width: 80px;
+    justify-content: center;
+    text-transform: none;
+    font-size: 0.66rem;
+    letter-spacing: 0.04em;
+  }
+
+  .tree-empty {
+    padding: 0.34rem 0.55rem 0.42rem var(--tree-indent);
+    font-size: 0.76rem;
+    color: var(--text-muted);
+  }
+
+  .activity-empty {
+    text-align: center;
+    color: var(--text-muted);
+    padding: 1.1rem 0.8rem;
   }
 
   .badge-stack {
-    margin-right: 10px;
-    min-width: 40px;
+    min-width: 38px;
     display: inline-flex;
     justify-content: center;
+  }
+
+  @media (max-width: 720px) {
+    .activity-card-head {
+      padding: 0.74rem 0.82rem;
+    }
+
+    .activity-item,
+    .activity-root {
+      padding-left: 0.5rem;
+      padding-right: 0.5rem;
+    }
+
+    .activity-history-btn {
+      min-width: 74px;
+    }
+
+    .activity-path {
+      max-width: 220px;
+    }
   }
 </style>

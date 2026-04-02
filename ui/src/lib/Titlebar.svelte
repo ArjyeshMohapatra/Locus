@@ -116,7 +116,7 @@
 <div class="titlebar" data-tauri-drag-region>
   <div class="titlebar-brand" data-tauri-drag-region>
     <span class="titlebar-icon">
-      <Fa icon={faCloud} size="xs" />
+      <Fa icon={faCloud} />
     </span>
     <span class="titlebar-text">Locus</span>
   </div>
@@ -146,13 +146,13 @@
 
   <div class="titlebar-controls">
     <button class="control-btn" on:click={minimize} title="Minimize">
-      <Fa icon={faMinus} size="xs" />
+      <Fa icon={faMinus} />
     </button>
     <button class="control-btn" on:click={toggleMaximize} title={isMaximized ? 'Restore' : 'Maximize'}>
-      <Fa icon={faSquare} size="xs" />
+      <Fa icon={faSquare} />
     </button>
     <button class="control-btn control-close" on:click={close} title="Close">
-      <Fa icon={faXmark} size="xs" />
+      <Fa icon={faXmark} />
     </button>
   </div>
 </div>
@@ -244,7 +244,7 @@
 
   .snapshot-label {
     font-weight: 600;
-    text-transform: uppercase;
+    text-transform: none;
   }
 
   @keyframes indeterminate {

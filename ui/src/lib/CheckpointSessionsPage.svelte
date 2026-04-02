@@ -9,7 +9,7 @@
     renameCheckpointSession,
     restoreCheckpointSession
   } from '../api.js';
-  import { askQuestion, showMessage } from '../dialogStore.js';
+  import { askForText, askQuestion, showMessage } from '../dialogStore.js';
 
   const TAB_CREATE = 'create';
   const TAB_HISTORY = 'history';
@@ -37,6 +37,7 @@
 
   let sessions = [];
   let loadingSessions = false;
+  let renamingSessionId = '';
 
   let detailLoading = false;
   let selectedSessionDetail = null;
@@ -46,6 +47,10 @@
   let includeUnchanged = false;
   let diffLoading = false;
   let diffResult = null;
+  let selectedDiffFilePath = '';
+  let modifiedItems = [];
+  let selectedDiffItem = null;
+  let totalChangedFiles = 0;
 
   let restoreSessionId = '';
   let restoreDestinationRoot = '';
@@ -110,6 +115,28 @@
     if (key === 'missing_file_versions') return 'Version metadata is incomplete';
     return key.replace(/_/g, ' ');
   };
+
+  const filePathKey = (item) => String(item?.file_path || '');
+  const toInt = (value) => Number(value || 0);
+
+  const selectDiffFile = (item) => {
+    selectedDiffFilePath = filePathKey(item);
+  };
+
+  $: modifiedItems = Array.isArray(diffResult?.modified) ? diffResult.modified : [];
+  $: totalChangedFiles = diffResult
+    ? toInt(diffResult.summary?.added) +
+      toInt(diffResult.summary?.removed) +
+      toInt(diffResult.summary?.modified) +
+      toInt(diffResult.summary?.renamed)
+    : 0;
+  $: if (modifiedItems.length === 0) {
+    selectedDiffFilePath = '';
+  } else if (!modifiedItems.some((item) => filePathKey(item) === selectedDiffFilePath)) {
+    selectedDiffFilePath = filePathKey(modifiedItems[0]);
+  }
+  $: selectedDiffItem =
+    modifiedItems.find((item) => filePathKey(item) === selectedDiffFilePath) || null;
 
   const loadWatched = async () => {
     const data = await getWatchedPaths();
@@ -223,16 +250,31 @@
   };
 
   const renameSession = async (session) => {
-    const next = prompt('Rename checkpoint', session.name || '');
+    const next = await askForText(
+      'Enter a new name for this checkpoint.',
+      'Rename Checkpoint',
+      {
+        type: 'question',
+        okLabel: 'Save',
+        cancelLabel: 'Cancel',
+        inputLabel: 'Checkpoint name',
+        placeholder: 'before-upgrade',
+        initialValue: session.name || '',
+        maxLength: 80
+      }
+    );
     if (next == null) return;
 
-    const cleaned = String(next).trim();
+    const cleaned = String(next)
+      .trim()
+      .replace(/\s+/g, ' ');
     if (!cleaned) {
       pageError = 'Checkpoint name cannot be empty.';
       return;
     }
 
     pageError = '';
+    renamingSessionId = String(session.id);
     try {
       await renameCheckpointSession(session.id, cleaned);
       await loadSessions();
@@ -244,6 +286,8 @@
       }
     } catch (e) {
       pageError = e.message || 'Failed to rename checkpoint';
+    } finally {
+      renamingSessionId = '';
     }
   };
 
@@ -374,7 +418,7 @@
       <h1 class="mb-1">Checkpoint Sessions</h1>
       <p class="text-muted mb-0">Use the top tabs to focus on one workflow at a time.</p>
     </div>
-    <button class="btn btn-outline-secondary" on:click={refreshAll} disabled={loadingSessions || creating || diffLoading || restoreLoading || restoreExecuting}>
+    <button class="btn btn-secondary" on:click={refreshAll} disabled={loadingSessions || creating || diffLoading || restoreLoading || restoreExecuting}>
       Refresh
     </button>
   </header>
@@ -485,10 +529,16 @@
                     <td class="small text-muted">{formatTime(session.created_at)}</td>
                     <td class="text-end pe-3">
                       <div class="d-inline-flex gap-2 flex-wrap justify-content-end">
-                        <button class="btn btn-sm btn-outline-secondary" on:click={() => renameSession(session)}>Rename</button>
-                        <button class="btn btn-sm btn-outline-primary" on:click={() => openManifest(session.id)}>Manifest</button>
                         <button
-                          class="btn btn-sm btn-outline-primary"
+                          class="btn btn-sm btn-secondary"
+                          on:click={() => renameSession(session)}
+                          disabled={renamingSessionId === String(session.id)}
+                        >
+                          {renamingSessionId === String(session.id) ? 'Saving...' : 'Rename'}
+                        </button>
+                        <button class="btn btn-sm btn-primary" on:click={() => openManifest(session.id)}>Manifest</button>
+                        <button
+                          class="btn btn-sm btn-success"
                           on:click={() => {
                             fromSessionId = String(session.id);
                             activeTab = TAB_DIFF;
@@ -557,49 +607,79 @@
             {/if}
           </div>
 
-          <section class="diff-block modified-block diff-primary-block">
-            <h3>Modified ({diffResult.modified.length})</h3>
-            {#if diffResult.modified.length === 0}
-              <div class="small text-muted">No modified files.</div>
-            {:else}
-              <div class="modified-list">
-                {#each diffResult.modified as item}
-                  <article class="file-diff-card">
-                    <header class="file-diff-head">
-                      <div class="mono-text file-path">{item.file_path}</div>
-                      <div class="line-badges">
-                        <span class="line-delta line-add">{formatDelta(item.added_lines, '+')}</span>
-                        <span class="line-delta line-remove">{formatDelta(item.removed_lines, '-')}</span>
-                      </div>
-                    </header>
-
-                    {#if item.line_diff?.available}
-                      <div class="hunk-list">
-                        {#each item.line_diff.hunks as hunk}
-                          <div class="hunk">
-                            <div class="hunk-head mono-text">@@ -{hunk.from_start},{hunk.from_count} +{hunk.to_start},{hunk.to_count} @@</div>
-                            {#each hunk.removed_preview as line, removedIndex}
-                              <div class="diff-line line-remove"><span class="line-number">{hunk.from_start + removedIndex}</span><span class="line-prefix">-</span><span class="line-content">{line || ' '}</span></div>
-                            {/each}
-                            {#each hunk.added_preview as line, addedIndex}
-                              <div class="diff-line line-add"><span class="line-number">{hunk.to_start + addedIndex}</span><span class="line-prefix">+</span><span class="line-content">{line || ' '}</span></div>
-                            {/each}
-                          </div>
-                        {/each}
-                        {#if item.line_diff.truncated_hunks}
-                          <div class="small text-muted">Additional hunks omitted for readability.</div>
-                        {/if}
-                      </div>
-                    {:else}
-                      <div class="small text-muted">{getDiffReason(item.line_diff?.reason)}</div>
-                    {/if}
-                  </article>
-                {/each}
+          <div class="diff-explorer">
+            <aside class="diff-files-pane">
+              <div class="diff-pane-head">
+                <h3>Changed Files</h3>
+                <span class="small text-muted">{totalChangedFiles} total</span>
               </div>
-            {/if}
-          </section>
 
-          <details class="diff-secondary-block mt-3" open={diffResult.modified.length === 0}>
+              <div class="diff-files-scroll">
+                {#if modifiedItems.length === 0}
+                  <div class="empty-state diff-empty">No modified files in this comparison.</div>
+                {:else}
+                  <ul class="diff-files-list">
+                    {#each modifiedItems as item}
+                      <li>
+                        <button
+                          class="diff-file-row {selectedDiffFilePath === filePathKey(item) ? 'is-active' : ''}"
+                          type="button"
+                          on:click={() => selectDiffFile(item)}
+                        >
+                          <span class="mono-text diff-file-row-path">{item.file_path}</span>
+                          <span class="line-badges">
+                            <span class="line-delta line-add">{formatDelta(item.added_lines, '+')}</span>
+                            <span class="line-delta line-remove">{formatDelta(item.removed_lines, '-')}</span>
+                          </span>
+                        </button>
+                      </li>
+                    {/each}
+                  </ul>
+                {/if}
+              </div>
+            </aside>
+
+            <section class="diff-view-pane">
+              {#if selectedDiffItem}
+                <header class="file-diff-head diff-view-head">
+                  <div class="mono-text file-path">{selectedDiffItem.file_path}</div>
+                  <div class="line-badges">
+                    <span class="line-delta line-add">{formatDelta(selectedDiffItem.added_lines, '+')}</span>
+                    <span class="line-delta line-remove">{formatDelta(selectedDiffItem.removed_lines, '-')}</span>
+                  </div>
+                </header>
+
+                {#if selectedDiffItem.line_diff?.available}
+                  {#if selectedDiffItem.line_diff.hunks?.length > 0}
+                    <div class="hunk-list diff-view-scroll">
+                      {#each selectedDiffItem.line_diff.hunks as hunk}
+                        <div class="hunk">
+                          <div class="hunk-head mono-text">@@ -{hunk.from_start},{hunk.from_count} +{hunk.to_start},{hunk.to_count} @@</div>
+                          {#each hunk.removed_preview as line, removedIndex}
+                            <div class="diff-line line-remove"><span class="line-number">{hunk.from_start + removedIndex}</span><span class="line-prefix">-</span><span class="line-content">{line || ' '}</span></div>
+                          {/each}
+                          {#each hunk.added_preview as line, addedIndex}
+                            <div class="diff-line line-add"><span class="line-number">{hunk.to_start + addedIndex}</span><span class="line-prefix">+</span><span class="line-content">{line || ' '}</span></div>
+                          {/each}
+                        </div>
+                      {/each}
+                      {#if selectedDiffItem.line_diff.truncated_hunks}
+                        <div class="small text-muted diff-footnote">Additional hunks omitted for readability.</div>
+                      {/if}
+                    </div>
+                  {:else}
+                    <div class="empty-state diff-empty">No line-level hunks were generated for this file.</div>
+                  {/if}
+                {:else}
+                  <div class="empty-state diff-empty">{getDiffReason(selectedDiffItem.line_diff?.reason)}</div>
+                {/if}
+              {:else}
+                <div class="empty-state diff-empty">Select a modified file to inspect line-level changes.</div>
+              {/if}
+            </section>
+          </div>
+
+          <details class="diff-secondary-block mt-1" open={modifiedItems.length === 0}>
             <summary class="diff-secondary-summary">
               <span>Other file lists</span>
               <span class="small text-muted">Added {diffResult.added.length}, Removed {diffResult.removed.length}, Renamed {diffResult.renamed.length}{#if includeUnchanged}, Unchanged {diffResult.unchanged.length}{/if}</span>
@@ -816,38 +896,39 @@
   .checkpoint-top-nav {
     display: flex;
     align-items: center;
-    gap: 0.45rem;
-    border: 1px solid var(--border-subtle);
-    border-radius: 0.75rem;
-    background: var(--surface-elevated);
-    padding: 0.45rem;
+    gap: 0.35rem;
+    border-bottom: 1px solid var(--border-subtle);
+    background: transparent;
+    padding: 0 0.1rem;
     overflow-x: auto;
   }
 
   .top-nav-item {
-    border: 1px solid var(--border-subtle);
-    background: var(--surface-soft);
+    border: 1px solid transparent;
+    border-bottom: none;
+    background: transparent;
     color: var(--text-muted);
-    border-radius: 999px;
-    padding: 0.38rem 0.8rem;
-    font-weight: 700;
-    font-size: 0.8rem;
-    letter-spacing: 0.03em;
-    text-transform: uppercase;
+    border-radius: 0.6rem 0.6rem 0 0;
+    padding: 0.46rem 0.82rem;
+    font-weight: 600;
+    font-size: 0.84rem;
+    letter-spacing: 0.01em;
+    text-transform: none;
     white-space: nowrap;
-    transition: all 0.15s ease;
+    transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
   }
 
   .top-nav-item:hover {
+    background: var(--surface-soft);
     color: var(--text-primary);
     border-color: var(--border-strong);
   }
 
   .top-nav-item.is-active {
-    color: #fff;
-    background: var(--accent);
-    border-color: var(--accent);
-    box-shadow: 0 6px 16px var(--accent-soft);
+    color: var(--text-primary);
+    background: var(--surface-elevated);
+    border-color: var(--border-subtle);
+    box-shadow: none;
   }
 
   .checkpoint-panel {
@@ -869,26 +950,26 @@
     gap: 0.5rem;
     padding: 0.8rem 0.95rem;
     border-bottom: 1px solid var(--border-subtle);
-    background: linear-gradient(180deg, var(--surface-soft), transparent);
+    background: var(--surface-soft);
   }
 
   .panel-head h2 {
     margin: 0;
-    font-size: 0.96rem;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-    color: var(--text-muted);
+    font-size: 0.98rem;
+    letter-spacing: 0.01em;
+    text-transform: none;
+    color: var(--text-primary);
   }
 
   .panel-badge {
     border: 1px solid var(--border-subtle);
     border-radius: 999px;
-    background: var(--surface-soft);
+    background: var(--surface-elevated);
     color: var(--text-muted);
-    font-size: 0.72rem;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.03em;
+    font-size: 0.74rem;
+    font-weight: 600;
+    text-transform: none;
+    letter-spacing: 0.01em;
     padding: 0.2rem 0.6rem;
   }
 
@@ -927,18 +1008,33 @@
 
   .checkpoint-table {
     table-layout: fixed;
+    --bs-table-bg: var(--surface-elevated);
+    --bs-table-color: var(--text-primary);
+    --bs-table-border-color: var(--border-subtle);
+    --bs-table-hover-bg: var(--surface-soft);
+    --bs-table-striped-bg: var(--surface-soft);
   }
 
   .checkpoint-table th {
     position: sticky;
     top: 0;
     z-index: 2;
-    background: var(--surface-elevated);
+    background: var(--surface-soft);
     font-size: 0.73rem;
-    text-transform: uppercase;
+    text-transform: none;
     letter-spacing: 0.05em;
     color: var(--text-muted);
     border-bottom: 1px solid var(--border-subtle);
+  }
+
+  .checkpoint-table td {
+    background: var(--surface-elevated);
+    color: var(--text-primary);
+    border-color: var(--border-subtle);
+  }
+
+  .checkpoint-table tbody tr:hover td {
+    background: var(--surface-soft);
   }
 
   .diff-controls {
@@ -963,15 +1059,113 @@
     gap: 0.4rem;
   }
 
+  .diff-explorer {
+    display: grid;
+    grid-template-columns: minmax(260px, 340px) minmax(0, 1fr);
+    gap: 0.75rem;
+    min-height: min(65vh, calc(100vh - 355px));
+    margin-bottom: 0.65rem;
+  }
+
+  .diff-files-pane,
+  .diff-view-pane {
+    border: 1px solid var(--border-subtle);
+    border-radius: 0.7rem;
+    background: var(--surface-elevated);
+    min-height: 0;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .diff-pane-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    padding: 0.55rem 0.7rem;
+    border-bottom: 1px solid var(--border-subtle);
+    background: color-mix(in srgb, var(--surface-soft) 88%, var(--surface-elevated));
+  }
+
+  .diff-pane-head h3 {
+    margin: 0;
+    font-size: 0.83rem;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    text-transform: none;
+    color: var(--text-muted);
+  }
+
+  .diff-files-scroll,
+  .diff-view-scroll {
+    min-height: 0;
+    overflow: auto;
+  }
+
+  .diff-files-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+
+  .diff-file-row {
+    width: 100%;
+    border: none;
+    border-top: 1px solid var(--border-subtle);
+    background: transparent;
+    color: inherit;
+    text-align: left;
+    padding: 0.52rem 0.7rem;
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0.6rem;
+    transition: background-color 0.14s ease, box-shadow 0.14s ease;
+  }
+
+  .diff-file-row:hover {
+    background: var(--surface-soft);
+  }
+
+  .diff-file-row.is-active {
+    background: color-mix(in srgb, var(--accent-soft) 62%, var(--surface-elevated));
+    box-shadow: inset 3px 0 0 var(--accent);
+  }
+
+  .diff-file-row-path {
+    min-width: 0;
+    font-size: 0.76rem;
+    line-height: 1.35;
+    word-break: break-word;
+    padding-top: 0.06rem;
+  }
+
+  .diff-view-head {
+    padding: 0.58rem 0.7rem;
+    border-bottom: 1px solid var(--border-subtle);
+    background: color-mix(in srgb, var(--surface-soft) 88%, var(--surface-elevated));
+  }
+
+  .diff-view-scroll {
+    padding: 0.6rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.55rem;
+  }
+
+  .diff-empty {
+    padding: 0.9rem;
+  }
+
+  .diff-footnote {
+    padding: 0.06rem 0.15rem 0.22rem;
+  }
+
   .diff-grid {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 0.65rem;
-  }
-
-  .diff-primary-block {
-    border-color: color-mix(in srgb, var(--accent) 22%, var(--border-subtle));
-    background: color-mix(in srgb, var(--surface-elevated) 92%, var(--accent-soft));
   }
 
   .diff-secondary-block {
@@ -1027,10 +1221,11 @@
 
   .diff-block h3 {
     margin: 0 0 0.45rem;
-    font-size: 0.8rem;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    color: var(--text-muted);
+    font-size: 0.87rem;
+    font-weight: 600;
+    text-transform: none;
+    letter-spacing: 0.01em;
+    color: var(--text-primary);
   }
 
   .diff-list {
@@ -1039,28 +1234,6 @@
     max-height: 160px;
     overflow: auto;
     font-size: 0.8rem;
-  }
-
-  .modified-block {
-    padding: 0.65rem;
-  }
-
-  .modified-list {
-    display: flex;
-    flex-direction: column;
-    gap: 0.6rem;
-    max-height: min(62vh, calc(100vh - 345px));
-    overflow: auto;
-  }
-
-  .file-diff-card {
-    border: 1px solid var(--border-subtle);
-    border-radius: 0.62rem;
-    background: var(--surface-elevated);
-    padding: 0.55rem;
-    display: flex;
-    flex-direction: column;
-    gap: 0.45rem;
   }
 
   .file-diff-head {
@@ -1218,6 +1391,15 @@
       grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 
+    .diff-explorer {
+      grid-template-columns: minmax(0, 1fr);
+      min-height: 0;
+    }
+
+    .diff-files-pane {
+      max-height: min(38vh, 320px);
+    }
+
     .diff-secondary-summary {
       flex-direction: column;
       align-items: flex-start;
@@ -1242,8 +1424,8 @@
       grid-template-columns: minmax(0, 1fr);
     }
 
-    .modified-list {
-      max-height: min(64vh, calc(100vh - 300px));
+    .diff-files-pane {
+      max-height: 220px;
     }
 
     .top-nav-item {

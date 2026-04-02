@@ -8,6 +8,31 @@
   border-color: var(--border-subtle);
 }
 
+.modal .modal-header {
+  padding: 0.82rem 1rem;
+}
+
+.modal .modal-title {
+  font-size: 0.94rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  color: var(--text-primary);
+}
+
+.modal .modal-body {
+  padding: 0.9rem 1rem;
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
+.modal .modal-footer {
+  padding: 0.72rem 1rem;
+}
+
+.modal .btn {
+  font-size: 0.86rem;
+}
+
 .preview-container pre {
   background: var(--app-bg) !important;
   color: var(--text-primary) !important;
@@ -25,8 +50,8 @@
 .modal .btn-outline-secondary:hover,
 .modal .btn-outline-secondary:focus {
   color: var(--text-primary);
-  background: var(--sidebar-hover);
-  border-color: var(--border-strong);
+  background: color-mix(in srgb, var(--surface-elevated) 90%, transparent);
+  border-color: rgba(95, 111, 130, 0.52);
 }
 
 /* make the close button visible in dark mode */

@@ -8,3 +8,21 @@
 @import './styles/components/modals.css';
 @import './styles/components/consistency.css';
 @import './styles/utils.css';
+
+html,
+body,
+#app,
+#app * {
+	-webkit-user-select: none;
+	user-select: none;
+}
+
+input,
+textarea,
+[contenteditable='true'],
+[contenteditable='plaintext-only'],
+.allow-text-selection,
+.allow-text-selection * {
+	-webkit-user-select: text;
+	user-select: text;
+}

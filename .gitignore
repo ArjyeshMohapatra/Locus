@@ -41,9 +41,12 @@ backend/locus.db-wal
 # Locus Data & Snapshots
 .locus_storage/
 .locus_snapshot_images/
-**/ .locus_snapshot_images/
+**/.locus_snapshot_images/
 backend/.locus_snapshot_images/
 backend/.locus_storage/
+backend/diagnostics/
+diagnostics/
+**/stability-events*.jsonl
 
 # Node.js / Frontend
 node_modules/

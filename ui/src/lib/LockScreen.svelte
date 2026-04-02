@@ -1,8 +1,10 @@
 <script>
-  import { afterUpdate, onMount, tick } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import { createEventDispatcher } from 'svelte';
   import { setupAuth, unlockAuth, resetAuth } from '../api.js';
   import { askQuestion } from '../dialogStore.js';
+  import Fa from 'svelte-fa';
+  import { faEye, faEyeSlash } from '@fortawesome/free-solid-svg-icons';
   
   export let isSetupRequired = false;
   
@@ -17,8 +19,22 @@
   let isForgotMode = false;
 
   let setupPasswordInput;
+  let setupConfirmPasswordInput;
   let unlockPasswordInput;
   let recoveryPasswordInput;
+
+  let showSetupPassword = false;
+  let showConfirmPassword = false;
+  let showUnlockPassword = false;
+  let showRecoveryPassword = false;
+  let lastFocusMode = '';
+
+  const resolveFocusMode = () => {
+    if (showRecovery) return 'recovery';
+    if (isSetupRequired) return 'setup';
+    if (isForgotMode) return 'forgot';
+    return 'unlock';
+  };
 
   const focusPrimaryInput = () => {
     if (showRecovery) return;
@@ -34,13 +50,50 @@
     }
   };
 
-  onMount(async () => {
+  const focusForCurrentMode = async () => {
     await tick();
     focusPrimaryInput();
-  });
+  };
 
-  afterUpdate(() => {
-    focusPrimaryInput();
+  $: {
+    const mode = resolveFocusMode();
+    if (mode !== lastFocusMode) {
+      lastFocusMode = mode;
+      void focusForCurrentMode();
+    }
+  }
+
+  const togglePasswordVisibility = async (field) => {
+    if (field === 'setup') {
+      showSetupPassword = !showSetupPassword;
+      await tick();
+      setupPasswordInput?.focus();
+      return;
+    }
+
+    if (field === 'confirm') {
+      showConfirmPassword = !showConfirmPassword;
+      await tick();
+      setupConfirmPasswordInput?.focus();
+      return;
+    }
+
+    if (field === 'unlock') {
+      showUnlockPassword = !showUnlockPassword;
+      await tick();
+      unlockPasswordInput?.focus();
+      return;
+    }
+
+    if (field === 'recovery') {
+      showRecoveryPassword = !showRecoveryPassword;
+      await tick();
+      recoveryPasswordInput?.focus();
+    }
+  };
+
+  onMount(() => {
+    void focusForCurrentMode();
   });
   
   const handleSetup = async () => {
@@ -138,13 +191,76 @@
         <button class="btn btn-primary w-100 mt-3" on:click={finishSetup}>I have saved it secretly</button>
       
       {:else if isSetupRequired}
-        <input type="password" class="form-control mb-3 lock-input" bind:this={setupPasswordInput} bind:value={password} placeholder="Master Password (min 12 chars)" on:keydown={(e) => e.key === 'Enter' && handleSetup()} disabled={isLoading} />
-        <input type="password" class="form-control mb-3 lock-input" bind:value={confirmPassword} placeholder="Confirm Master Password" on:keydown={(e) => e.key === 'Enter' && handleSetup()} disabled={isLoading} />
+        <div class="password-input-group mb-3">
+          <input
+            type={showSetupPassword ? 'text' : 'password'}
+            class="form-control lock-input"
+            bind:this={setupPasswordInput}
+            bind:value={password}
+            placeholder="Master Password (min 12 chars)"
+            on:keydown={(e) => e.key === 'Enter' && handleSetup()}
+            disabled={isLoading}
+          />
+          <button
+            type="button"
+            class="password-toggle-btn"
+            aria-label={showSetupPassword ? 'Hide master password' : 'Show master password'}
+            title={showSetupPassword ? 'Hide password' : 'Show password'}
+            on:mousedown|preventDefault
+            on:click={() => togglePasswordVisibility('setup')}
+            disabled={isLoading}
+          >
+            <Fa icon={showSetupPassword ? faEye : faEyeSlash} />
+          </button>
+        </div>
+        <div class="password-input-group mb-3">
+          <input
+            type={showConfirmPassword ? 'text' : 'password'}
+            class="form-control lock-input"
+            bind:this={setupConfirmPasswordInput}
+            bind:value={confirmPassword}
+            placeholder="Confirm Master Password"
+            on:keydown={(e) => e.key === 'Enter' && handleSetup()}
+            disabled={isLoading}
+          />
+          <button
+            type="button"
+            class="password-toggle-btn"
+            aria-label={showConfirmPassword ? 'Hide confirm password' : 'Show confirm password'}
+            title={showConfirmPassword ? 'Hide password' : 'Show password'}
+            on:mousedown|preventDefault
+            on:click={() => togglePasswordVisibility('confirm')}
+            disabled={isLoading}
+          >
+            <Fa icon={showConfirmPassword ? faEye : faEyeSlash} />
+          </button>
+        </div>
         {#if errorMsg}<div class="text-danger small mb-3">{errorMsg}</div>{/if}
         <button class="btn btn-primary w-100" on:click={handleSetup} disabled={isLoading}>{isLoading ? 'Setting up...' : 'Create Vault'}</button>
       
       {:else if isForgotMode}
-        <input type="password" class="form-control mb-3 lock-input" bind:this={recoveryPasswordInput} bind:value={password} placeholder="Enter Recovery Key" on:keydown={(e) => e.key === 'Enter' && handleUnlock()} disabled={isLoading} />
+        <div class="password-input-group mb-3">
+          <input
+            type={showRecoveryPassword ? 'text' : 'password'}
+            class="form-control lock-input"
+            bind:this={recoveryPasswordInput}
+            bind:value={password}
+            placeholder="Enter Recovery Key"
+            on:keydown={(e) => e.key === 'Enter' && handleUnlock()}
+            disabled={isLoading}
+          />
+          <button
+            type="button"
+            class="password-toggle-btn"
+            aria-label={showRecoveryPassword ? 'Hide recovery key' : 'Show recovery key'}
+            title={showRecoveryPassword ? 'Hide recovery key' : 'Show recovery key'}
+            on:mousedown|preventDefault
+            on:click={() => togglePasswordVisibility('recovery')}
+            disabled={isLoading}
+          >
+            <Fa icon={showRecoveryPassword ? faEye : faEyeSlash} />
+          </button>
+        </div>
         {#if errorMsg}<div class="text-danger small mb-3">{errorMsg}</div>{/if}
         <button class="btn btn-primary w-100 mb-2" on:click={handleUnlock} disabled={isLoading}>{isLoading ? 'Unlocking...' : 'Unlock with Recovery Key'}</button>
         <button class="btn btn-outline-secondary w-100 mb-4" on:click={() => isForgotMode = false} disabled={isLoading}>Back to Login</button>
@@ -153,7 +269,28 @@
         <button class="btn btn-outline-danger w-100" on:click={handleReset} disabled={isLoading}>Factory Reset Locus</button>
       
       {:else}
-        <input type="password" class="form-control mb-3 lock-input" bind:this={unlockPasswordInput} bind:value={password} placeholder="Master Password" on:keydown={(e) => e.key === 'Enter' && handleUnlock()} disabled={isLoading} />
+        <div class="password-input-group mb-3">
+          <input
+            type={showUnlockPassword ? 'text' : 'password'}
+            class="form-control lock-input"
+            bind:this={unlockPasswordInput}
+            bind:value={password}
+            placeholder="Master Password"
+            on:keydown={(e) => e.key === 'Enter' && handleUnlock()}
+            disabled={isLoading}
+          />
+          <button
+            type="button"
+            class="password-toggle-btn"
+            aria-label={showUnlockPassword ? 'Hide password' : 'Show password'}
+            title={showUnlockPassword ? 'Hide password' : 'Show password'}
+            on:mousedown|preventDefault
+            on:click={() => togglePasswordVisibility('unlock')}
+            disabled={isLoading}
+          >
+            <Fa icon={showUnlockPassword ? faEye : faEyeSlash} />
+          </button>
+        </div>
         {#if errorMsg}<div class="text-danger small mb-3">{errorMsg}</div>{/if}
         <button class="btn btn-primary w-100 mb-3" on:click={handleUnlock} disabled={isLoading}>{isLoading ? 'Unlocking...' : 'Unlock'}</button>
         <button class="btn btn-link w-100 text-muted" on:click={() => { isForgotMode = true; errorMsg = ''; password = ''; }} disabled={isLoading} style="font-size: 0.9rem;">Forgot password?</button>
@@ -169,23 +306,107 @@
     left: 0;
     right: 0;
     bottom: 0;
-    background: var(--surface);
-    display: flex; align-items: center; justify-content: center; z-index: 10000;
+    background: var(--app-bg);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 10000;
+    padding: 18px;
   }
+
   .lock-card {
-    background: var(--surface-elevated); padding: 40px; border-radius: 16px;
-    box-shadow: 0 20px 40px rgba(0,0,0,0.1); width: 100%; max-width: 440px;
+    background: var(--surface-elevated);
+    padding: 34px;
+    border-radius: 14px;
+    box-shadow: var(--shadow-lg);
+    width: 100%;
+    max-width: 440px;
     border: 1px solid var(--border-subtle);
   }
-  :global(.theme-dark) .lock-card { background: #1e293b; border-color: rgba(255,255,255,0.1); }
-  .logo-box {
-    width: 60px; height: 60px; background: var(--accent); color: white;
-    font-size: 32px; font-weight: bold; border-radius: 14px;
-    display: flex; align-items: center; justify-content: center; margin: 0 auto 20px;
+
+  :global(.theme-dark) .lock-card {
+    background: var(--surface-elevated);
+    border-color: var(--border-subtle);
   }
-  .lock-header { text-align: center; margin-bottom: 30px; }
-  .lock-header h2 { font-weight: 700; margin-bottom: 8px; font-size: 1.6rem; }
-  .lock-input { padding: 12px 16px; font-size: 1rem; border-radius: 10px; }
-  .recovery-box { background: #f1f5f9; padding: 16px; border-radius: 8px; word-break: break-all; text-align: center; }
-  :global(.theme-dark) .recovery-box { background: #0f172a; color: #38bdf8; }
+
+  .logo-box {
+    width: 48px;
+    height: 48px;
+    background: var(--surface-soft);
+    color: var(--accent);
+    font-size: 22px;
+    font-weight: 700;
+    border-radius: 12px;
+    border: 1px solid var(--border-subtle);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin: 0 auto 18px;
+  }
+
+  .lock-header {
+    text-align: center;
+    margin-bottom: 24px;
+  }
+
+  .lock-header h2 {
+    font-weight: 700;
+    margin-bottom: 8px;
+    font-size: 1.45rem;
+    letter-spacing: -0.01em;
+  }
+
+  .lock-input {
+    padding: 11px 14px;
+    font-size: 0.96rem;
+    border-radius: 10px;
+  }
+
+  .password-input-group {
+    position: relative;
+  }
+
+  .password-input-group .lock-input {
+    padding-right: 46px;
+    margin-bottom: 0;
+  }
+
+  .password-toggle-btn {
+    position: absolute;
+    top: 50%;
+    right: 10px;
+    transform: translateY(-50%);
+    border: 0;
+    background: transparent;
+    color: var(--text-secondary);
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+  }
+  .password-toggle-btn:hover:enabled {
+    color: var(--text-primary);
+  }
+
+  .password-toggle-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .recovery-box {
+    background: var(--surface-soft);
+    border: 1px solid var(--border-subtle);
+    padding: 14px;
+    border-radius: 10px;
+    word-break: break-all;
+    text-align: center;
+  }
+
+  :global(.theme-dark) .recovery-box {
+    background: var(--surface-soft);
+    color: var(--accent-strong);
+  }
 </style>

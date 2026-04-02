@@ -5,7 +5,8 @@
     getAuthStatus,
     getDashboardSummary,
     lockAuth,
-    getRuntimeSettings
+    getRuntimeSettings,
+    sendTelemetryEvent
   } from './api.js';
   import { listen } from '@tauri-apps/api/event';
   import WatchedFolders from './lib/WatchedFolders.svelte';
@@ -49,6 +50,7 @@
 
   let healthRefreshTimer;
   let themeRefreshTimer;
+  let themeTransitionTimer;
   let tauriThemeUnlisten;
   let locusThemeUnlisten;
   let linuxThemeUnlisten;
@@ -56,6 +58,11 @@
   const MIN_UI_ZOOM_SCALE = 0.5;
   const MAX_UI_ZOOM_SCALE = 3;
   const DEFAULT_UI_ZOOM_SCALE = 1;
+  const THEME_TRANSITION_MS = 220;
+  const TELEMETRY_WINDOW_MS = 10000;
+  const TELEMETRY_WINDOW_MAX_EVENTS = 8;
+
+  let telemetryEventWindow = [];
 
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -63,6 +70,38 @@
     const parsed = Number(value);
     if (!Number.isFinite(parsed)) return DEFAULT_UI_ZOOM_SCALE;
     return Math.min(MAX_UI_ZOOM_SCALE, Math.max(MIN_UI_ZOOM_SCALE, parsed));
+  };
+
+  const canSendTelemetryEvent = () => {
+    const now = Date.now();
+    telemetryEventWindow = telemetryEventWindow.filter((timestamp) => now - timestamp <= TELEMETRY_WINDOW_MS);
+    if (telemetryEventWindow.length >= TELEMETRY_WINDOW_MAX_EVENTS) {
+      return false;
+    }
+    telemetryEventWindow.push(now);
+    return true;
+  };
+
+  const reportUiTelemetry = ({ eventType, message, stack = null, context = {}, severity = 'error' }) => {
+    const normalizedMessage = String(message || '').trim();
+    if (!normalizedMessage || !canSendTelemetryEvent()) {
+      return;
+    }
+
+    void sendTelemetryEvent({
+      source: 'ui',
+      event_type: eventType,
+      severity,
+      message: normalizedMessage,
+      stack: stack ? String(stack) : null,
+      context: {
+        current_view: currentView,
+        ...context
+      },
+      timestamp: new Date().toISOString()
+    }).catch(() => {
+      // Do not surface telemetry failures to users.
+    });
   };
 
   const applyUiZoomScale = (value, { persist = false } = {}) => {
@@ -109,9 +148,24 @@
     return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
   };
 
-  const applyTheme = (mode) => {
+  const applyTheme = (mode, { animate = true } = {}) => {
     const nextTheme = mode === 'system' ? getSystemTheme() : mode;
-    document.body.classList.toggle('theme-dark', nextTheme === 'dark');
+    const shouldUseDark = nextTheme === 'dark';
+    const isDarkApplied = document.body.classList.contains('theme-dark');
+
+    if (isDarkApplied === shouldUseDark) return;
+
+    if (animate) {
+      document.body.classList.add('theme-transitioning');
+      if (themeTransitionTimer) {
+        clearTimeout(themeTransitionTimer);
+      }
+      themeTransitionTimer = setTimeout(() => {
+        document.body.classList.remove('theme-transitioning');
+      }, THEME_TRANSITION_MS);
+    }
+
+    document.body.classList.toggle('theme-dark', shouldUseDark);
   };
 
   let handleSystemChange;
@@ -171,7 +225,7 @@
     }
 
     themeMode = localStorage.getItem('locus-theme') || 'system';
-    applyTheme(themeMode);
+    applyTheme(themeMode, { animate: false });
 
     mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
     handleSystemChange = () => {
@@ -251,6 +305,11 @@
 
   let handleClickOutside;
   let handleNotificationOutside;
+  let handleContextMenuBlock;
+  let handleRefreshShortcutBlock;
+  let handleWindowError;
+  let handleUnhandledRejection;
+  const isDeveloperRuntime = Boolean(import.meta.env?.DEV);
 
   onMount(() => {
     handleClickOutside = (event) => {
@@ -275,12 +334,77 @@
     window.addEventListener('click', handleNotificationOutside);
   });
 
+  onMount(() => {
+    handleContextMenuBlock = (event) => {
+      event.preventDefault();
+    };
+
+    handleRefreshShortcutBlock = (event) => {
+      const key = String(event.key || '').toLowerCase();
+      const isCtrlOrCmdR = (event.ctrlKey || event.metaKey) && key === 'r';
+      const isF5 = key === 'f5';
+
+      if (!isCtrlOrCmdR && !isF5) return;
+
+      // Dev convenience: allow Ctrl/Cmd+R only in development runtime.
+      if (isDeveloperRuntime && isCtrlOrCmdR) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+    };
+
+    handleWindowError = (event) => {
+      const message = event?.error?.message || event?.message || 'Unhandled UI error';
+      const stack = event?.error?.stack || null;
+      reportUiTelemetry({
+        eventType: 'unhandled_error',
+        message,
+        stack,
+        severity: 'error',
+        context: {
+          filename: event?.filename || '',
+          line: Number(event?.lineno || 0),
+          column: Number(event?.colno || 0)
+        }
+      });
+    };
+
+    handleUnhandledRejection = (event) => {
+      const reason = event?.reason;
+      const message = reason?.message || String(reason || 'Unhandled promise rejection');
+      const stack = reason?.stack || null;
+      reportUiTelemetry({
+        eventType: 'unhandled_rejection',
+        message,
+        stack,
+        severity: 'error'
+      });
+    };
+
+    window.addEventListener('contextmenu', handleContextMenuBlock, true);
+    window.addEventListener('keydown', handleRefreshShortcutBlock, true);
+    window.addEventListener('error', handleWindowError);
+    window.addEventListener('unhandledrejection', handleUnhandledRejection);
+  });
+
   onDestroy(() => {
     if (handleClickOutside) {
       window.removeEventListener('click', handleClickOutside);
     }
     if (handleNotificationOutside) {
       window.removeEventListener('click', handleNotificationOutside);
+    }
+    if (handleContextMenuBlock) {
+      window.removeEventListener('contextmenu', handleContextMenuBlock, true);
+    }
+    if (handleRefreshShortcutBlock) {
+      window.removeEventListener('keydown', handleRefreshShortcutBlock, true);
+    }
+    if (handleWindowError) {
+      window.removeEventListener('error', handleWindowError);
+    }
+    if (handleUnhandledRejection) {
+      window.removeEventListener('unhandledrejection', handleUnhandledRejection);
     }
     if (mediaQuery && handleSystemChange) {
       if (mediaQuery.removeEventListener) {
@@ -307,6 +431,11 @@
     if (themeRefreshTimer) {
       clearInterval(themeRefreshTimer);
     }
+    if (themeTransitionTimer) {
+      clearTimeout(themeTransitionTimer);
+      themeTransitionTimer = null;
+    }
+    document.body.classList.remove('theme-transitioning');
     if (healthRefreshTimer) {
       clearInterval(healthRefreshTimer);
     }
@@ -378,50 +507,67 @@
 
   <div class="app-shell">
   <aside class="sidebar {sidebarOpen ? 'is-open' : 'is-collapsed'}">
-    <button class="hamburger" on:click={toggleSidebar} aria-label="Toggle menu">
+    <button
+      class="hamburger sidebar-tooltip-target"
+      on:click={toggleSidebar}
+      aria-label="Toggle menu"
+      data-tooltip={sidebarOpen ? null : 'Menu'}
+    >
       <span class="sidebar-icon hamburger-icon"><Fa icon={faBars} /></span>
       <span class="sidebar-label sidebar-hamburger-label">Menu</span>
     </button>
 
     <nav class="sidebar-menu">
       <button
-        class="sidebar-item {currentView === 'dashboard' ? 'is-active' : ''}"
+        class="sidebar-item sidebar-tooltip-target {currentView === 'dashboard' ? 'is-active' : ''}"
         on:click={() => setView('dashboard')}
+        aria-label="Dashboard"
+        data-tooltip={sidebarOpen ? null : 'Dashboard'}
       >
         <span class="sidebar-icon"><Fa icon={faHome} /></span>
         <span class="sidebar-label">Dashboard</span>
       </button>
       <button
-        class="sidebar-item {currentView === 'watched' ? 'is-active' : ''}"
+        class="sidebar-item sidebar-tooltip-target {currentView === 'watched' ? 'is-active' : ''}"
         on:click={() => setView('watched')}
+        aria-label="Watched folders"
+        data-tooltip={sidebarOpen ? null : 'Watched Folders'}
       >
         <span class="sidebar-icon"><Fa icon={faFolderOpen} /></span>
         <span class="sidebar-label">Watched Folders</span>
       </button>
       <button
-        class="sidebar-item {currentView === 'activity' ? 'is-active' : ''}"
+        class="sidebar-item sidebar-tooltip-target {currentView === 'activity' ? 'is-active' : ''}"
         on:click={() => setView('activity')}
+        aria-label="Activity timeline"
+        data-tooltip={sidebarOpen ? null : 'Activity Timeline'}
       >
         <span class="sidebar-icon"><Fa icon={faClock} /></span>
         <span class="sidebar-label">Activity Timeline</span>
       </button>
       <button
-        class="sidebar-item {currentView === 'checkpoints' ? 'is-active' : ''}"
+        class="sidebar-item sidebar-tooltip-target {currentView === 'checkpoints' ? 'is-active' : ''}"
         on:click={() => setView('checkpoints')}
+        aria-label="Checkpoints"
+        data-tooltip={sidebarOpen ? null : 'Checkpoints'}
       >
         <span class="sidebar-icon"><Fa icon={faDatabase} /></span>
         <span class="sidebar-label">Checkpoints</span>
       </button>
       <button
-        class="sidebar-item {currentView === 'snapshots' ? 'is-active' : ''}"
+        class="sidebar-item sidebar-tooltip-target {currentView === 'snapshots' ? 'is-active' : ''}"
         on:click={() => setView('snapshots')}
+        aria-label="Snapshot history"
+        data-tooltip={sidebarOpen ? null : 'Snapshot History'}
       >
         <span class="sidebar-icon"><Fa icon={faBookOpen} /></span>
         <span class="sidebar-label">Snapshot History</span>
       </button>
       <button
-        class="sidebar-item {currentView === 'settings' ? 'is-active' : ''}"
+        class="sidebar-item sidebar-tooltip-target {currentView === 'settings' ? 'is-active' : ''}"
         on:click={() => setView('settings')}
+        aria-label="Settings"
+        data-tooltip={sidebarOpen ? null : 'Settings'}
       >
         <span class="sidebar-icon"><Fa icon={faGear} /></span>
         <span class="sidebar-label">Settings</span>
@@ -434,18 +580,18 @@
       {#if currentView === 'settings'}
         <SettingsPage />
       {:else if currentView === 'watched'}
-        <header class="d-flex justify-content-between align-items-center mb-5">
+          <header class="view-header">
           <div>
-            <h1 class="fw-bold mb-1">Watched Folders</h1>
-            <p class="text-muted mb-0">Manage tracked folders and relink locations.</p>
+              <h1>Watched Folders</h1>
+              <p class="view-subtitle">Manage tracked folders and relink locations.</p>
           </div>
         </header>
         <WatchedFolders />
       {:else if currentView === 'activity'}
-        <header class="d-flex justify-content-between align-items-center mb-5">
+          <header class="view-header">
           <div>
-            <h1 class="fw-bold mb-1">Live Activity</h1>
-            <p class="text-muted mb-0">View recent file events and restore from history.</p>
+              <h1>Live Activity</h1>
+              <p class="view-subtitle">View recent file events and restore from history.</p>
           </div>
         </header>
         <ActivityTimeline />
@@ -454,109 +600,94 @@
       {:else if currentView === 'snapshots'}
         <SnapshotHistoryPage />
       {:else}
-        <header class="d-flex justify-content-between align-items-center mb-5">
+          <header class="view-header dashboard-header">
           <div>
-            <h1 class="fw-bold mb-1">Command Center</h1>
-            <p class="text-muted mb-0">Real-time overview of your Locus ecosystem.</p>
+              <h1>Command Center</h1>
+              <p class="view-subtitle">Operational overview across monitoring, storage, and snapshots.</p>
           </div>
-          <div class="d-flex align-items-center gap-3">
-            <div class="d-flex align-items-center gap-2 px-3 py-2 rounded-pill status-pill">
+            <div class="dashboard-actions">
+              <div class="status-pill">
               <span class="status-indicator {status === 'active' ? 'status-healthy' : 'status-error'}"></span>
-              <span class="fw-medium small text-uppercase {status === 'active' ? 'text-success' : 'text-danger'}">
-                 {status}
+                <span class="status-label {status === 'active' ? 'status-label-ok' : 'status-label-bad'}">
+                  {status}
               </span>
             </div>
-            <!-- Lock App action -->
-             <button class="btn btn-outline-danger d-flex align-items-center rounded-pill px-3 py-2 shadow-sm lock-btn" on:click={executeLockApp} title="Lock Application">
+              <button class="btn btn-danger btn-sm d-flex align-items-center lock-btn" on:click={executeLockApp} title="Lock Application">
                 <Fa icon={faLock} class="me-2" />
-                <span class="fw-bold small text-uppercase ls-1">Lock Vault</span>
+                <span>Lock Vault</span>
             </button>
           </div>
         </header>
 
-        <!-- Metrics Highlight Bar -->
-        <div class="row mb-5 fade-in">
-          <div class="col-md-4 mb-3 mb-md-0">
-             <div class="card bg-gradient-primary text-white border-0 rounded-4 shadow-sm h-100 overflow-hidden position-relative p-4 metric-card">
-                 <div class="position-relative z-1">
-                     <div class="text-white-50 small fw-bold text-uppercase tracking-wider mb-2">Tracked Files</div>
-                     <h2 class="display-5 fw-bold mb-0">{dashboardSummary.total_files.toLocaleString()}</h2>
-                 </div>
-                 <div class="position-absolute opacity-10" style="bottom: -15px; right: -5px; font-size: 5rem;">
-                    <Fa icon={faFolderOpen} />
-                 </div>
-             </div>
-          </div>
-          <div class="col-md-4 mb-3 mb-md-0">
-             <div class="card bg-gradient-info text-white border-0 rounded-4 shadow-sm h-100 overflow-hidden position-relative p-4 metric-card">
-                 <div class="position-relative z-1">
-                     <div class="text-white-50 small fw-bold text-uppercase tracking-wider mb-2">Versions Preserved</div>
-                     <h2 class="display-5 fw-bold mb-0">{dashboardSummary.total_versions.toLocaleString()}</h2>
-                 </div>
-                 <div class="position-absolute opacity-10" style="bottom: -15px; right: -5px; font-size: 5rem;">
-                    <Fa icon={faClock} />
-                 </div>
-             </div>
-          </div>
-          <div class="col-md-4">
-             <div class="card bg-gradient-success text-white border-0 rounded-4 shadow-sm h-100 overflow-hidden position-relative p-4 metric-card">
-                 <div class="position-relative z-1">
-                     <div class="text-white-50 small fw-bold text-uppercase tracking-wider mb-2">Storage Utilized</div>
-                     <h2 class="display-5 fw-bold mb-0">{(dashboardSummary.storage_bytes / (1024 * 1024)).toFixed(1)} <span class="fs-4">MB</span></h2>
-                 </div>
-                 <div class="position-absolute opacity-10" style="bottom: -15px; right: -5px; font-size: 5rem;">
-                    <Fa icon={faGear} />
-                 </div>
-             </div>
-          </div>
-        </div>
+          <section class="dashboard-section">
+            <div class="dashboard-section-head">
+              <h2>Core Metrics</h2>
+            </div>
+            <div class="metric-grid">
+              <article class="metric-tile metric-files">
+                <div class="metric-kicker">Tracked Files</div>
+                <div class="metric-value">{dashboardSummary.total_files.toLocaleString()}</div>
+                <div class="metric-icon"><Fa icon={faFolderOpen} /></div>
+              </article>
 
-        <!-- Resource Monitor Highlight Bar -->
-        <h5 class="fw-bold mb-3 d-flex align-items-center gap-2">
-            <Fa icon={faServer} class="text-secondary" /> System Resource Monitor
-        </h5>
-        <div class="row mb-5 fade-in">
-          <div class="col-md-4 mb-3 mb-md-0">
-             <div class="card bg-glass text-body border-0 rounded-4 shadow-sm h-100 overflow-hidden position-relative p-4 metric-card">
-                 <div class="position-relative z-1">
-                     <div class="text-muted small fw-bold text-uppercase tracking-wider mb-2">Active RAM Usage</div>
-                     <h2 class="display-6 fw-bold mb-0">{(dashboardSummary.ram_usage_bytes / (1024 * 1024)).toFixed(1)} <span class="fs-5 text-muted">MB</span></h2>
-                 </div>
-                 <div class="position-absolute opacity-10 text-primary" style="bottom: -15px; right: -5px; font-size: 5rem;">
-                    <Fa icon={faMemory} />
-                 </div>
-             </div>
-          </div>
-          <div class="col-md-4 mb-3 mb-md-0">
-             <div class="card bg-glass text-body border-0 rounded-4 shadow-sm h-100 overflow-hidden position-relative p-4 metric-card">
-                 <div class="position-relative z-1">
-                     <div class="text-muted small fw-bold text-uppercase tracking-wider mb-2">Database Size</div>
-                     <h2 class="display-6 fw-bold mb-0">{(dashboardSummary.db_size_bytes / 1024).toFixed(1)} <span class="fs-5 text-muted">KB</span></h2>
-                 </div>
-                 <div class="position-absolute opacity-10 text-info" style="bottom: -15px; right: -5px; font-size: 5rem;">
-                    <Fa icon={faDatabase} />
-                 </div>
-             </div>
-          </div>
-          <div class="col-md-4">
-             <div class="card bg-glass text-body border-0 rounded-4 shadow-sm h-100 overflow-hidden position-relative p-4 metric-card">
-                 <div class="position-relative z-1">
-                     <div class="text-muted small fw-bold text-uppercase tracking-wider mb-2">Snapshot Activity</div>
-                     <h2 class="display-6 fw-bold mb-1">{dashboardSummary.total_snapshots.toLocaleString()}</h2>
-                     <div class="small fw-medium">
-                         {#if dashboardSummary.last_snapshot_time}
-                            <span class="text-success">Last captured:</span> {formatTimestamp(dashboardSummary.last_snapshot_time)}
-                         {:else}
-                            <span class="text-muted fst-italic">Awaiting activity...</span>
-                         {/if}
-                     </div>
-                 </div>
-                 <div class="position-absolute opacity-10 text-success" style="bottom: -15px; right: -5px; font-size: 5rem;">
-                    <Fa icon={faHeartPulse} />
-                 </div>
-             </div>
-          </div>
-        </div>
+              <article class="metric-tile metric-versions">
+                <div class="metric-kicker">Versions Preserved</div>
+                <div class="metric-value">{dashboardSummary.total_versions.toLocaleString()}</div>
+                <div class="metric-icon"><Fa icon={faClock} /></div>
+              </article>
+
+              <article class="metric-tile metric-storage">
+                <div class="metric-kicker">Storage Utilized</div>
+                <div class="metric-value">
+                  {(dashboardSummary.storage_bytes / (1024 * 1024)).toFixed(1)}
+                  <span class="metric-value-unit">MB</span>
+                </div>
+                <div class="metric-icon"><Fa icon={faGear} /></div>
+              </article>
+            </div>
+          </section>
+
+          <section class="dashboard-section">
+            <div class="dashboard-section-head">
+              <h2 class="d-flex align-items-center gap-2">
+                <Fa icon={faServer} /> Runtime Health
+              </h2>
+              <span class="section-note">Live resource usage from active processes.</span>
+            </div>
+            <div class="metric-grid">
+              <article class="metric-tile metric-ram">
+                <div class="metric-kicker">Combined RAM Usage</div>
+                <div class="metric-value">
+                  {(dashboardSummary.ram_usage_bytes / (1024 * 1024)).toFixed(1)}
+                  <span class="metric-value-unit">MB</span>
+                </div>
+                <div class="metric-icon"><Fa icon={faMemory} /></div>
+              </article>
+
+              <article class="metric-tile metric-db">
+                <div class="metric-kicker">Database Size</div>
+                <div class="metric-value">
+                  {(dashboardSummary.db_size_bytes / 1024).toFixed(1)}
+                  <span class="metric-value-unit">KB</span>
+                </div>
+                <div class="metric-icon"><Fa icon={faDatabase} /></div>
+              </article>
+
+              <article class="metric-tile metric-snapshots">
+                <div class="metric-kicker">Snapshot Activity</div>
+                <div class="metric-value">{dashboardSummary.total_snapshots.toLocaleString()}</div>
+                <div class="metric-meta">
+                  <span class="metric-meta-label">Last captured</span>
+                  {#if dashboardSummary.last_snapshot_time}
+                    <span>{formatTimestamp(dashboardSummary.last_snapshot_time)}</span>
+                  {:else}
+                    <span class="text-muted">Awaiting activity...</span>
+                  {/if}
+                </div>
+                <div class="metric-icon"><Fa icon={faHeartPulse} /></div>
+              </article>
+            </div>
+          </section>
 
       {/if}
     </div>
@@ -606,114 +737,351 @@
 {/if}
 
 <style>
-  .vault-toast { position: fixed; top: 70px; left: 50%; transform: translateX(-50%); background: var(--accent); color: white; padding: 8px 16px; border-radius: 20px; z-index: 9999; font-weight: 500; font-size: 0.9rem; animation: fadeOut 3s forwards; }
-  @keyframes fadeOut { 0% { opacity: 0; transform: translate(-50%, -10px); } 10% { opacity: 1; transform: translate(-50%, 0); } 80% { opacity: 1; } 100% { opacity: 0; display: none; } }
+  .vault-toast {
+    position: fixed;
+    top: 70px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--accent);
+    color: #fff;
+    padding: 8px 14px;
+    border-radius: 999px;
+    z-index: 9999;
+    font-weight: 600;
+    font-size: 0.84rem;
+    animation: fadeOut 3s forwards;
+  }
+
+  @keyframes fadeOut {
+    0% {
+      opacity: 0;
+      transform: translate(-50%, -8px);
+    }
+
+    10% {
+      opacity: 1;
+      transform: translate(-50%, 0);
+    }
+
+    80% {
+      opacity: 1;
+    }
+
+    100% {
+      opacity: 0;
+      display: none;
+    }
+  }
+
+  .view-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    gap: 1rem;
+    margin-bottom: 1.35rem;
+  }
+
+  .view-header h1 {
+    margin: 0;
+    font-size: 1.58rem;
+    letter-spacing: -0.01em;
+    font-weight: 700;
+  }
+
+  .view-subtitle {
+    margin: 0.3rem 0 0;
+    color: var(--text-muted);
+    max-width: 58ch;
+  }
+
+  .dashboard-header {
+    margin-bottom: 1.15rem;
+  }
+
+  .dashboard-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.7rem;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
+  .status-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    padding: 0.42rem 0.75rem;
+    border-radius: 999px;
+    background: var(--surface-elevated);
+    border: 1px solid var(--border-subtle);
+    box-shadow: var(--shadow-sm);
+  }
+
+  .status-pill .status-healthy {
+    animation: none;
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--success) 24%, transparent);
+  }
+
+  .status-pill .status-error {
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 24%, transparent);
+  }
+
+  .status-label {
+    font-size: 0.74rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: none;
+  }
+
+  .status-label-ok {
+    color: var(--success);
+  }
+
+  .status-label-bad {
+    color: var(--danger);
+  }
+
+  .lock-btn {
+    border-radius: 999px;
+    min-height: 34px;
+    padding: 0.34rem 0.78rem;
+    border-width: 1px;
+    box-shadow: none;
+    font-size: 0.74rem;
+    font-weight: 700;
+    line-height: 1;
+  }
+
+  .lock-btn:hover {
+    color: #fff;
+  }
+
+  .dashboard-section {
+    margin-bottom: 1rem;
+  }
+
+  .dashboard-section-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.6rem;
+    margin-bottom: 0.72rem;
+  }
+
+  .dashboard-section-head h2 {
+    margin: 0;
+    font-size: 0.92rem;
+    text-transform: none;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+    font-weight: 700;
+  }
+
+  .section-note {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+  }
+
+  .metric-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.75rem;
+  }
+
+  .metric-tile {
+    position: relative;
+    border: 1px solid var(--border-subtle);
+    border-radius: 12px;
+    background: var(--surface-elevated);
+    min-height: 150px;
+    padding: 0.95rem 1rem;
+    box-shadow: var(--shadow-sm);
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    overflow: hidden;
+  }
+
+  .metric-kicker {
+    font-size: 0.74rem;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: none;
+    color: var(--text-muted);
+  }
+
+  .metric-value {
+    font-size: clamp(1.45rem, 2.6vw, 2rem);
+    line-height: 1.15;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    color: var(--text-primary);
+  }
+
+  .metric-value-unit {
+    font-size: 0.95rem;
+    color: var(--text-muted);
+    font-weight: 600;
+    margin-left: 0.2rem;
+  }
+
+  .metric-meta {
+    margin-top: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+    font-size: 0.8rem;
+    color: var(--text-primary);
+  }
+
+  .metric-meta-label {
+    font-size: 0.7rem;
+    text-transform: none;
+    letter-spacing: 0.05em;
+    color: var(--text-muted);
+    font-weight: 700;
+  }
+
+  .metric-icon {
+    position: absolute;
+    right: 0.9rem;
+    bottom: 0.8rem;
+    width: 34px;
+    height: 34px;
+    border-radius: 10px;
+    display: grid;
+    place-items: center;
+    color: var(--accent);
+    background: var(--accent-soft);
+  }
+
+  .metric-icon :global(svg) {
+    width: 1rem;
+    height: 1rem;
+  }
+
+  .metric-files .metric-icon {
+    color: #0a5dc2;
+  }
+
+  .metric-versions .metric-icon {
+    color: #0f6b7f;
+  }
+
+  .metric-storage .metric-icon {
+    color: #1a7f37;
+  }
+
+  .metric-ram .metric-icon {
+    color: #1f5fbf;
+  }
+
+  .metric-db .metric-icon {
+    color: #8a5900;
+  }
+
+  .metric-snapshots .metric-icon {
+    color: #17653f;
+  }
+
+  :global(body.theme-dark) .metric-db .metric-icon {
+    color: #d5a85d;
+  }
+
   .notification-fab {
     position: fixed;
-    right: 24px;
-    bottom: 24px;
+    right: 20px;
+    bottom: 20px;
     z-index: 2000;
   }
 
   .fab-button {
     position: relative;
-    width: 52px;
-    height: 52px;
-    border-radius: 50%;
-    border: none;
-    background: var(--accent);
-    box-shadow: 0 12px 30px rgba(0, 0, 0, 0.2);
+    width: 46px;
+    height: 46px;
+    border-radius: 12px;
+    border: 1px solid var(--border-subtle);
+    background: var(--surface-elevated);
+    box-shadow: var(--shadow-md);
     cursor: pointer;
     display: grid;
     place-items: center;
-    transition: box-shadow 0.15s ease, background-color 0.15s ease;
+    transition: border-color 0.15s ease, background-color 0.15s ease;
   }
 
-  .fab-button:active {
-    box-shadow: 0 10px 24px rgba(0, 0, 0, 0.2);
+  .fab-button:hover {
+    border-color: var(--border-strong);
+    background: var(--surface-soft);
   }
 
   .fab-button :global(svg) {
-    color: #fff;
-    width: 1.1rem;
-    height: 1.1rem;
+    color: var(--accent);
+    width: 1rem;
+    height: 1rem;
   }
 
   .fab-badge {
     position: absolute;
-    top: -6px;
-    right: -6px;
-    background: #ef4444;
+    top: -5px;
+    right: -5px;
+    background: var(--danger);
     color: #fff;
-    font-size: 0.7rem;
-    padding: 2px 6px;
+    font-size: 0.68rem;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 5px;
     border-radius: 999px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 2px solid var(--surface-elevated);
   }
 
   .fab-popover {
     position: absolute;
     right: 0;
-    bottom: 64px;
-    width: 320px;
-    max-height: 360px;
-    background: var(--surface-elevated, #fff);
-    border-radius: 14px;
-    box-shadow: 0 16px 30px rgba(0, 0, 0, 0.2);
-    border: 1px solid rgba(0, 0, 0, 0.08);
+    bottom: 58px;
+    width: 340px;
+    max-height: 380px;
+    background: var(--surface-elevated);
+    border-radius: 12px;
+    box-shadow: var(--shadow-lg);
+    border: 1px solid var(--border-subtle);
     display: flex;
     flex-direction: column;
-  }
-
-  :global(.theme-dark) .fab-popover {
-    background: #0f172a;
-    color: #e2e8f0;
-    border-color: rgba(148, 163, 184, 0.2);
-    box-shadow: 0 18px 32px rgba(0, 0, 0, 0.45);
+    overflow: hidden;
   }
 
   .fab-header {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: 12px 16px;
+    padding: 12px 14px;
     border-bottom: 1px solid var(--border-subtle);
   }
 
-  :global(.theme-dark) .fab-header {
-    border-bottom-color: rgba(148, 163, 184, 0.2);
-  }
-
   .fab-list {
-    padding: 12px 16px;
+    padding: 10px 12px;
     overflow: auto;
     display: flex;
     flex-direction: column;
-    gap: 10px;
+    gap: 8px;
   }
 
   .fab-item {
     display: flex;
     align-items: flex-start;
     gap: 8px;
-    padding: 10px 12px;
-    background: var(--surface-soft, rgba(248, 250, 252, 0.9));
+    padding: 9px 10px;
+    background: var(--surface-soft);
     border-radius: 10px;
     border: 1px solid var(--border-subtle);
-  }
-
-  :global(.theme-dark) .fab-item {
-    background: rgba(30, 41, 59, 0.8);
-    border-color: rgba(148, 163, 184, 0.2);
   }
 
   .fab-item-text {
     font-size: 0.82rem;
     color: var(--text-primary);
     flex: 1;
-  }
-
-  :global(.theme-dark) .fab-item-text {
-    color: #e2e8f0;
   }
 
   .fab-item-message {
@@ -725,30 +1093,23 @@
     color: var(--text-muted);
   }
 
-  :global(.theme-dark) .fab-item-time {
-    color: #94a3b8;
-  }
-
   .fab-remove {
     border: none;
     background: transparent;
     font-size: 1rem;
     cursor: pointer;
     color: var(--text-muted);
+    line-height: 1;
   }
 
-  :global(.theme-dark) .fab-remove {
-    color: #94a3b8;
+  .fab-remove:hover {
+    color: var(--text-primary);
   }
 
   .fab-empty {
-    padding: 18px;
+    padding: 16px;
     color: var(--text-muted);
     font-size: 0.85rem;
-  }
-
-  :global(.theme-dark) .fab-empty {
-    color: #94a3b8;
   }
 
   .btn-link {
@@ -756,16 +1117,37 @@
     text-decoration: none;
   }
 
-  /* Dashboard Enhance Styles */
-  .bg-gradient-primary { background: linear-gradient(135deg, #4f46e5 0%, #312e81 100%); }
-  .bg-gradient-info { background: linear-gradient(135deg, #0ea5e9 0%, #0369a1 100%); }
-  .bg-gradient-success { background: linear-gradient(135deg, #10b981 0%, #047857 100%); }
-  .tracking-wider { letter-spacing: 0.05em; }
-  .ls-1 { letter-spacing: 0.04em; }
-  .opacity-10 { opacity: 0.1; }
-  .lock-btn { transition: all 0.2s ease; border-width: 2px; }
-  .lock-btn:hover { background-color: var(--bs-danger); color: white; border-color: var(--bs-danger); }
-  .metric-card { transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1); }
-  .bg-glass { background: var(--surface-soft, rgba(255, 255, 255, 0.8)); }
-  :global(.theme-dark) .bg-glass { background: rgba(30, 41, 59, 0.5); }
+  @media (max-width: 1100px) {
+    .metric-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+
+  @media (max-width: 760px) {
+    .view-header {
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 0.75rem;
+    }
+
+    .dashboard-actions {
+      width: 100%;
+      justify-content: flex-start;
+    }
+
+    .dashboard-section-head {
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 0.35rem;
+    }
+
+    .metric-grid {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .fab-popover {
+      width: min(92vw, 340px);
+      right: -8px;
+    }
+  }
 </style>

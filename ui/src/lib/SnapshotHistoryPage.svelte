@@ -266,12 +266,12 @@
 </script>
 
 <section class="snapshot-history-page">
-  <header class="d-flex justify-content-between align-items-start mb-4 flex-wrap gap-3">
+  <header class="snapshot-head">
     <div>
-      <h1 class="fw-bold mb-1">Snapshot History</h1>
-      <p class="text-muted mb-0">Recall-style timeline: drag the pointer to move through what you were doing.</p>
+      <h1>Snapshot History</h1>
+      <p class="snapshot-subtitle">Recall-style timeline for recent activity context.</p>
     </div>
-    <div class="d-flex align-items-center gap-2">
+    <div class="snapshot-head-meta">
       <span class="badge-soft badge-soft-secondary">{items.length} snapshots</span>
       <button class="btn btn-sm btn-outline-secondary refresh-btn" on:click={loadHistory} disabled={loading}>
         Refresh
@@ -279,10 +279,10 @@
     </div>
   </header>
 
-  <section class="card border-0 rounded-4 shadow-sm p-3 mb-4 recall-strip">
-    <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-2">
-      <h5 class="mb-0 fw-semibold">Recall Timeline</h5>
-      <span class="small text-muted">Drag pointer left/right to travel through time</span>
+  <section class="recall-strip">
+    <div class="recall-head">
+      <h2>Recall Timeline</h2>
+      <span class="recall-note">Drag left or right to navigate snapshots.</span>
     </div>
 
     {#if error}
@@ -293,11 +293,11 @@
     {/if}
 
     {#if timelineItems.length > 0}
-      <div class="mb-2 small text-muted">
+      <div class="timeline-caption">
         {timelineLabel(timelineLabelSnapshot)}
       </div>
       <input
-        class="form-range"
+        class="form-range recall-slider"
         type="range"
         min="0"
         max={timelineItems.length - 1}
@@ -315,8 +315,8 @@
       <div class="recall-preview mt-3">
         {#if activeSnapshot}
           <div class="preview-meta mb-2">
-            <div class="fw-semibold">{activeSnapshot.window_title || 'Untitled activity'}</div>
-            <div class="small text-muted">{activeSnapshot.category || 'Other'} • {activeSnapshot.app_name || 'Unknown app'}</div>
+            <div class="preview-title">{activeSnapshot.window_title || 'Untitled activity'}</div>
+            <div class="preview-subtitle">{activeSnapshot.category || 'Other'} • {activeSnapshot.app_name || 'Unknown app'}</div>
           </div>
 
           {#if resolvedImageSrc}
@@ -335,7 +335,7 @@
             <div class="preview-placeholder">No image available for this snapshot.</div>
           {/if}
 
-          <div class="mt-3 d-flex gap-2 flex-wrap">
+          <div class="preview-actions mt-3">
             <button
               class="btn btn-sm btn-outline-primary action-btn"
               on:click={() => runAction(activeSnapshot)}
@@ -360,24 +360,91 @@
 </section>
 
 <style>
+  .snapshot-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    gap: 0.8rem;
+    flex-wrap: wrap;
+    margin-bottom: 1rem;
+  }
+
+  .snapshot-head h1 {
+    margin: 0;
+    font-size: 1.46rem;
+    letter-spacing: -0.01em;
+    font-weight: 700;
+  }
+
+  .snapshot-subtitle {
+    margin: 0.24rem 0 0;
+    color: var(--text-muted);
+  }
+
+  .snapshot-head-meta {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
   .recall-strip {
-    background: var(--surface-elevated, #fff);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-lg);
+    background: var(--surface-elevated);
+    box-shadow: var(--shadow-sm);
+    padding: 0.85rem 0.95rem;
+  }
+
+  .recall-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.7rem;
+    flex-wrap: wrap;
+    margin-bottom: 0.2rem;
+  }
+
+  .recall-head h2 {
+    margin: 0;
+    font-size: 0.92rem;
+    text-transform: none;
+    letter-spacing: 0.05em;
+    color: var(--text-muted);
+    font-weight: 700;
+  }
+
+  .recall-note {
+    font-size: 0.79rem;
+    color: var(--text-muted);
+  }
+
+  .timeline-caption {
+    margin-bottom: 0.45rem;
+    font-size: 0.78rem;
+    color: var(--text-muted);
+  }
+
+  .recall-slider {
+    margin-top: 0.2rem;
   }
 
   .recall-preview {
-    border: 1px solid rgba(0, 0, 0, 0.08);
-    border-radius: 0.85rem;
-    padding: 0.85rem;
-    background: rgba(248, 250, 252, 0.9);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    padding: 0.82rem;
+    background: var(--surface-soft);
   }
 
-  .preview-meta {
-    color: var(--text-primary);
-  }
-
-  .preview-meta .fw-semibold {
+  .preview-title {
+    font-size: 0.92rem;
+    font-weight: 600;
     color: var(--text-primary);
     line-height: 1.3;
+  }
+
+  .preview-subtitle {
+    color: var(--text-muted);
+    font-size: 0.79rem;
   }
 
   .preview-image {
@@ -385,8 +452,8 @@
     max-height: 380px;
     object-fit: contain;
     border-radius: 0.6rem;
-    border: 1px solid rgba(0, 0, 0, 0.08);
-    background: #0b1120;
+    border: 1px solid var(--border-subtle);
+    background: color-mix(in srgb, var(--surface-soft) 68%, #0b1120);
   }
 
   .preview-placeholder {
@@ -394,11 +461,11 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    border: 1px dashed rgba(100, 116, 139, 0.5);
+    border: 1px dashed color-mix(in srgb, var(--border-strong) 72%, transparent);
     border-radius: 0.6rem;
-    color: #64748b;
-    font-size: 0.9rem;
-    background: rgba(255, 255, 255, 0.65);
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    background: var(--surface-elevated);
   }
 
   .preview-updating {
@@ -408,31 +475,46 @@
   }
 
   .refresh-btn {
-    min-width: 108px;
+    min-width: 96px;
+  }
+
+  .preview-actions {
+    display: flex;
+    gap: 0.45rem;
+    flex-wrap: wrap;
   }
 
   .action-btn {
-    min-width: 112px;
+    min-width: 98px;
     justify-content: center;
   }
 
   :global(.theme-dark) .recall-preview {
-    background: rgba(15, 23, 42, 0.75);
-    border-color: rgba(148, 163, 184, 0.25);
-  }
-
-  :global(.theme-dark) .preview-meta,
-  :global(.theme-dark) .preview-meta .fw-semibold {
-    color: #e2e8f0;
+    background: var(--surface-soft);
+    border-color: var(--border-subtle);
   }
 
   :global(.theme-dark) .preview-placeholder {
-    color: #94a3b8;
-    background: rgba(2, 6, 23, 0.6);
-    border-color: rgba(148, 163, 184, 0.35);
+    color: var(--text-muted);
+    background: var(--surface-elevated);
+    border-color: color-mix(in srgb, var(--border-strong) 74%, transparent);
   }
 
   :global(.theme-dark) .preview-updating {
-    color: #94a3b8;
+    color: var(--text-muted);
+  }
+
+  @media (max-width: 720px) {
+    .recall-strip {
+      padding: 0.75rem 0.78rem;
+    }
+
+    .preview-actions {
+      width: 100%;
+    }
+
+    .action-btn {
+      flex: 1 1 120px;
+    }
   }
 </style>

@@ -87,16 +87,47 @@
 
 
 .settings-row.is-disabled {
-  opacity: 0.5;
+  opacity: 0.74;
 }
 
 .settings-input {
   min-width: 160px;
+  min-height: 40px;
   padding: 8px 10px;
   border-radius: 8px;
   border: 1px solid var(--border-subtle);
-  background: var(--app-bg);
+  background: var(--surface-soft);
   color: var(--text-primary);
+}
+
+.settings-input:where(select) {
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  appearance: none;
+  cursor: pointer;
+  padding-right: 34px;
+  background-image:
+    linear-gradient(45deg, transparent 50%, color-mix(in srgb, var(--text-primary) 84%, transparent) 50%),
+    linear-gradient(135deg, color-mix(in srgb, var(--text-primary) 84%, transparent) 50%, transparent 50%);
+  background-position:
+    calc(100% - 17px) calc(50% - 3px),
+    calc(100% - 11px) calc(50% - 3px);
+  background-size: 6px 6px, 6px 6px;
+  background-repeat: no-repeat;
+}
+
+.settings-input:where(select) option {
+  background: var(--surface-elevated);
+  color: var(--text-primary);
+}
+
+.settings-input:disabled {
+  background: color-mix(in srgb, var(--surface-soft) 86%, var(--surface));
+  color: var(--text-muted);
+}
+
+.settings-input:where(select):disabled {
+  cursor: not-allowed;
 }
 
 .snapshot-passphrase {

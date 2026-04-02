@@ -1,7 +1,7 @@
 <script>
   import { onMount } from 'svelte';
   import { getWatchedPaths, addWatchedPath, relinkWatchedPath, removeWatchedPath } from '../api.js';
-  import { showMessage, askQuestion } from '../dialogStore.js';
+  import { showMessage, askForText, askQuestion } from '../dialogStore.js';
   import Fa from 'svelte-fa';
   import { faLink, faFolderPlus, faTrashCan } from '@fortawesome/free-solid-svg-icons';
 
@@ -63,16 +63,36 @@
        return;
     }
 
-    // Fallback for non-Tauri (unlikely in production but good for dev)
-    newPath = prompt(`Enter new location for:\n${oldPath}`, oldPath);
-    if (newPath && newPath !== oldPath) {
-      const shouldMoveFiles = confirm(`Do you want Locus to MOVE the files on disk for you?`);
+    // Fallback for non-Tauri (dev/browser mode): keep dialog styling consistent.
+    newPath = await askForText(
+      `Enter the new location for this watched folder:\n${oldPath}`,
+      'Relink Folder',
+      {
+        type: 'question',
+        okLabel: 'Continue',
+        cancelLabel: 'Cancel',
+        inputLabel: 'New folder path',
+        initialValue: oldPath,
+        placeholder: '/absolute/path/to/new/location',
+        maxLength: 260
+      }
+    );
+
+    const cleanedNewPath = String(newPath || '').trim();
+    if (cleanedNewPath && cleanedNewPath !== oldPath) {
+      const shouldMoveFiles = await askQuestion(
+        `Do you want Locus to MOVE the files on disk for you?\n\n` +
+        `YES = I want Locus to move files from "${oldPath}" to "${cleanedNewPath}".\n` +
+        `NO = I have already moved them manually.`,
+        'Relink Folder',
+        { type: 'warning', okLabel: 'Yes, Move Files', cancelLabel: 'No, Already Moved' }
+      );
       try {
-        await relinkWatchedPath(oldPath, newPath, shouldMoveFiles);
-        showMessage(`Location updated successfully!`, 'Success');
+        await relinkWatchedPath(oldPath, cleanedNewPath, shouldMoveFiles);
+        await showMessage(`Location updated successfully!`, 'Success');
         await loadPaths();
       } catch (e) {
-        showMessage("Relink failed: " + e.message, 'Error', 'error');
+        await showMessage("Relink failed: " + e.message, 'Error', 'error');
       }
     }
   }
