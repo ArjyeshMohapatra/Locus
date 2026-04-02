@@ -85,7 +85,7 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Path src-tauri/binaries -Force | Out-Null
-          python -m PyInstaller backend/app/main.py --name locus-backend --onefile --paths backend --distpath backend/dist --workpath backend/build/pyinstaller --specpath backend/build --clean
+          python -m PyInstaller backend/app/main.py --name locus-backend --onefile --noconsole --paths backend --distpath backend/dist --workpath backend/build/pyinstaller --specpath backend/build --clean
           Copy-Item -Path backend/dist/locus-backend.exe -Destination src-tauri/binaries/locus-backend-x86_64-pc-windows-msvc.exe -Force
           cargo build --release --manifest-path tools/window-probe/Cargo.toml --target x86_64-pc-windows-msvc
           Copy-Item -Path tools/window-probe/target/x86_64-pc-windows-msvc/release/locus-window-probe.exe -Destination src-tauri/binaries/locus-window-probe-x86_64-pc-windows-msvc.exe -Force
@@ -94,19 +94,9 @@ jobs:
         run: npm ci --prefix ui
 
       - name: Install Tauri CLI
-        run: cargo install tauri-cli --version "=1.6.6" --locked --force
+        run: cargo install tauri-cli --version "^1.5.0" --locked
 
-      - name: Build desktop bundle (Linux)
-        if: runner.os == 'Linux'
-        env:
-          PKG_CONFIG_PATH: ${{ github.workspace }}/src-tauri/pkgconfig-compat:${{ env.PKG_CONFIG_PATH }}
-          LIBRARY_PATH: ${{ github.workspace }}/src-tauri/lib-compat:${{ env.LIBRARY_PATH }}
-          LD_LIBRARY_PATH: ${{ github.workspace }}/src-tauri/lib-compat:${{ env.LD_LIBRARY_PATH }}
-          RUSTFLAGS: -L native=${{ github.workspace }}/src-tauri/lib-compat ${{ env.RUSTFLAGS }}
-        run: cargo tauri build --target ${{ matrix.rust_target }}
-
-      - name: Build desktop bundle (Windows)
-        if: runner.os == 'Windows'
+      - name: Build desktop bundle
         run: cargo tauri build --target ${{ matrix.rust_target }}
 
       - name: Upload desktop artifacts

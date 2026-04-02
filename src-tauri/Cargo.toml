@@ -4,10 +4,10 @@ version = "1.5.0"
 edition = "2021"
 
 [build-dependencies]
-tauri-build = { version = "=1.5.0", features = [] }
+tauri-build = { version = "=1.5.6", features = [] }
 
 [dependencies]
-tauri = { version = "=1.5.0", features = [ "os-all", "system-tray", "window-close", "window-unmaximize", "window-show", "window-start-dragging", "window-maximize", "window-hide", "window-minimize", "dialog-message", "dialog-ask", "dialog-confirm", "shell-execute", "shell-open", "dialog-open"] }
+tauri = { version = "=1.8.3", features = [ "os-all", "system-tray", "window-close", "window-unmaximize", "window-show", "window-start-dragging", "window-maximize", "window-hide", "window-minimize", "dialog-message", "dialog-ask", "dialog-confirm", "shell-execute", "shell-open", "dialog-open"] }
 
 [features]
 default = ["custom-protocol"]

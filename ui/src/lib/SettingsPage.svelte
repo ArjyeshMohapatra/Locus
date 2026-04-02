@@ -223,6 +223,12 @@
         capture_on_window_change: !!snapshotCaptureOnWindowChange,
         allow_individual_delete: !!snapshotAllowDelete
       });
+      await showMessage(
+        'Snapshot settings applied successfully.',
+        'Settings Updated',
+        'info',
+        { messageScale: 1.15 }
+      );
     } catch (e) {
       snapshotSettingsError = e.message || 'Failed to apply snapshot settings.';
     } finally {
@@ -298,7 +304,12 @@
         : uiZoomScale;
       emitRuntimeSettingsChange();
       if (!silent) {
-        await showMessage('Runtime preferences applied.', 'Settings');
+        await showMessage(
+          'Runtime preferences applied successfully.',
+          'Settings Updated',
+          'info',
+          { messageScale: 1.15 }
+        );
       }
     } catch (e) {
       runtimeSettingsError = e.message || 'Failed to apply runtime settings.';

@@ -11,6 +11,9 @@ use std::time::{Duration, Instant};
 #[cfg(target_os = "linux")]
 use std::collections::HashSet;
 
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
+
 use tauri::{
     CustomMenuItem, Manager, RunEvent, State, SystemTray, SystemTrayEvent, SystemTrayMenu,
     SystemTrayMenuItem, WindowEvent,
@@ -257,15 +260,79 @@ fn resolve_locus_data_dir() -> PathBuf {
         }
     }
 
-    if let Ok(xdg_data_home) = std::env::var("XDG_DATA_HOME") {
-        let trimmed = xdg_data_home.trim();
-        if !trimmed.is_empty() {
-            return PathBuf::from(trimmed).join("locus");
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(app_data) = std::env::var("APPDATA") {
+            let trimmed = app_data.trim();
+            if !trimmed.is_empty() {
+                return PathBuf::from(trimmed).join("locus");
+            }
         }
+
+        if let Ok(user_profile) = std::env::var("USERPROFILE") {
+            let trimmed = user_profile.trim();
+            if !trimmed.is_empty() {
+                return PathBuf::from(trimmed)
+                    .join("AppData")
+                    .join("Roaming")
+                    .join("locus");
+            }
+        }
+
+        return std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(".locus");
     }
 
-    let home = std::env::var("HOME").unwrap_or_else(|_| String::from("."));
-    PathBuf::from(home).join(".local").join("share").join("locus")
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(home) = std::env::var("HOME") {
+            let trimmed = home.trim();
+            if !trimmed.is_empty() {
+                return PathBuf::from(trimmed)
+                    .join("Library")
+                    .join("Application Support")
+                    .join("locus");
+            }
+        }
+
+        return std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(".locus");
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        if let Ok(xdg_data_home) = std::env::var("XDG_DATA_HOME") {
+            let trimmed = xdg_data_home.trim();
+            if !trimmed.is_empty() {
+                return PathBuf::from(trimmed).join("locus");
+            }
+        }
+
+        if let Ok(home) = std::env::var("HOME") {
+            let trimmed = home.trim();
+            if !trimmed.is_empty() {
+                return PathBuf::from(trimmed).join(".local").join("share").join("locus");
+            }
+        }
+
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(".local")
+            .join("share")
+            .join("locus")
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn apply_release_spawn_flags(command: &mut Command) {
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    command.creation_flags(CREATE_NO_WINDOW);
+}
+
+#[cfg(not(target_os = "windows"))]
+fn apply_release_spawn_flags(_command: &mut Command) {
 }
 
 fn wait_for_backend_ready_or_exit(
@@ -319,10 +386,12 @@ fn start_release_backend(port: u16) -> Child {
         backend_command.env("LOCUS_WINDOW_PROBE", window_probe_bin);
     }
 
+    apply_release_spawn_flags(&mut backend_command);
+
     let mut child = backend_command
         .stdin(Stdio::null())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .spawn()
         .unwrap_or_else(|err| {
             panic!(

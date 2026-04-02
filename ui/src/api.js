@@ -1,5 +1,6 @@
 // api.js - Dedicated service for backend communication
 const DEFAULT_BASE_URL = 'http://127.0.0.1:8000';
+const DEFAULT_REQUEST_TIMEOUT_MS = 15000;
 
 function isTauriRuntime() {
   return typeof window !== 'undefined' && !!(window.__TAURI__ || window.__TAURI_IPC__);
@@ -67,6 +68,33 @@ async function fetchWithRetry(url, options = {}, { attempts = 1, retryDelayMs = 
   }
 
   throw lastError || new Error('Request failed');
+}
+
+async function fetchWithTimeout(
+  url,
+  options = {},
+  { timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS, attempts = 1, retryDelayMs = 400 } = {}
+) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    return await fetchWithRetry(
+      url,
+      {
+        ...options,
+        signal: controller.signal
+      },
+      { attempts, retryDelayMs }
+    );
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      throw new Error('Request timed out. Backend may be busy. Please try again.');
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
 
 function toStartupHint(error, fallbackMessage) {
@@ -358,7 +386,7 @@ export async function getSecuritySettings() {
 }
 
 export async function setSecuritySettings(enabled) {
-  const res = await fetch(`${BASE_URL}/settings/security`, {
+  const res = await fetchWithTimeout(`${BASE_URL}/settings/security`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ enabled: !!enabled })
@@ -371,13 +399,13 @@ export async function setSecuritySettings(enabled) {
 }
 
 export async function getTrackingExclusions() {
-  const res = await fetch(`${BASE_URL}/settings/exclusions`);
+  const res = await fetchWithTimeout(`${BASE_URL}/settings/exclusions`);
   if (!res.ok) throw new Error('Failed to fetch tracking exclusions');
   return await res.json();
 }
 
 export async function setTrackingExclusions(exclusions) {
-  const res = await fetch(`${BASE_URL}/settings/exclusions`, {
+  const res = await fetchWithTimeout(`${BASE_URL}/settings/exclusions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ exclusions: exclusions || [] })
@@ -390,13 +418,13 @@ export async function setTrackingExclusions(exclusions) {
 }
 
 export async function getSnapshotSettings() {
-  const res = await fetch(`${BASE_URL}/settings/snapshots`);
+  const res = await fetchWithTimeout(`${BASE_URL}/settings/snapshots`);
   if (!res.ok) throw new Error('Failed to fetch snapshot settings');
   return await res.json();
 }
 
 export async function updateSnapshotSettings(updates) {
-  const res = await fetch(`${BASE_URL}/settings/snapshots`, {
+  const res = await fetchWithTimeout(`${BASE_URL}/settings/snapshots`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(updates || {})
@@ -409,13 +437,13 @@ export async function updateSnapshotSettings(updates) {
 }
 
 export async function getRuntimeSettings() {
-  const res = await fetch(`${BASE_URL}/settings/runtime`);
+  const res = await fetchWithTimeout(`${BASE_URL}/settings/runtime`);
   if (!res.ok) throw new Error('Failed to fetch runtime settings');
   return await res.json();
 }
 
 export async function updateRuntimeSettings(updates) {
-  const res = await fetch(`${BASE_URL}/settings/runtime`, {
+  const res = await fetchWithTimeout(`${BASE_URL}/settings/runtime`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(updates || {})

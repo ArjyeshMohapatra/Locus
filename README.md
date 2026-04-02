@@ -109,6 +109,56 @@ env PATH="$HOME/.cargo/bin:$PATH" \
 	cargo tauri dev
 ```
 
+## Build and test Windows from Linux
+
+Yes. You can validate Windows builds without dual boot.
+
+### Option 1: GitHub Actions Windows runner (recommended)
+
+This is the easiest and most reproducible path.
+
+1. Push your branch and tag (or run workflow_dispatch).
+2. Open the Desktop Release Builds workflow.
+3. Download artifact locus-windows-x64 from the run.
+4. Test that artifact inside a Windows VM.
+
+### Option 2: Local Windows VM on Linux (full end-to-end testing)
+
+Use KVM/QEMU with virt-manager.
+
+Install virtualization stack on Linux:
+
+```bash
+sudo apt update
+sudo apt install -y qemu-kvm libvirt-daemon-system libvirt-clients virt-manager ovmf
+sudo usermod -aG libvirt,kvm "$USER"
+newgrp libvirt
+```
+
+Then:
+
+1. Create a Windows 11 VM in virt-manager.
+2. Allocate at least 4 vCPU, 8 GB RAM, and 80+ GB disk.
+3. Enable TPM/Secure Boot in VM settings if installer requires it.
+4. Share your repo into VM (Samba share, SPICE folder share, or Git clone inside VM).
+5. Build and run inside Windows VM (PowerShell):
+
+```powershell
+cd C:\path\to\LOCUS
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r backend\requirements.txt
+npm --prefix ui install
+cargo tauri build --target x86_64-pc-windows-msvc
+```
+
+Use this when you need real installer/runtime checks (tray behavior, auth persistence, popup UX, packaging).
+
+### About Wine
+
+Wine can be used for quick smoke tests, but it is not reliable for final Tauri + system integration validation.
+Prefer VM or GitHub Windows runners for release confidence.
+
 ## Service mode
 
 ### Linux user service

@@ -9,7 +9,7 @@
     faCircleXmark 
   } from '@fortawesome/free-solid-svg-icons';
 
-  $: ({ isOpen, title, message, type, confirmLabel, cancelLabel, onConfirm, onCancel } = $dialogStore);
+  $: ({ isOpen, title, message, messageScale, type, confirmLabel, cancelLabel, onConfirm, onCancel } = $dialogStore);
 
   const icons = {
     info: faCircleInfo,
@@ -50,6 +50,7 @@
   >
     <div 
       class="dialog-content shadow-lg" 
+      style="--dialog-message-scale: {messageScale || 1};"
       role="dialog"
       aria-modal="true"
       transition:scale={{ duration: 200, start: 0.95 }}
@@ -64,7 +65,7 @@
       </div>
       
       <div class="dialog-body px-4 py-3">
-        <p class="mb-0 text-muted" style="white-space: pre-wrap; line-height: 1.6;">
+        <p class="mb-0 text-muted dialog-message" style="white-space: pre-wrap; line-height: 1.6;">
           {message}
         </p>
       </div>
@@ -129,6 +130,11 @@
 
   .dialog-title {
     color: var(--text-primary);
+    font-size: calc(1.05rem * var(--dialog-message-scale, 1));
+  }
+
+  .dialog-message {
+    font-size: calc(1rem * var(--dialog-message-scale, 1));
   }
 
   .dialog-footer .btn {
