@@ -94,7 +94,7 @@ jobs:
         run: npm ci --prefix ui
 
       - name: Install Tauri CLI
-        run: cargo install tauri-cli --version "^1.5.0" --locked
+        run: cargo install tauri-cli --version "=1.5.0" --locked --force
 
       - name: Build desktop bundle
         run: cargo tauri build --target ${{ matrix.rust_target }}
