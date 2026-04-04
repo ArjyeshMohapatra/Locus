@@ -23,6 +23,8 @@ const DEFAULT_BACKEND_PORT: u16 = 8000;
 const BACKEND_PORT_SEARCH_LIMIT: u16 = 20;
 const BACKEND_STARTUP_TIMEOUT_SECS: u64 = 45;
 const BACKEND_POLL_INTERVAL_MS: u64 = 150;
+const LINUX_THEME_POLL_INTERVAL_MS: u64 = 5000;
+const LINUX_THEME_POLL_FALLBACK_INTERVAL_MS: u64 = 15000;
 
 struct BackendState {
     child: Mutex<Option<Child>>,
@@ -166,14 +168,21 @@ fn start_linux_theme_watcher(app: tauri::AppHandle) {
         let mut last_theme: Option<String> = None;
 
         loop {
+            let mut sleep_ms = LINUX_THEME_POLL_INTERVAL_MS;
+
             if let Some(current_theme) = detect_linux_system_theme() {
                 if last_theme.as_deref() != Some(current_theme.as_str()) {
-                    let _ = app.emit_all("locus://linux-system-theme-changed", current_theme.clone());
+                    let _ = app.emit_all(
+                        "locus://linux-system-theme-changed",
+                        current_theme.clone(),
+                    );
                     last_theme = Some(current_theme);
                 }
+            } else {
+                sleep_ms = LINUX_THEME_POLL_FALLBACK_INTERVAL_MS;
             }
 
-            thread::sleep(Duration::from_millis(900));
+            thread::sleep(Duration::from_millis(sleep_ms));
         }
     });
 }
@@ -450,7 +459,9 @@ fn main() {
                     }
                     "show" => {
                         if let Some(window) = app.get_window("main") {
-                            window.show().unwrap();
+                            if let Err(err) = window.show() {
+                                eprintln!("[tauri] failed to show window: {}", err);
+                            }
                         }
                     }
                     _ => {}
@@ -478,9 +489,11 @@ fn main() {
         .on_page_load(|window, _payload| {
             let state: State<BackendState> = window.state();
             let backend_url = format!("http://127.0.0.1:{}", state.port);
+            let backend_url_literal = serde_json::to_string(&backend_url)
+                .unwrap_or_else(|_| String::from("\"http://127.0.0.1:8000\""));
             let script = format!(
-                "window.__LOCUS_BACKEND_URL = '{0}'; window.localStorage.setItem('locus-backend-url', '{0}');",
-                backend_url
+                "window.__LOCUS_BACKEND_URL = {0}; try {{ window.localStorage.setItem('locus-backend-url', {0}); }} catch (_) {{}}",
+                backend_url_literal
             );
             let _ = window.eval(script.as_str());
         })

@@ -18,9 +18,11 @@
   let expandedRoots = new Set();
   let expandedDirs = new Set();
   let expandedFiles = new Set();
+  let lastStreamEventAt = 0;
 
   const NEW_WINDOW_MS = 60 * 1000;
-  const POLL_REFRESH_MS = 5000;
+  const POLL_REFRESH_MS = 20000;
+  const STREAM_STALE_MS = 15000;
 
   const setDocumentModalLock = (locked) => {
     if (typeof document === 'undefined') return;
@@ -236,11 +238,15 @@
 
   onMount(() => {
     refresh({ resetFileCache: true });
+    lastStreamEventAt = Date.now();
     periodicRefreshTimer = setInterval(() => {
-      refresh();
+      if (!eventSource || Date.now() - lastStreamEventAt > STREAM_STALE_MS) {
+        refresh();
+      }
     }, POLL_REFRESH_MS);
 
     eventSource = subscribeFileEvents((event) => {
+      lastStreamEventAt = Date.now();
       if (event?.event_type) {
         events = [event, ...events].slice(0, 500);
         if (event?.src_path) {

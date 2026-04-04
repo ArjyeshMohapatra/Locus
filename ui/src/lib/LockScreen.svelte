@@ -2,7 +2,7 @@
   import { onMount, tick } from 'svelte';
   import { createEventDispatcher } from 'svelte';
   import { setupAuth, unlockAuth, resetAuth } from '../api.js';
-  import { askQuestion } from '../dialogStore.js';
+  import { askForText, askQuestion } from '../dialogStore.js';
   import Fa from 'svelte-fa';
   import { faEye, faEyeSlash } from '@fortawesome/free-solid-svg-icons';
   
@@ -149,15 +149,39 @@
       'Factory Reset Locus',
       { type: 'danger', okLabel: 'Yes, Wipe Everything', cancelLabel: 'Cancel' }
     );
-    if (ok) {
-      isLoading = true;
-      try {
-        await resetAuth();
-        window.location.reload();
-      } catch (e) {
-        errorMsg = e.message;
-        isLoading = false;
+    if (!ok) {
+      return;
+    }
+
+    const typedConfirmation = await askForText(
+      'Type RESET LOCUS DATA to confirm permanent wipe.',
+      'Confirm Factory Reset',
+      {
+        type: 'danger',
+        okLabel: 'Confirm Wipe',
+        cancelLabel: 'Cancel',
+        placeholder: 'RESET LOCUS DATA',
+        maxLength: 64,
+        initialValue: ''
       }
+    );
+
+    if (typedConfirmation === null) {
+      return;
+    }
+
+    if (String(typedConfirmation).trim() !== 'RESET LOCUS DATA') {
+      errorMsg = 'Reset cancelled: confirmation phrase did not match.';
+      return;
+    }
+
+    isLoading = true;
+    try {
+      await resetAuth(password, typedConfirmation);
+      window.location.reload();
+    } catch (e) {
+      errorMsg = e.message;
+      isLoading = false;
     }
   };
 </script>

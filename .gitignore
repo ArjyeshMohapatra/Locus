@@ -85,6 +85,8 @@ build/
 *.swo
 *.sublime-workspace
 *.sublime-project
+.agent.*
+microsoft.gpg
 
 # OS Files
 .DS_Store

@@ -12,11 +12,30 @@ from typing import Any, Callable, Optional
 import ctypes
 import subprocess  # nosec B404
 import logging
+from app.database import models as db_models
 
 logger = logging.getLogger("locus.storage")
 
+
+def _resolve_storage_root() -> Path:
+    explicit_storage_dir = os.getenv("LOCUS_STORAGE_DIR", "").strip()
+    if explicit_storage_dir:
+        return Path(explicit_storage_dir).expanduser().resolve()
+
+    explicit_data_dir = os.getenv("LOCUS_DATA_DIR", "").strip()
+    if explicit_data_dir:
+        return Path(explicit_data_dir).expanduser().resolve() / ".locus_storage"
+
+    db_path = str(getattr(db_models, "_DB_PATH", "")).strip()
+    if db_path:
+        db_parent = Path(db_path).expanduser().resolve().parent
+        return db_parent / ".locus_storage"
+
+    return Path("./.locus_storage").resolve()
+
+
 # path for storing the file versions
-STORAGE_ROOT = Path("./.locus_storage").resolve()
+STORAGE_ROOT = _resolve_storage_root()
 CHUNK_DIR = STORAGE_ROOT / "chunks"
 CHUNK_SIZE_BYTES = 4 * 1024 * 1024
 CHUNKED_MIN_SIZE_BYTES = 16 * 1024 * 1024
@@ -131,7 +150,19 @@ def init_storage():
         STORAGE_ROOT.mkdir(parents=True)
     if not CHUNK_DIR.exists():
         CHUNK_DIR.mkdir(parents=True)
+    _ensure_storage_permissions()
     _protect_storage_root()
+
+
+def _ensure_storage_permissions() -> None:
+    if os.name == "nt":
+        return
+
+    for path in (STORAGE_ROOT, CHUNK_DIR):
+        try:
+            os.chmod(path, 0o700)
+        except Exception as e:
+            logger.debug(f"Failed to set secure permissions on {path}: {e}")
 
 
 def _protect_storage_root() -> None:
@@ -203,8 +234,9 @@ def disable_admin_protection() -> tuple[bool, str]:
     if os.name != "nt":
         try:
             STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
-            os.chmod(STORAGE_ROOT, 0o755)  # nosec B103
-            return True, "POSIX permissions restored (0755)"
+            os.chmod(STORAGE_ROOT, 0o700)
+            _ensure_storage_permissions()
+            return True, "POSIX permissions restored (0700)"
         except Exception as e:
             return False, f"Failed to restore POSIX permissions: {e}"
     if not is_admin_user():

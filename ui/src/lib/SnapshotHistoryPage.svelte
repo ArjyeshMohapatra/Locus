@@ -22,9 +22,10 @@
   let scrubDraftIndex = 0;
   let resolvedImageSrc = '';
   let imageLoading = false;
-  let imageObjectUrlsById = {};
+  let imageObjectUrlsById = new Map();
   let imageLoadToken = 0;
   let isScrubbing = false;
+  const IMAGE_OBJECT_URL_CACHE_LIMIT = 80;
 
   const formatTime = (value) => {
     if (!value) return '';
@@ -53,18 +54,42 @@
     return `${BASE_URL}${item.image_endpoint}`;
   };
 
+  const revokeImageObjectUrl = (id) => {
+    const existing = imageObjectUrlsById.get(id);
+    if (existing) {
+      URL.revokeObjectURL(existing);
+      imageObjectUrlsById.delete(id);
+    }
+  };
+
+  const pruneImageObjectUrlCache = (activeIds = null) => {
+    if (activeIds instanceof Set) {
+      for (const [id] of imageObjectUrlsById.entries()) {
+        if (!activeIds.has(id)) {
+          revokeImageObjectUrl(id);
+        }
+      }
+    }
+
+    while (imageObjectUrlsById.size > IMAGE_OBJECT_URL_CACHE_LIMIT) {
+      const oldest = imageObjectUrlsById.keys().next().value;
+      if (oldest === undefined) break;
+      revokeImageObjectUrl(oldest);
+    }
+  };
+
   const revokeAllImageObjectUrls = () => {
-    Object.values(imageObjectUrlsById).forEach((url) => {
-      if (url) URL.revokeObjectURL(url);
-    });
-    imageObjectUrlsById = {};
+    for (const id of Array.from(imageObjectUrlsById.keys())) {
+      revokeImageObjectUrl(id);
+    }
+    imageObjectUrlsById = new Map();
   };
 
   const loadActiveImage = async (item) => {
     imageLoadToken += 1;
     const token = imageLoadToken;
 
-    const existing = imageObjectUrlsById[item?.id];
+    const existing = imageObjectUrlsById.get(item?.id);
     if (existing) {
       resolvedImageSrc = existing;
       imageLoading = false;
@@ -93,7 +118,9 @@
       const blob = await res.blob();
       if (token !== imageLoadToken) return;
       const objectUrl = URL.createObjectURL(blob);
-      imageObjectUrlsById = { ...imageObjectUrlsById, [item.id]: objectUrl };
+      revokeImageObjectUrl(item.id);
+      imageObjectUrlsById.set(item.id, objectUrl);
+      pruneImageObjectUrlCache();
       resolvedImageSrc = objectUrl;
       if (error === 'Image could not be loaded for this snapshot.') {
         error = '';
@@ -172,6 +199,7 @@
         limit: Number(limit) || 200
       });
       items = data.items || [];
+      pruneImageObjectUrlCache(new Set(items.map((item) => item.id)));
       
       if (auto && isAtRightEdge) {
         buildTimeline(null, null);
@@ -200,6 +228,7 @@
     const currentIndex = scrubIndex;
     try {
       await deleteSnapshot(snapshotId);
+      revokeImageObjectUrl(snapshotId);
       items = items.filter((item) => item.id !== snapshotId);
       const preferredId = currentId !== snapshotId ? currentId : null;
       buildTimeline(preferredId, currentIndex);

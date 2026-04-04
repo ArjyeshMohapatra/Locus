@@ -8,6 +8,7 @@ from sqlalchemy import (
     Text,
     BigInteger,
     create_engine,
+    event,
 )
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker
 from sqlalchemy.sql import func
@@ -58,7 +59,29 @@ def _resolve_db_path() -> str:
 
 _DB_PATH = _resolve_db_path()
 DATABASE_URL = f"sqlite:///{_DB_PATH}"
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+engine = create_engine(
+    DATABASE_URL,
+    connect_args={
+        "check_same_thread": False,
+        "timeout": 30,
+    },
+)
+
+
+@event.listens_for(engine, "connect")
+def _set_sqlite_pragmas(dbapi_connection, connection_record):
+    """Apply per-connection SQLite PRAGMAs for safer concurrency and integrity."""
+    del connection_record
+    cursor = dbapi_connection.cursor()
+    try:
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA synchronous=NORMAL")
+        cursor.execute("PRAGMA busy_timeout=30000")
+        cursor.execute("PRAGMA foreign_keys=ON")
+    finally:
+        cursor.close()
+
+
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 Base = declarative_base()

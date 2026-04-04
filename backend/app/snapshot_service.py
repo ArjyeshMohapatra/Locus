@@ -39,6 +39,7 @@ MIN_SNAPSHOT_PASSPHRASE_LENGTH = 12
 UNSAFE_LAUNCH_CHARS_RE = re.compile(r"[&;<>`\"'|\r\n\t]")
 SAFE_COMMAND_CANDIDATE_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 NON_ALNUM_LOWER_RE = re.compile(r"[^a-z0-9]+")
+DESKTOP_ENTRY_SECTION = "Desktop Entry"
 logger = logging.getLogger(__name__)
 _WINDOW_CAPTURE_WARNING_EMITTED = False
 
@@ -171,6 +172,11 @@ class SnapshotService:
         self._desktop_app_index: dict[str, str] = {}
         self._desktop_app_index_ready = False
         SNAPSHOT_IMAGE_ROOT.mkdir(parents=True, exist_ok=True)
+        if os.name != "nt":
+            try:
+                os.chmod(SNAPSHOT_IMAGE_ROOT, 0o700)
+            except Exception:
+                logger.debug("Failed to set secure permissions on snapshot image dir")
 
     def _ensure_desktop_app_index(self) -> None:
         if os.name != "posix" or self._desktop_app_index_ready:
@@ -188,56 +194,66 @@ class SnapshotService:
                 time.monotonic() - started,
             )
 
-    def _build_desktop_app_index(self) -> None:
-        if os.name != "posix":
-            return
-
-        self._desktop_app_index.clear()
-
-        search_dirs = [
+    @staticmethod
+    def _desktop_search_dirs() -> list[str]:
+        return [
             "/usr/share/applications",
             "/usr/local/share/applications",
             "/var/lib/flatpak/exports/share/applications",
             "/var/lib/snapd/desktop/applications",
             os.path.expanduser("~/.local/share/applications"),
             os.path.expanduser("~/.local/share/flatpak/exports/share/applications"),
-            "/snap/share/applications"
+            "/snap/share/applications",
         ]
 
-        for d in search_dirs:
-            if not os.path.exists(d):
+    @staticmethod
+    def _iter_desktop_files(search_dirs: list[str]):
+        for directory in search_dirs:
+            if not os.path.exists(directory):
                 continue
+            for root, _, files in os.walk(directory):
+                for filename in files:
+                    if filename.endswith(".desktop"):
+                        yield os.path.join(root, filename)
 
-            for root, _, files in os.walk(d):
-                for f in files:
-                    if f.endswith(".desktop"):
-                        try:
-                            name = None
-                            exec_cmd = None
-                            with open(os.path.join(root, f), "r", encoding="utf-8", errors="ignore") as fh:
-                                in_desktop_entry = False
-                                for line in fh:
-                                    line = line.strip()
-                                    if line == "[Desktop Entry]":
-                                        in_desktop_entry = True
-                                        continue
-                                    elif line.startswith("[") and in_desktop_entry:
-                                        break
+    @staticmethod
+    def _parse_desktop_file(desktop_file_path: str) -> tuple[str, str] | None:
+        import configparser
 
-                                    if in_desktop_entry:
-                                        if line.startswith("Name=") and not name:
-                                            name = line[5:].strip()
-                                        elif line.startswith("Exec=") and not exec_cmd:
-                                            exec_cmd = line[5:].strip()
+        parser = configparser.ConfigParser(interpolation=None, strict=False)
+        parser.optionxform = str
+        parser.read(desktop_file_path, encoding="utf-8")
 
-                                        if name and exec_cmd:
-                                            break
+        if not parser.has_section(DESKTOP_ENTRY_SECTION):
+            return None
 
-                            if name and exec_cmd:
-                                clean_exec = re.sub(r'%[a-zA-Z]', '', exec_cmd).strip()
-                                self._desktop_app_index[name.lower()] = clean_exec
-                        except Exception as e:
-                            logger.debug(f"[SnapshotService] Failed to parse desktop file {f}: {e}")
+        name = parser.get(DESKTOP_ENTRY_SECTION, "Name", fallback="").strip()
+        exec_cmd = parser.get(DESKTOP_ENTRY_SECTION, "Exec", fallback="").strip()
+        if not name or not exec_cmd:
+            return None
+
+        clean_exec = re.sub(r"%[a-zA-Z]", "", exec_cmd).strip()
+        if not clean_exec:
+            return None
+        return name, clean_exec
+
+    def _build_desktop_app_index(self) -> None:
+        if os.name != "posix":
+            return
+
+        self._desktop_app_index.clear()
+
+        for desktop_file_path in self._iter_desktop_files(self._desktop_search_dirs()):
+            try:
+                parsed = self._parse_desktop_file(desktop_file_path)
+                if not parsed:
+                    continue
+                name, clean_exec = parsed
+                self._desktop_app_index[name.lower()] = clean_exec
+            except Exception as e:
+                logger.debug(
+                    f"[SnapshotService] Failed to parse desktop file {desktop_file_path}: {e}"
+                )
 
     def start(self) -> None:
         with self._lock:
@@ -305,56 +321,34 @@ class SnapshotService:
             self._fernet = candidate
         return recovery_passphrase
 
-    def unlock(self, passphrase: str, db) -> bool:
-        passphrase = (passphrase or "").strip()
-        if not passphrase:
+    def _set_active_fernet(self, data_key: bytes) -> None:
+        with self._lock:
+            self._fernet = Fernet(data_key)
+
+    def _try_unlock_v2_key(
+        self,
+        passphrase: str,
+        db,
+        salt_setting_key: str,
+        wrapped_key_setting_key: str,
+    ) -> bool:
+        import base64
+
+        try:
+            salt_b64 = crud.get_setting(db, salt_setting_key, "")
+            salt = base64.urlsafe_b64decode(salt_b64.encode("ascii"))
+            wrap_key = self._derive_fernet_key(passphrase, salt)
+            wrapped_data_key = crud.get_setting(db, wrapped_key_setting_key, "")
+            data_key = Fernet(wrap_key).decrypt(wrapped_data_key.encode("utf-8"))
+            self._set_active_fernet(data_key)
+            return True
+        except Exception:  # nosec B110
             return False
 
-        verifier = crud.get_setting(db, "snapshot_key_verifier", None)
-
-        # V2 Logic
-        if verifier == "v2-wrapped":
-            import base64
-
-            # Try Master
-            try:
-                salt_b64 = crud.get_setting(db, "snapshot_salt_master", "")
-                salt = base64.urlsafe_b64decode(salt_b64.encode("ascii"))
-                wrap_key = self._derive_fernet_key(passphrase, salt)
-                wrapped_data_key = crud.get_setting(
-                    db, "snapshot_wrapped_key_master", ""
-                )
-                data_key = Fernet(wrap_key).decrypt(wrapped_data_key.encode("utf-8"))
-                with self._lock:
-                    self._fernet = Fernet(data_key)
-                self._trigger_orphaned_cleanup(db)
-                return True
-            except Exception:  # nosec B110
-                # Failed to unlock with master passphrase (expected if wrong)
-                pass
-
-            # Try Recovery
-            try:
-                salt_b64 = crud.get_setting(db, "snapshot_salt_recovery", "")
-                salt = base64.urlsafe_b64decode(salt_b64.encode("ascii"))
-                wrap_key = self._derive_fernet_key(passphrase, salt)
-                wrapped_data_key = crud.get_setting(
-                    db, "snapshot_wrapped_key_recovery", ""
-                )
-                data_key = Fernet(wrap_key).decrypt(wrapped_data_key.encode("utf-8"))
-                with self._lock:
-                    self._fernet = Fernet(data_key)
-                self._trigger_orphaned_cleanup(db)
-                return True
-            except Exception:  # nosec B110
-                # Failed to unlock with recovery passphrase (expected if wrong)
-                pass
-
-            return False
-
-        # Legacy V1 Logic
+    def _unlock_legacy(self, passphrase: str, verifier: str | None, db) -> bool:
         if len(passphrase) < MIN_SNAPSHOT_UNLOCK_COMPAT_LENGTH:
             return False
+
         has_existing_key = bool((verifier or "").strip())
         if not has_existing_key and len(passphrase) < MIN_SNAPSHOT_PASSPHRASE_LENGTH:
             return False
@@ -370,9 +364,7 @@ class SnapshotService:
         except Exception:
             salt = b"locus-default-salt"
 
-        key = self._derive_fernet_key(passphrase, salt)
-        candidate = Fernet(key)
-
+        candidate = Fernet(self._derive_fernet_key(passphrase, salt))
         if verifier:
             try:
                 plain = candidate.decrypt(verifier.encode("utf-8")).decode("utf-8")
@@ -383,6 +375,32 @@ class SnapshotService:
 
         with self._lock:
             self._fernet = candidate
+        return True
+
+    def unlock(self, passphrase: str, db) -> bool:
+        passphrase = (passphrase or "").strip()
+        if not passphrase:
+            return False
+
+        verifier = crud.get_setting(db, "snapshot_key_verifier", None)
+        unlocked = False
+        if verifier == "v2-wrapped":
+            unlocked = self._try_unlock_v2_key(
+                passphrase,
+                db,
+                "snapshot_salt_master",
+                "snapshot_wrapped_key_master",
+            ) or self._try_unlock_v2_key(
+                passphrase,
+                db,
+                "snapshot_salt_recovery",
+                "snapshot_wrapped_key_recovery",
+            )
+        else:
+            unlocked = self._unlock_legacy(passphrase, verifier, db)
+
+        if not unlocked:
+            return False
 
         self._trigger_orphaned_cleanup(db)
         return True
@@ -600,54 +618,62 @@ class SnapshotService:
             },
         }
 
+    def _execute_open_url_action(self, clean_value: str, clean_type: str) -> dict[str, Any]:
+        webbrowser.open(clean_value, new=2)
+        return {"ok": True, "message": "URL opened", "type": clean_type}
+
+    def _execute_open_file_action(self, clean_value: str, clean_type: str) -> dict[str, Any]:
+        if not os.path.exists(clean_value):
+            return {"ok": False, "message": "File/path does not exist", "type": clean_type}
+
+        import sys
+        import subprocess  # nosec B404
+
+        if sys.platform == "win32":
+            os.startfile(clean_value)  # nosec B606
+        elif sys.platform == "darwin":
+            subprocess.run(["open", clean_value])  # nosec B603 B607
+        else:
+            subprocess.run(["xdg-open", clean_value])  # nosec B603 B607
+
+        return {"ok": True, "message": "File/path opened", "type": clean_type}
+
+    def _execute_launch_app_action(self, clean_value: str, clean_type: str) -> dict[str, Any]:
+        if clean_value == "unknown":
+            return {
+                "ok": False,
+                "message": (
+                    "Cannot launch an unidentified application from snapshot metadata. "
+                    "Install optional Linux helpers like kdotool, xdotool, or xprop to improve app identification."
+                ),
+                "type": clean_type,
+            }
+
+        launch_result = self._launch_app(clean_value)
+        return {
+            "ok": bool(launch_result.get("ok")),
+            "message": str(launch_result.get("message") or "Action failed"),
+            "type": clean_type,
+        }
+
     def execute_action(self, action_type: str, value: str) -> dict[str, Any]:
         clean_type = (action_type or "").strip().lower()
         clean_value = (value or "").strip()
         if not clean_value:
-            return {"ok": False, "message": "Action value is required"}
+            return {"ok": False, "message": "Action value is required", "type": clean_type}
+
+        handlers = {
+            "open_url": self._execute_open_url_action,
+            "open_file": self._execute_open_file_action,
+            "open_app": self._execute_launch_app_action,
+            "launch_app": self._execute_launch_app_action,
+        }
+        handler = handlers.get(clean_type)
+        if not handler:
+            return {"ok": False, "message": f"Unsupported action type: {clean_type}", "type": clean_type}
 
         try:
-            if clean_type == "open_url":
-                webbrowser.open(clean_value, new=2)
-                return {"ok": True, "message": "URL opened", "type": clean_type}
-
-            if clean_type == "open_file":
-                if not os.path.exists(clean_value):
-                    return {"ok": False, "message": "File/path does not exist"}
-                import sys
-                import subprocess  # nosec B404
-
-                if sys.platform == "win32":
-                    os.startfile(clean_value)  # nosec B606
-                elif sys.platform == "darwin":
-                    subprocess.run(["open", clean_value])  # nosec B603 B607
-                else:
-                    subprocess.run(["xdg-open", clean_value])  # nosec B603 B607
-                return {"ok": True, "message": "File/path opened", "type": clean_type}
-
-            if clean_type in ("open_app", "launch_app"):
-                if clean_value == "unknown":
-                    return {
-                        "ok": False,
-                        "message": (
-                            "Cannot launch an unidentified application from snapshot metadata. "
-                            "Install optional Linux helpers like kdotool, xdotool, or xprop to improve app identification."
-                        ),
-                    }
-                launch_result = self._launch_app(clean_value)
-                if not launch_result["ok"]:
-                    return {
-                        "ok": False,
-                        "message": launch_result["message"],
-                        "type": clean_type,
-                    }
-                return {
-                    "ok": True,
-                    "message": launch_result["message"],
-                    "type": clean_type,
-                }
-
-            return {"ok": False, "message": f"Unsupported action type: {clean_type}"}
+            return handler(clean_value, clean_type)
         except Exception as exc:
             return {"ok": False, "message": str(exc), "type": clean_type}
 
@@ -910,6 +936,69 @@ class SnapshotService:
             "message": "Snapshot vault reset. All snapshots were removed.",
         }
 
+    @staticmethod
+    def _ensure_linux_display() -> None:
+        if os.name == "posix" and "DISPLAY" not in os.environ:
+            os.environ["DISPLAY"] = ":0"
+
+    def _loop_pause_seconds(
+        self,
+        settings: dict[str, Any],
+        now_monotonic: float,
+    ) -> float | None:
+        if not settings.get("enabled"):
+            return 1.0
+
+        if not self.is_unlocked():
+            if int(now_monotonic) % 60 == 0:
+                logger.info("[SnapshotService] Vault is locked, skipping loop")
+            return 1.0
+
+        return None
+
+    def _capture_mode(
+        self,
+        settings: dict[str, Any],
+        now_monotonic: float,
+        current_title: str,
+    ) -> tuple[bool, bool]:
+        interval = max(5, int(settings.get("interval_seconds", DEFAULT_INTERVAL_SECONDS)))
+        title_changed = current_title != self._last_window_title_check
+        time_elapsed = (now_monotonic - self._last_capture_time) >= interval
+        capture_on_window_change = bool(settings.get("capture_on_window_change", True))
+        capture_on_change = (
+            capture_on_window_change
+            and title_changed
+            and bool(current_title)
+            and current_title != "Unknown"
+        )
+        return capture_on_change, time_elapsed
+
+    def _run_capture_tick(
+        self,
+        db,
+        settings: dict[str, Any],
+        now_monotonic: float,
+    ) -> None:
+        current_title = self._get_active_window_title()
+        capture_on_change, time_elapsed = self._capture_mode(
+            settings,
+            now_monotonic,
+            current_title,
+        )
+
+        if not capture_on_change and not time_elapsed:
+            return
+
+        self._capture_once(
+            db,
+            settings,
+            current_title,
+            force_capture=not capture_on_change,
+        )
+        self._last_capture_time = now_monotonic
+        self._last_window_title_check = current_title
+
     def _loop(self) -> None:
         self._last_capture_time = 0.0
         self._last_window_title_check = None
@@ -917,7 +1006,7 @@ class SnapshotService:
 
         # On Linux, many tools (xdotool, ImageGrab) need a DISPLAY variable.
         if os.name == "posix" and "DISPLAY" not in os.environ:
-            os.environ["DISPLAY"] = ":0"
+            self._ensure_linux_display()
             logger.info("[SnapshotService] Initialized DISPLAY=:0 for Linux")
 
         while not self._stop_event.is_set():
@@ -925,52 +1014,12 @@ class SnapshotService:
             db = SessionLocal()
             try:
                 settings = self.get_settings(db)
-                if not settings["enabled"]:
-                    time.sleep(1.0)
+                pause_seconds = self._loop_pause_seconds(settings, now_monotonic)
+                if pause_seconds is not None:
+                    time.sleep(pause_seconds)
                     continue
 
-                if not self.is_unlocked():
-                    if int(now_monotonic) % 60 == 0:
-                        logger.info("[SnapshotService] Vault is locked, skipping loop")
-                    time.sleep(1.0)
-                    continue
-
-                interval = max(5, int(settings["interval_seconds"]))
-
-                # PROACTIVE CHECK: Get current title to see if it changed
-                current_title = self._get_active_window_title()
-
-                title_changed = (current_title != self._last_window_title_check)
-                time_elapsed = (now_monotonic - self._last_capture_time) >= interval
-                capture_on_window_change = bool(
-                    settings.get("capture_on_window_change", True)
-                )
-
-                # Capture immediately on title changes; otherwise still capture on interval.
-                # This allows periodic snapshots for tabs/web apps whose title may not change.
-                if (
-                    capture_on_window_change
-                    and title_changed
-                    and current_title
-                    and current_title != "Unknown"
-                ):
-                    self._capture_once(
-                        db,
-                        settings,
-                        current_title,
-                        force_capture=False,
-                    )
-                    self._last_capture_time = now_monotonic
-                    self._last_window_title_check = current_title
-                elif time_elapsed:
-                    self._capture_once(
-                        db,
-                        settings,
-                        current_title,
-                        force_capture=True,
-                    )
-                    self._last_capture_time = now_monotonic
-                    self._last_window_title_check = current_title
+                self._run_capture_tick(db, settings, now_monotonic)
 
                 if now_monotonic >= next_cleanup_at:
                     self._cleanup_retention(db, int(settings["retention_days"]))
@@ -982,21 +1031,16 @@ class SnapshotService:
 
             time.sleep(2.0)  # Check window title every 2 seconds
 
-    def _capture_once(
+    def _resolve_capture_title(
         self,
-        db,
-        settings: dict[str, Any],
-        window_title: str | None = None,
-        force_capture: bool = False,
-    ) -> None:
+        window_title: str | None,
+    ) -> tuple[str, dict[str, Any] | None]:
         probe_payload: dict[str, Any] | None = None
-
-        if window_title is None:
-            window_title = self._get_active_window_title()
+        resolved_title = window_title or self._get_active_window_title()
 
         if (
             sys.platform == "linux"
-            and (not window_title or str(window_title).strip().lower() == "unknown")
+            and (not resolved_title or str(resolved_title).strip().lower() == "unknown")
         ):
             probe_payload = self._linux_probe_payload()
             if probe_payload:
@@ -1007,22 +1051,82 @@ class SnapshotService:
                     or ""
                 ).strip()
                 if probe_title:
-                    window_title = probe_title
+                    resolved_title = probe_title
 
-        if not window_title:
-            window_title = "Unknown"
+        return str(resolved_title or "Unknown"), probe_payload
 
-        if settings.get(
-            "exclude_private_browsing", True
-        ) and self._looks_private_browsing(window_title):
+    @staticmethod
+    def _remove_file_if_exists(path: str) -> None:
+        if not path:
+            return
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+        except Exception:
+            logger.debug("Failed to remove temporary snapshot file: %s", path)
+
+    def _persist_capture_payload(
+        self,
+        db,
+        payload: dict[str, Any],
+        fingerprint: str,
+        image_path: str,
+    ) -> None:
+        encrypted_payload = self._encrypt_payload(payload)
+        if not encrypted_payload:
+            self._remove_file_if_exists(image_path)
             return
 
+        try:
+            crud.create_activity_snapshot(
+                db,
+                encrypted_payload=encrypted_payload,
+                fingerprint=fingerprint,
+                captured_at=datetime.now(timezone.utc),
+            )
+            self._last_fingerprint = fingerprint
+        except Exception:
+            self._remove_file_if_exists(image_path)
+            raise
+
+    def _should_skip_capture(
+        self,
+        settings: dict[str, Any],
+        window_title: str,
+        app_name: str,
+        fingerprint: str,
+        force_capture: bool,
+    ) -> bool:
+        if settings.get("exclude_private_browsing", True) and self._looks_private_browsing(
+            window_title
+        ):
+            return True
+
+        if self._is_locus_window(window_title, app_name):
+            logger.debug("[SnapshotService] Skipping self-window capture")
+            return True
+
+        if (
+            not force_capture
+            and fingerprint == self._last_fingerprint
+            and window_title != "Unknown"
+        ):
+            logger.debug("[SnapshotService] Skipping capture: window context unchanged")
+            return True
+
+        return False
+
+    def _capture_once(
+        self,
+        db,
+        settings: dict[str, Any],
+        window_title: str | None = None,
+        force_capture: bool = False,
+    ) -> None:
+        window_title, probe_payload = self._resolve_capture_title(window_title)
         app_name = self._infer_app_name(window_title)
         if app_name == "Unknown" and sys.platform == "linux":
             app_name = self._infer_app_name_from_probe_payload(probe_payload)
-        if self._is_locus_window(window_title, app_name):
-            logger.debug("[SnapshotService] Skipping self-window capture")
-            return
 
         url = self._infer_url(window_title)
         file_path = self._infer_file_path(window_title)
@@ -1031,12 +1135,13 @@ class SnapshotService:
             f"{window_title}|{app_name}|{url or ''}|{file_path or ''}".encode("utf-8")
         ).hexdigest()
 
-        # ONLY take a screenshot if the context has changed
-        # EXCEPTION: If the title is "Unknown" (ambiguous on Wayland), we always allow capture
-        # because the interval timer is already handled in the _loop.
-        if not force_capture and fingerprint == self._last_fingerprint and window_title != "Unknown":
-            # We skip heavy screenshotting if nothing changed.
-            logger.debug("[SnapshotService] Skipping capture: window context unchanged")
+        if self._should_skip_capture(
+            settings,
+            window_title,
+            app_name,
+            fingerprint,
+            force_capture,
+        ):
             return
 
         image_path = self._capture_screenshot()
@@ -1061,26 +1166,7 @@ class SnapshotService:
             ),
         }
 
-        encrypted_payload = self._encrypt_payload(payload)
-        if not encrypted_payload:
-            # Cleanup orphaned image if payload encryption fails
-            if os.path.exists(image_path):
-                os.remove(image_path)
-            return
-
-        try:
-            crud.create_activity_snapshot(
-                db,
-                encrypted_payload=encrypted_payload,
-                fingerprint=fingerprint,
-                captured_at=datetime.now(timezone.utc),
-            )
-            self._last_fingerprint = fingerprint
-        except Exception as e:
-            # Cleanup orphaned image if DB insert fails
-            if os.path.exists(image_path):
-                os.remove(image_path)
-            raise e
+        self._persist_capture_payload(db, payload, fingerprint, image_path)
 
     def _trigger_orphaned_cleanup(self, db) -> None:
         try:
@@ -1088,45 +1174,56 @@ class SnapshotService:
         except Exception as e:
             logger.error(f"Orphaned cleanup failed post-unlock: {e}")
 
+    def _collect_referenced_image_paths(self, db) -> set[str]:
+        from app.database import models
+
+        referenced_paths: set[str] = set()
+        rows = db.query(models.ActivitySnapshotRecord).all()
+        for row in rows:
+            try:
+                payload = self._decrypt_payload(row.encrypted_payload)
+                image_path = str((payload or {}).get("image_path") or "").strip()
+                if image_path:
+                    referenced_paths.add(os.path.abspath(image_path))
+            except Exception as e:
+                logger.warning(f"Failed to decrypt/process snapshot record: {e}")
+        return referenced_paths
+
+    def _delete_unreferenced_snapshot_images(
+        self,
+        referenced_paths: set[str],
+    ) -> tuple[int, int]:
+        deleted_count = 0
+        freed_bytes = 0
+
+        for image_file in SNAPSHOT_IMAGE_ROOT.glob("*.enc"):
+            abs_image_path = os.path.abspath(str(image_file))
+            if abs_image_path in referenced_paths:
+                continue
+            try:
+                freed_bytes += image_file.stat().st_size
+                image_file.unlink()
+                deleted_count += 1
+            except Exception as e:
+                logger.warning(f"Failed to delete orphaned file {image_file}: {e}")
+
+        return deleted_count, freed_bytes
+
     def _cleanup_orphaned_images(self, db) -> None:
         """Deletes any .enc files in SNAPSHOT_IMAGE_ROOT that are not referenced in the DB."""
         if not self.is_unlocked():
             logger.warning("[SnapshotService] Vault is locked; bypassing orphaned image cleanup to prevent data loss.")
             return
 
-        from app.database import models
-
         if not SNAPSHOT_IMAGE_ROOT.exists():
             return
 
         print("[SnapshotService] Running orphaned image cleanup...")
         try:
-            # Get all referenced paths from DB
-            rows = db.query(models.ActivitySnapshotRecord).all()
-            referenced_paths = set()
-            for row in rows:
-                try:
-                    payload = self._decrypt_payload(row.encrypted_payload)
-                    if payload and payload.get("image_path"):
-                        referenced_paths.add(os.path.abspath(payload["image_path"]))
-                except Exception as e:
-                    logger.warning(f"Failed to decrypt/process snapshot record: {e}")
-                    continue
-
-            # Scan disk
-            deleted_count = 0
-            freed_bytes = 0
-            for f in SNAPSHOT_IMAGE_ROOT.glob("*.enc"):
-                abs_f = os.path.abspath(str(f))
-                if abs_f not in referenced_paths:
-                    try:
-                        f_size = f.stat().st_size
-                        f.unlink()
-                        deleted_count += 1
-                        freed_bytes += f_size
-                    except Exception as e:
-                        logger.warning(f"Failed to delete orphaned file {f}: {e}")
-                        continue
+            referenced_paths = self._collect_referenced_image_paths(db)
+            deleted_count, freed_bytes = self._delete_unreferenced_snapshot_images(
+                referenced_paths
+            )
 
             if deleted_count > 0:
                 print(
@@ -1207,7 +1304,8 @@ class SnapshotService:
         try:
             if not SNAPSHOT_IMAGE_ROOT.exists():
                 SNAPSHOT_IMAGE_ROOT.mkdir(parents=True, exist_ok=True)
-                os.chmod(SNAPSHOT_IMAGE_ROOT, 0o755)  # nosec B103
+            if os.name != "nt":
+                os.chmod(SNAPSHOT_IMAGE_ROOT, 0o700)
             for child in SNAPSHOT_IMAGE_ROOT.iterdir():
                 try:
                     if child.is_file() or child.is_symlink():

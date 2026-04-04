@@ -549,9 +549,29 @@ export async function getDashboardSummary() {
   return await res.json();
 }
 
-export async function resetAuth() {
-  const res = await fetch(`${BASE_URL}/auth/reset`, { method: 'POST' });
-  if (!res.ok) throw new Error('Failed to reset app data');
+export async function resetAuth(passphrase = '', confirmation = 'RESET LOCUS DATA') {
+  const res = await fetchWithTimeout(
+    `${BASE_URL}/auth/reset`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Locus-Reset-Intent': 'confirm'
+      },
+      body: JSON.stringify({
+        confirmation,
+        passphrase: String(passphrase || '').trim() || null
+      })
+    },
+    {
+      timeoutMs: 8000,
+      attempts: 1
+    }
+  );
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => ({}));
+    throw new Error(errorData.detail || 'Failed to reset app data');
+  }
   return await res.json();
 }
 

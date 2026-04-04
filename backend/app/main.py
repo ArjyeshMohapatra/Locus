@@ -9,8 +9,8 @@ from app.monitor import monitor_service, register_restore_start, process_backup
 from app import storage
 from app import event_stream
 from app.snapshot_service import snapshot_service
-from sqlalchemy import create_engine, event, text
-from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy import text
+from sqlalchemy.orm import Session
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
 from typing import Annotated, Any, Awaitable, Callable, Literal
 import threading
@@ -39,30 +39,8 @@ logger = logging.getLogger("locus")
 
 # --- Database Setup ---
 DATABASE_URL = models.DATABASE_URL
-engine = create_engine(
-    DATABASE_URL,
-    connect_args={
-        "check_same_thread": False,
-        "timeout": 30,
-    },
-)
-
-
-@event.listens_for(engine, "connect")
-def _set_sqlite_pragmas(dbapi_connection, connection_record):
-    """Improve SQLite concurrency characteristics for read-heavy + write-burst workloads."""
-    del connection_record
-    cursor = dbapi_connection.cursor()
-    try:
-        cursor.execute("PRAGMA journal_mode=WAL")
-        cursor.execute("PRAGMA synchronous=NORMAL")
-        cursor.execute("PRAGMA busy_timeout=30000")
-        cursor.execute("PRAGMA foreign_keys=ON")
-    finally:
-        cursor.close()
-
-
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+engine = models.engine
+SessionLocal = models.SessionLocal
 
 
 # Initialize database tables (creates tables if missing).
@@ -232,8 +210,52 @@ DIAGNOSTICS_MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024
 DIAGNOSTICS_LOG_FILE_NAME = "stability-events.jsonl"
 DIAGNOSTICS_ARCHIVE_FILE_NAME = "stability-events.prev.jsonl"
 APP_VERSION = "1.5.0"
+AUTH_MAX_ATTEMPTS = 8
+AUTH_ATTEMPT_WINDOW_SECONDS = 5 * 60
+AUTH_LOCKOUT_SECONDS = 60
+AUTH_FAILURE_DELAY_SECONDS = 0.25
+RESET_INTENT_HEADER = "X-Locus-Reset-Intent"
+FACTORY_RESET_CONFIRMATION_PHRASE = "RESET LOCUS DATA"
+WATCHED_TREE_MAX_DEPTH_DEFAULT = 8
+WATCHED_TREE_MAX_CHILDREN_DEFAULT = 2000
 
 _diagnostics_log_lock = threading.Lock()
+_auth_attempt_lock = threading.Lock()
+_auth_attempt_history: dict[str, list[float]] = {}
+_auth_lockout_deadline: dict[str, float] = {}
+
+
+def _is_truthy_env(name: str, default: str = "false") -> bool:
+    raw = os.getenv(name, default)
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _read_bounded_int_env(
+    name: str,
+    default: int,
+    min_value: int,
+    max_value: int,
+) -> int:
+    raw_value = os.getenv(name, str(default)).strip()
+    try:
+        parsed = int(raw_value)
+    except ValueError:
+        return default
+    return max(min_value, min(max_value, parsed))
+
+
+WATCHED_TREE_MAX_DEPTH = _read_bounded_int_env(
+    "LOCUS_TREE_MAX_DEPTH",
+    WATCHED_TREE_MAX_DEPTH_DEFAULT,
+    2,
+    32,
+)
+WATCHED_TREE_MAX_CHILDREN_PER_DIR = _read_bounded_int_env(
+    "LOCUS_TREE_MAX_CHILDREN_PER_DIR",
+    WATCHED_TREE_MAX_CHILDREN_DEFAULT,
+    100,
+    20000,
+)
 
 
 def _build_cors_origins() -> list[str]:
@@ -258,6 +280,71 @@ def _build_cors_origins() -> list[str]:
     if not strict or env in {"dev", "development", "local"}:
         origins.extend(["http://localhost:5173", "http://127.0.0.1:5173"])
     return origins
+
+
+def _is_skip_auth_enabled() -> bool:
+    enabled = _is_truthy_env("LOCUS_SKIP_AUTH")
+    if not enabled:
+        return False
+
+    runtime_env = os.getenv("LOCUS_ENV", "development").strip().lower()
+    if runtime_env in {"prod", "production"}:
+        logger.error(
+            "[Security] LOCUS_SKIP_AUTH is ignored when LOCUS_ENV is production"
+        )
+        return False
+    return True
+
+
+def _auth_client_key(request: Request) -> str:
+    if request.client and request.client.host:
+        return str(request.client.host)
+    return "unknown"
+
+
+def _prune_auth_attempt_state(now: float) -> None:
+    stale_attempt_cutoff = now - AUTH_ATTEMPT_WINDOW_SECONDS
+
+    for key in tuple(_auth_attempt_history.keys()):
+        attempts = _auth_attempt_history.get(key, [])
+        fresh_attempts = [stamp for stamp in attempts if stamp >= stale_attempt_cutoff]
+        if fresh_attempts:
+            _auth_attempt_history[key] = fresh_attempts
+        else:
+            _auth_attempt_history.pop(key, None)
+
+    for key in tuple(_auth_lockout_deadline.keys()):
+        deadline = _auth_lockout_deadline.get(key, 0)
+        if deadline <= now:
+            _auth_lockout_deadline.pop(key, None)
+
+
+def _auth_lockout_remaining_seconds(client_key: str) -> int:
+    now = time.time()
+    with _auth_attempt_lock:
+        _prune_auth_attempt_state(now)
+        deadline = _auth_lockout_deadline.get(client_key)
+        if not deadline:
+            return 0
+        remaining = int(deadline - now)
+        return remaining if remaining > 0 else 0
+
+
+def _record_auth_failure(client_key: str) -> None:
+    now = time.time()
+    with _auth_attempt_lock:
+        _prune_auth_attempt_state(now)
+        attempts = _auth_attempt_history.setdefault(client_key, [])
+        attempts.append(now)
+        if len(attempts) >= AUTH_MAX_ATTEMPTS:
+            _auth_lockout_deadline[client_key] = now + AUTH_LOCKOUT_SECONDS
+            _auth_attempt_history[client_key] = []
+
+
+def _reset_auth_failures(client_key: str) -> None:
+    with _auth_attempt_lock:
+        _auth_attempt_history.pop(client_key, None)
+        _auth_lockout_deadline.pop(client_key, None)
 
 
 def _is_port_available(host: str, port: int) -> bool:
@@ -671,30 +758,41 @@ def _read_bool_setting(db: Session, key: str, default: bool) -> bool:
     return str(raw_value).strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _read_crash_reporting_endpoint(db: Session) -> str:
-    raw_value = crud.get_setting(db, "crash_reporting_endpoint", "")
-    if raw_value is None:
-        return ""
+def _allow_insecure_telemetry() -> bool:
+    return _is_truthy_env("LOCUS_ALLOW_INSECURE_TELEMETRY")
 
-    endpoint = str(raw_value).strip()
+
+def _normalize_telemetry_endpoint(raw_value: str | None) -> str:
+    endpoint = str(raw_value or "").strip()
     if not endpoint:
         return ""
 
     parsed = urllib.parse.urlparse(endpoint)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+    if not parsed.netloc:
         return ""
 
-    return endpoint
+    scheme = str(parsed.scheme).lower()
+    if scheme == "https":
+        return endpoint
+
+    if scheme == "http":
+        host = str(parsed.hostname or "").strip().lower()
+        if host in {"localhost", "127.0.0.1", "::1"} or _allow_insecure_telemetry():
+            return endpoint
+
+    return ""
+
+
+def _read_crash_reporting_endpoint(db: Session) -> str:
+    raw_value = crud.get_setting(db, "crash_reporting_endpoint", "")
+    return _normalize_telemetry_endpoint(raw_value)
 
 
 def _resolve_crash_reporting_endpoint(db: Session) -> str:
     # Keep endpoint configuration backend-only via env var, with a legacy DB fallback.
     env_endpoint = os.getenv("LOCUS_TELEMETRY_ENDPOINT", "")
     if env_endpoint:
-        parsed = urllib.parse.urlparse(str(env_endpoint).strip())
-        if parsed.scheme in {"http", "https"} and parsed.netloc:
-            return str(env_endpoint).strip()
-        return ""
+        return _normalize_telemetry_endpoint(env_endpoint)
 
     return _read_crash_reporting_endpoint(db)
 
@@ -1060,7 +1158,7 @@ async def add_security_headers(
         "/auth/reset",
     }
 
-    if request.url.path not in exempt_paths and os.getenv("LOCUS_SKIP_AUTH") != "true":
+    if request.url.path not in exempt_paths and not _is_skip_auth_enabled():
         try:
             from app.database.models import SessionLocal
 
@@ -1153,16 +1251,25 @@ def _safe_scandir(path: str) -> list[os.DirEntry[str]]:
         return []
 
 
-def _build_watched_tree_node(path: str) -> dict[str, object]:
+def _build_watched_tree_node(path: str, depth: int = 0) -> dict[str, object]:
     node: dict[str, object] = {
         "type": "dir",
         "name": os.path.basename(path.rstrip("\\/")) or path,
         "path": path,
         "children": [],
         "file_count": 0,
+        "truncated": False,
     }
 
+    if depth >= WATCHED_TREE_MAX_DEPTH:
+        node["truncated"] = True
+        return node
+
     entries = _safe_scandir(path)
+    if len(entries) > WATCHED_TREE_MAX_CHILDREN_PER_DIR:
+        entries = entries[:WATCHED_TREE_MAX_CHILDREN_PER_DIR]
+        node["truncated"] = True
+
     entries.sort(key=lambda e: (not e.is_dir(follow_symlinks=False), e.name.lower()))
 
     total_files = 0
@@ -1173,9 +1280,11 @@ def _build_watched_tree_node(path: str) -> dict[str, object]:
             continue
 
         if entry.is_dir(follow_symlinks=False):
-            child_node = _build_watched_tree_node(child_path)
+            child_node = _build_watched_tree_node(child_path, depth + 1)
             node["children"].append(child_node)
-            total_files += child_node["file_count"]
+            total_files += int(child_node.get("file_count") or 0)
+            if child_node.get("truncated"):
+                node["truncated"] = True
         elif entry.is_file(follow_symlinks=False):
             node["children"].append(
                 {
@@ -3086,7 +3195,16 @@ def get_auth_status(db: DbSession):
 
 
 class SetupPayload(BaseModel):
-    master_password: str
+    model_config = ConfigDict(str_strip_whitespace=True)
+    master_password: str = Field(
+        min_length=MIN_SNAPSHOT_PASSPHRASE_LENGTH,
+        max_length=256,
+    )
+
+    @field_validator("master_password")
+    @classmethod
+    def validate_master_password(cls, value: str) -> str:
+        return _validate_text_input(value, "master_password")
 
 
 @app.post(
@@ -3110,19 +3228,44 @@ def auth_setup(payload: SetupPayload, db: DbSession):
 
 
 class UnlockPayload(BaseModel):
-    passphrase: str
+    model_config = ConfigDict(str_strip_whitespace=True)
+    passphrase: str = Field(
+        min_length=MIN_SNAPSHOT_UNLOCK_COMPAT_LENGTH,
+        max_length=256,
+    )
+
+    @field_validator("passphrase")
+    @classmethod
+    def validate_passphrase(cls, value: str) -> str:
+        return _validate_text_input(value, "passphrase")
 
 
 @app.post(
     "/auth/unlock",
     responses={
         401: {"description": "Invalid password or recovery key"},
+        429: {"description": "Too many unlock attempts"},
     },
 )
-def auth_unlock(payload: UnlockPayload, db: DbSession):
+def auth_unlock(payload: UnlockPayload, db: DbSession, request: Request):
+    client_key = _auth_client_key(request)
+    remaining_lockout = _auth_lockout_remaining_seconds(client_key)
+    if remaining_lockout > 0:
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                "Too many unlock attempts. "
+                f"Please wait {remaining_lockout} seconds and try again."
+            ),
+        )
+
     ok = snapshot_service.unlock(payload.passphrase, db)
     if not ok:
+        _record_auth_failure(client_key)
+        time.sleep(AUTH_FAILURE_DELAY_SECONDS)
         raise HTTPException(status_code=401, detail="Invalid password or recovery key")
+
+    _reset_auth_failures(client_key)
     return {"unlocked": True}
 
 
@@ -3246,18 +3389,52 @@ def get_dashboard_summary(db: DbSession):
     }
 
 
+class AuthResetPayload(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+    confirmation: Literal["RESET LOCUS DATA"]
+    passphrase: str | None = Field(
+        default=None,
+        min_length=MIN_SNAPSHOT_UNLOCK_COMPAT_LENGTH,
+        max_length=256,
+    )
+
+    @field_validator("passphrase")
+    @classmethod
+    def validate_optional_passphrase(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return _validate_text_input(value, "passphrase")
+
+
 @app.post(
     "/auth/reset",
     responses={
+        400: {"description": "Reset intent not confirmed"},
+        401: {"description": "Passphrase required for reset"},
         500: {"description": "Factory reset failed"},
     },
 )
-def auth_reset_factory(db: DbSession):
+def auth_reset_factory(payload: AuthResetPayload, request: Request, db: DbSession):
     """Factory reset: wipe all data and return to first-run setup."""
     import shutil
     from app.database.models import Base
     from app.storage import STORAGE_ROOT
     from app.snapshot_service import SNAPSHOT_IMAGE_ROOT
+
+    header_value = str(request.headers.get(RESET_INTENT_HEADER, "")).strip().lower()
+    if header_value != "confirm":
+        raise HTTPException(status_code=400, detail="Reset intent header missing")
+
+    if payload.confirmation != FACTORY_RESET_CONFIRMATION_PHRASE:
+        raise HTTPException(status_code=400, detail="Invalid reset confirmation phrase")
+
+    verifier = crud.get_setting(db, "snapshot_key_verifier", None)
+    if verifier and not snapshot_service.is_unlocked():
+        if not payload.passphrase:
+            raise HTTPException(status_code=401, detail="Passphrase is required for reset")
+        if not snapshot_service.unlock(payload.passphrase, db):
+            time.sleep(AUTH_FAILURE_DELAY_SECONDS)
+            raise HTTPException(status_code=401, detail="Invalid passphrase")
 
     try:
         # 1. Close the injected session so it releases its SQLite lock.
