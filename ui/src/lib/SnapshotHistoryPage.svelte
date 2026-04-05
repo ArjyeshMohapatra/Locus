@@ -1,3 +1,4 @@
+<svelte:options runes={false} />
 <script>
   import { onDestroy, onMount } from 'svelte';
   import {
@@ -14,6 +15,83 @@
   let error = '';
 
   let limit = 400;
+
+  const FILTER_MODE_NONE = 'none';
+  const FILTER_MODE_YEAR = 'year';
+  const FILTER_MODE_MONTH = 'month';
+  const FILTER_MODE_WEEK = 'week';
+  const FILTER_MODE_DAY = 'day';
+  const FILTER_MODE_TIME_OF_DAY = 'time_of_day';
+
+  const TIME_OF_DAY_BUCKETS = [
+    { value: 'morning', label: 'Morning (05:00-11:59)' },
+    { value: 'afternoon', label: 'Afternoon (12:00-16:59)' },
+    { value: 'evening', label: 'Evening (17:00-20:59)' },
+    { value: 'night', label: 'Night (21:00-04:59)' }
+  ];
+
+  const nowLocal = new Date();
+  const pad2 = (value) => String(value).padStart(2, '0');
+  const toDateInputValue = (date) => `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
+  const toMonthInputValue = (date) => `${date.getFullYear()}-${pad2(date.getMonth() + 1)}`;
+
+  const toIsoWeekInputValue = (date) => {
+    const working = new Date(date);
+    working.setHours(0, 0, 0, 0);
+    working.setDate(working.getDate() + 3 - ((working.getDay() + 6) % 7));
+    const weekOne = new Date(working.getFullYear(), 0, 4);
+    const week =
+      1 + Math.round(((working.getTime() - weekOne.getTime()) / 86400000 - 3 + ((weekOne.getDay() + 6) % 7)) / 7);
+    return `${working.getFullYear()}-W${pad2(week)}`;
+  };
+
+  const parseSnapshotDate = (value) => {
+    if (!value) return null;
+    let normalized = value;
+    if (typeof value === 'string' && !value.endsWith('Z') && !value.includes('+') && !value.includes('-')) {
+      normalized = value.replace(' ', 'T') + 'Z';
+    }
+    const parsed = new Date(normalized);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  };
+
+  const parseIsoWeekInput = (value) => {
+    const match = /^([0-9]{4})-W([0-9]{2})$/.exec(String(value || ''));
+    if (!match) return null;
+    const year = Number(match[1]);
+    const week = Number(match[2]);
+    if (!Number.isFinite(year) || !Number.isFinite(week) || week < 1 || week > 53) {
+      return null;
+    }
+
+    const jan4 = new Date(year, 0, 4);
+    const jan4Day = jan4.getDay() || 7;
+    const mondayOfWeekOne = new Date(year, 0, 4 - (jan4Day - 1));
+    mondayOfWeekOne.setHours(0, 0, 0, 0);
+
+    const start = new Date(mondayOfWeekOne);
+    start.setDate(mondayOfWeekOne.getDate() + (week - 1) * 7);
+    const end = new Date(start);
+    end.setDate(start.getDate() + 7);
+
+    return { start, end };
+  };
+
+  const isInTimeOfDayBucket = (date, bucketValue) => {
+    if (!(date instanceof Date) || Number.isNaN(date.getTime())) return false;
+    const hour = date.getHours();
+    if (bucketValue === 'morning') return hour >= 5 && hour <= 11;
+    if (bucketValue === 'afternoon') return hour >= 12 && hour <= 16;
+    if (bucketValue === 'evening') return hour >= 17 && hour <= 20;
+    return hour >= 21 || hour <= 4;
+  };
+
+  let filterMode = FILTER_MODE_NONE;
+  let filterYear = String(nowLocal.getFullYear());
+  let filterMonth = toMonthInputValue(nowLocal);
+  let filterWeek = toIsoWeekInputValue(nowLocal);
+  let filterDay = toDateInputValue(nowLocal);
+  let filterTimeOfDay = TIME_OF_DAY_BUCKETS[0].value;
 
   let allowDelete = false;
   let items = [];
@@ -52,6 +130,71 @@
   const imageUrl = (item) => {
     if (!item?.image_available || !item?.image_endpoint) return null;
     return `${BASE_URL}${item.image_endpoint}`;
+  };
+
+  const buildHistoryTimeRange = () => {
+    if (filterMode === FILTER_MODE_NONE || filterMode === FILTER_MODE_TIME_OF_DAY) {
+      return { start_time: null, end_time: null };
+    }
+
+    if (filterMode === FILTER_MODE_YEAR) {
+      const year = Number(filterYear);
+      if (!Number.isFinite(year) || year < 1970 || year > 9999) {
+        throw new Error('Invalid year filter.');
+      }
+      const start = new Date(year, 0, 1, 0, 0, 0, 0);
+      const end = new Date(year + 1, 0, 1, 0, 0, 0, 0);
+      return { start_time: start.toISOString(), end_time: end.toISOString() };
+    }
+
+    if (filterMode === FILTER_MODE_MONTH) {
+      const match = /^([0-9]{4})-([0-9]{2})$/.exec(String(filterMonth || ''));
+      if (!match) {
+        throw new Error('Invalid month filter.');
+      }
+      const year = Number(match[1]);
+      const month = Number(match[2]);
+      const start = new Date(year, month - 1, 1, 0, 0, 0, 0);
+      const end = new Date(year, month, 1, 0, 0, 0, 0);
+      return { start_time: start.toISOString(), end_time: end.toISOString() };
+    }
+
+    if (filterMode === FILTER_MODE_WEEK) {
+      const parsed = parseIsoWeekInput(filterWeek);
+      if (!parsed) {
+        throw new Error('Invalid week filter.');
+      }
+      return {
+        start_time: parsed.start.toISOString(),
+        end_time: parsed.end.toISOString()
+      };
+    }
+
+    if (filterMode === FILTER_MODE_DAY) {
+      const match = /^([0-9]{4})-([0-9]{2})-([0-9]{2})$/.exec(String(filterDay || ''));
+      if (!match) {
+        throw new Error('Invalid day filter.');
+      }
+      const year = Number(match[1]);
+      const month = Number(match[2]);
+      const day = Number(match[3]);
+      const start = new Date(year, month - 1, day, 0, 0, 0, 0);
+      const end = new Date(year, month - 1, day + 1, 0, 0, 0, 0);
+      return { start_time: start.toISOString(), end_time: end.toISOString() };
+    }
+
+    return { start_time: null, end_time: null };
+  };
+
+  const applyClientSideFilters = (source) => {
+    const rows = Array.isArray(source) ? source : [];
+    if (filterMode !== FILTER_MODE_TIME_OF_DAY) {
+      return rows;
+    }
+    return rows.filter((item) => {
+      const capturedAt = parseSnapshotDate(item?.captured_at);
+      return isInTimeOfDayBucket(capturedAt, filterTimeOfDay);
+    });
   };
 
   const revokeImageObjectUrl = (id) => {
@@ -137,7 +280,8 @@
   };
 
   const buildTimeline = (preferredId = null, preferredIndex = null) => {
-    timelineItems = [...items].reverse();
+    const filteredItems = applyClientSideFilters(items);
+    timelineItems = [...filteredItems].reverse();
     if (timelineItems.length === 0) {
       scrubIndex = 0;
       scrubDraftIndex = 0;
@@ -183,6 +327,17 @@
     const auto = isAutoRefresh === true;
     if (!auto) loading = true;
     error = '';
+
+    let range = { start_time: null, end_time: null };
+    try {
+      range = buildHistoryTimeRange();
+    } catch (e) {
+      if (!auto) {
+        error = e.message || 'Invalid timeline filter';
+      }
+      loading = false;
+      return;
+    }
     
     let isAtRightEdge = false;
     if (timelineItems.length > 0) {
@@ -195,9 +350,12 @@
     const currentIndex = scrubIndex;
 
     try {
-      const data = await getSnapshotHistory({
-        limit: Number(limit) || 200
-      });
+      const payload = {
+        limit: Number(limit) || 200,
+        ...(range.start_time ? { start_time: range.start_time } : {}),
+        ...(range.end_time ? { end_time: range.end_time } : {})
+      };
+      const data = await getSnapshotHistory(payload);
       items = data.items || [];
       pruneImageObjectUrlCache(new Set(items.map((item) => item.id)));
       
@@ -268,6 +426,15 @@
     }
   };
 
+  const applyTimelineFilter = async () => {
+    await loadHistory();
+  };
+
+  const clearTimelineFilter = async () => {
+    filterMode = FILTER_MODE_NONE;
+    await loadHistory();
+  };
+
   onMount(async () => {
     await Promise.all([loadSettings(), loadHistory()]);
     refreshTimer = setInterval(() => {
@@ -301,7 +468,13 @@
       <p class="snapshot-subtitle">Recall-style timeline for recent activity context.</p>
     </div>
     <div class="snapshot-head-meta">
-      <span class="badge-soft badge-soft-secondary">{items.length} snapshots</span>
+      <span class="badge-soft badge-soft-secondary">
+        {#if filterMode === FILTER_MODE_NONE}
+          {items.length} snapshots
+        {:else}
+          {timelineItems.length} of {items.length} snapshots
+        {/if}
+      </span>
       <button class="btn btn-sm btn-outline-secondary refresh-btn" on:click={loadHistory} disabled={loading}>
         Refresh
       </button>
@@ -313,6 +486,71 @@
       <h2>Recall Timeline</h2>
       <span class="recall-note">Drag left or right to navigate snapshots.</span>
     </div>
+
+    <div class="timeline-filter-row">
+      <div class="timeline-filter-field">
+        <label class="form-label fw-semibold" for="snapshot-filter-mode">Filter By</label>
+        <select id="snapshot-filter-mode" class="form-select" bind:value={filterMode}>
+          <option value={FILTER_MODE_NONE}>None</option>
+          <option value={FILTER_MODE_YEAR}>Year</option>
+          <option value={FILTER_MODE_MONTH}>Month</option>
+          <option value={FILTER_MODE_WEEK}>Week</option>
+          <option value={FILTER_MODE_DAY}>Day</option>
+          <option value={FILTER_MODE_TIME_OF_DAY}>Time of Day</option>
+        </select>
+      </div>
+
+      {#if filterMode === FILTER_MODE_YEAR}
+        <div class="timeline-filter-field">
+          <label class="form-label fw-semibold" for="snapshot-filter-year">Year</label>
+          <input
+            id="snapshot-filter-year"
+            class="form-control"
+            type="number"
+            min="1970"
+            max="9999"
+            bind:value={filterYear}
+          />
+        </div>
+      {:else if filterMode === FILTER_MODE_MONTH}
+        <div class="timeline-filter-field">
+          <label class="form-label fw-semibold" for="snapshot-filter-month">Month</label>
+          <input id="snapshot-filter-month" class="form-control" type="month" bind:value={filterMonth} />
+        </div>
+      {:else if filterMode === FILTER_MODE_WEEK}
+        <div class="timeline-filter-field">
+          <label class="form-label fw-semibold" for="snapshot-filter-week">ISO Week (Mon-Sun)</label>
+          <input id="snapshot-filter-week" class="form-control" type="week" bind:value={filterWeek} />
+        </div>
+      {:else if filterMode === FILTER_MODE_DAY}
+        <div class="timeline-filter-field">
+          <label class="form-label fw-semibold" for="snapshot-filter-day">Day</label>
+          <input id="snapshot-filter-day" class="form-control" type="date" bind:value={filterDay} />
+        </div>
+      {:else if filterMode === FILTER_MODE_TIME_OF_DAY}
+        <div class="timeline-filter-field">
+          <label class="form-label fw-semibold" for="snapshot-filter-time">Time of Day</label>
+          <select id="snapshot-filter-time" class="form-select" bind:value={filterTimeOfDay}>
+            {#each TIME_OF_DAY_BUCKETS as bucket}
+              <option value={bucket.value}>{bucket.label}</option>
+            {/each}
+          </select>
+        </div>
+      {/if}
+
+      <div class="timeline-filter-actions">
+        <button class="btn btn-sm btn-primary" on:click={applyTimelineFilter} disabled={loading}>
+          Apply
+        </button>
+        <button class="btn btn-sm btn-outline-secondary" on:click={clearTimelineFilter} disabled={loading || filterMode === FILTER_MODE_NONE}>
+          Clear
+        </button>
+      </div>
+    </div>
+
+    {#if filterMode === FILTER_MODE_TIME_OF_DAY}
+      <div class="small text-muted mt-1">Time-of-day filtering uses local timezone buckets.</div>
+    {/if}
 
     {#if error}
       <div class="alert alert-danger mt-2 py-2">{error}</div>
@@ -445,6 +683,31 @@
   .recall-note {
     font-size: 0.79rem;
     color: var(--text-muted);
+  }
+
+  .timeline-filter-row {
+    display: grid;
+    gap: 0.6rem;
+    grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+    margin: 0.45rem 0 0.7rem;
+    align-items: end;
+  }
+
+  .timeline-filter-field {
+    min-width: 0;
+  }
+
+  .timeline-filter-field .form-label {
+    margin-bottom: 0.25rem;
+    font-size: 0.78rem;
+  }
+
+  .timeline-filter-actions {
+    display: flex;
+    align-items: end;
+    gap: 0.4rem;
+    flex-wrap: wrap;
+    justify-content: flex-start;
   }
 
   .timeline-caption {

@@ -59,8 +59,7 @@
   box-shadow: none;
   position: relative;
   z-index: 10;
-  overflow-x: visible;
-  overflow-y: auto;
+  overflow: hidden auto;
   height: 100%;
   flex: 0 0 68px;
   width: 68px;

@@ -711,6 +711,19 @@ class SnapshotActionPayload(BaseModel):
     value: str = Field(min_length=1, max_length=4096)
 
 
+class SnapshotBulkDeletePayload(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+    passphrase: str = Field(
+        min_length=MIN_SNAPSHOT_UNLOCK_COMPAT_LENGTH,
+        max_length=256,
+    )
+
+    @field_validator("passphrase")
+    @classmethod
+    def validate_passphrase(cls, value: str) -> str:
+        return _validate_text_input(value, "passphrase")
+
+
 # --- Helper Functions ---
 def _normalize_path(path: str) -> str:
     """Normalize a filesystem path for consistent comparisons and DB lookups.
@@ -3546,6 +3559,42 @@ def get_snapshot_image(snapshot_id: int, db: DbSession):
         raise HTTPException(status_code=404, detail="Snapshot image not found")
 
     return Response(content=image_bytes, media_type="image/jpeg")
+
+
+@app.post(
+    "/snapshots/delete-all",
+    responses={
+        401: {"description": "Invalid password or recovery key"},
+        423: {"description": "Snapshot vault is locked"},
+        429: {"description": "Too many unlock attempts"},
+    },
+)
+def delete_all_snapshots(
+    payload: SnapshotBulkDeletePayload,
+    db: DbSession,
+    request: Request,
+):
+    if not snapshot_service.is_unlocked():
+        raise HTTPException(status_code=423, detail=SNAPSHOT_VAULT_LOCKED_DETAIL)
+
+    client_key = _auth_client_key(request)
+    remaining_lockout = _auth_lockout_remaining_seconds(client_key)
+    if remaining_lockout > 0:
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                "Too many unlock attempts. "
+                f"Please wait {remaining_lockout} seconds and try again."
+            ),
+        )
+
+    if not snapshot_service.unlock(payload.passphrase, db):
+        _record_auth_failure(client_key)
+        time.sleep(AUTH_FAILURE_DELAY_SECONDS)
+        raise HTTPException(status_code=401, detail="Invalid password or recovery key")
+
+    _reset_auth_failures(client_key)
+    return snapshot_service.delete_all_snapshots(db)
 
 
 @app.delete(

@@ -1,9 +1,10 @@
+<svelte:options runes={false} />
 <script>
   import { onMount } from 'svelte';
   import {
     createCheckpointSession,
     diffCheckpointSessions,
-    getCheckpointSessionDetail,
+    getFileVersionContent,
     getWatchedPaths,
     listCheckpointSessions,
     renameCheckpointSession,
@@ -15,14 +16,12 @@
   const TAB_HISTORY = 'history';
   const TAB_DIFF = 'diff';
   const TAB_RESTORE = 'restore';
-  const TAB_MANIFEST = 'manifest';
 
   const topTabs = [
     { id: TAB_CREATE, label: 'Create' },
     { id: TAB_HISTORY, label: 'History' },
     { id: TAB_DIFF, label: 'Diff Explorer' },
-    { id: TAB_RESTORE, label: 'Restore' },
-    { id: TAB_MANIFEST, label: 'Manifest' }
+    { id: TAB_RESTORE, label: 'Restore' }
   ];
 
   let activeTab = TAB_DIFF;
@@ -39,9 +38,6 @@
   let loadingSessions = false;
   let renamingSessionId = '';
 
-  let detailLoading = false;
-  let selectedSessionDetail = null;
-
   let fromSessionId = '';
   let toSessionId = '';
   let includeUnchanged = false;
@@ -51,6 +47,21 @@
   let modifiedItems = [];
   let selectedDiffItem = null;
   let totalChangedFiles = 0;
+  let diffTreeRows = [];
+  let expandedDiffFolders = new Set();
+  let selectedDiffContentLoading = false;
+  let selectedDiffContentError = '';
+  let selectedDiffContentKey = '';
+  let selectedDiffBeforeState = null;
+  let selectedDiffAfterState = null;
+  let selectedDiffBeforeLines = [];
+  let selectedDiffAfterLines = [];
+  let selectedDiffBeforeHighlights = new Set();
+  let selectedDiffAfterHighlights = new Set();
+  let diffContentLoadToken = 0;
+  let beforeStatePaneEl;
+  let afterStatePaneEl;
+  let syncingStateScroll = false;
 
   let restoreSessionId = '';
   let restoreDestinationRoot = '';
@@ -87,6 +98,13 @@
     return 'Full Folder';
   };
 
+  const projectNameFromPath = (path) => {
+    const normalized = String(path || '').replace(/\\/g, '/').replace(/\/+$/, '');
+    if (!normalized) return 'Unknown Project';
+    const parts = normalized.split('/').filter(Boolean);
+    return parts[parts.length - 1] || normalized;
+  };
+
   const formatDelta = (value, prefix) => `${prefix}${Number(value || 0)}`;
 
   const parseFilePaths = () => {
@@ -119,6 +137,233 @@
   const filePathKey = (item) => String(item?.file_path || '');
   const toInt = (value) => Number(value || 0);
 
+  const splitContentLines = (content) => {
+    const text = typeof content === 'string' ? content : '';
+    if (!text) return [];
+    return text.replace(/\r\n/g, '\n').split('\n');
+  };
+
+  const buildHighlightedLineSets = (item) => {
+    const before = new Set();
+    const after = new Set();
+
+    const hunks = item?.line_diff?.hunks;
+    if (!Array.isArray(hunks)) {
+      return { before, after };
+    }
+
+    for (const hunk of hunks) {
+      const fromStart = Number(hunk?.from_start || 0);
+      const fromCount = Number(hunk?.from_count || 0);
+      const toStart = Number(hunk?.to_start || 0);
+      const toCount = Number(hunk?.to_count || 0);
+
+      for (let i = 0; i < fromCount; i += 1) {
+        before.add(fromStart + i);
+      }
+      for (let i = 0; i < toCount; i += 1) {
+        after.add(toStart + i);
+      }
+    }
+
+    return { before, after };
+  };
+
+  const resetSelectedDiffContentState = () => {
+    selectedDiffContentLoading = false;
+    selectedDiffContentError = '';
+    selectedDiffBeforeState = null;
+    selectedDiffAfterState = null;
+    selectedDiffBeforeLines = [];
+    selectedDiffAfterLines = [];
+    selectedDiffBeforeHighlights = new Set();
+    selectedDiffAfterHighlights = new Set();
+  };
+
+  const loadSelectedDiffContent = async (item, contentKey) => {
+    if (!item) return;
+
+    const fromVersionId = Number(item.from_file_version_id || 0);
+    const toVersionId = Number(item.to_file_version_id || 0);
+    if (!fromVersionId || !toVersionId) {
+      resetSelectedDiffContentState();
+      selectedDiffContentError = 'Missing version IDs for selected diff file.';
+      return;
+    }
+
+    const token = ++diffContentLoadToken;
+    resetSelectedDiffContentState();
+    selectedDiffContentLoading = true;
+
+    try {
+      const [beforeState, afterState] = await Promise.all([
+        getFileVersionContent(fromVersionId),
+        getFileVersionContent(toVersionId)
+      ]);
+
+      if (token !== diffContentLoadToken || contentKey !== selectedDiffContentKey) return;
+
+      selectedDiffBeforeState = beforeState || null;
+      selectedDiffAfterState = afterState || null;
+
+      const beforeType = String(beforeState?.type || 'text');
+      const afterType = String(afterState?.type || 'text');
+
+      selectedDiffBeforeLines = beforeType === 'text' ? splitContentLines(beforeState?.content) : [];
+      selectedDiffAfterLines = afterType === 'text' ? splitContentLines(afterState?.content) : [];
+
+      const highlights = buildHighlightedLineSets(item);
+      selectedDiffBeforeHighlights = highlights.before;
+      selectedDiffAfterHighlights = highlights.after;
+
+      if (beforeStatePaneEl) beforeStatePaneEl.scrollTop = 0;
+      if (afterStatePaneEl) afterStatePaneEl.scrollTop = 0;
+    } catch (e) {
+      if (token !== diffContentLoadToken || contentKey !== selectedDiffContentKey) return;
+      resetSelectedDiffContentState();
+      selectedDiffContentError = e.message || 'Failed to load full file states for this diff.';
+    } finally {
+      if (token === diffContentLoadToken && contentKey === selectedDiffContentKey) {
+        selectedDiffContentLoading = false;
+      }
+    }
+  };
+
+  const syncStatePaneScroll = (source, target) => {
+    if (!source || !target || syncingStateScroll) return;
+    syncingStateScroll = true;
+
+    const sourceScrollable = source.scrollHeight - source.clientHeight;
+    const targetScrollable = target.scrollHeight - target.clientHeight;
+    const ratio = sourceScrollable > 0 ? source.scrollTop / sourceScrollable : 0;
+    target.scrollTop = ratio * Math.max(0, targetScrollable);
+
+    requestAnimationFrame(() => {
+      syncingStateScroll = false;
+    });
+  };
+
+  const onBeforeStateScroll = () => {
+    syncStatePaneScroll(beforeStatePaneEl, afterStatePaneEl);
+  };
+
+  const onAfterStateScroll = () => {
+    syncStatePaneScroll(afterStatePaneEl, beforeStatePaneEl);
+  };
+
+  const normalizeDiffPath = (path) =>
+    String(path || '')
+      .replace(/\\/g, '/')
+      .replace(/\/+/g, '/')
+      .replace(/^\/+/, '');
+
+  const toDiffTree = (items) => {
+    const root = new Map();
+
+    for (const item of items) {
+      const normalized = normalizeDiffPath(item?.file_path);
+      if (!normalized) continue;
+      const parts = normalized.split('/').filter(Boolean);
+      let cursor = root;
+      let folderKey = '';
+
+      for (let i = 0; i < parts.length; i += 1) {
+        const part = parts[i];
+        const isLeaf = i === parts.length - 1;
+
+        if (isLeaf) {
+          cursor.set(`file:${normalized}`, {
+            type: 'file',
+            key: `file:${normalized}`,
+            name: part,
+            fullPath: item.file_path,
+            item
+          });
+        } else {
+          folderKey = folderKey ? `${folderKey}/${part}` : part;
+          const existing = cursor.get(`folder:${folderKey}`);
+          if (existing && existing.type === 'folder') {
+            cursor = existing.children;
+          } else {
+            const folderNode = {
+              type: 'folder',
+              key: `folder:${folderKey}`,
+              name: part,
+              children: new Map()
+            };
+            cursor.set(folderNode.key, folderNode);
+            cursor = folderNode.children;
+          }
+        }
+      }
+    }
+
+    const sortNodes = (nodeMap) => {
+      const nodes = Array.from(nodeMap.values());
+      nodes.sort((a, b) => {
+        if (a.type !== b.type) return a.type === 'folder' ? -1 : 1;
+        return String(a.name).localeCompare(String(b.name), undefined, { sensitivity: 'base' });
+      });
+
+      return nodes.map((node) => {
+        if (node.type !== 'folder') return node;
+        return {
+          ...node,
+          children: sortNodes(node.children)
+        };
+      });
+    };
+
+    return sortNodes(root);
+  };
+
+  const collectDiffFolderKeys = (nodes, acc = new Set()) => {
+    for (const node of nodes) {
+      if (node.type !== 'folder') continue;
+      acc.add(node.key);
+      collectDiffFolderKeys(node.children, acc);
+    }
+    return acc;
+  };
+
+  const flattenDiffTree = (nodes, expandedFolders, depth = 0, acc = []) => {
+    for (const node of nodes) {
+      if (node.type === 'folder') {
+        acc.push({
+          kind: 'folder',
+          key: node.key,
+          name: node.name,
+          depth,
+          expanded: expandedFolders.has(node.key),
+          childCount: node.children.length
+        });
+        if (expandedFolders.has(node.key)) {
+          flattenDiffTree(node.children, expandedFolders, depth + 1, acc);
+        }
+      } else {
+        acc.push({
+          kind: 'file',
+          key: node.key,
+          name: node.name,
+          depth,
+          item: node.item,
+          fullPath: node.fullPath
+        });
+      }
+    }
+    return acc;
+  };
+
+  const toggleDiffFolder = (folderKey) => {
+    const next = new Set(expandedDiffFolders);
+    if (next.has(folderKey)) {
+      next.delete(folderKey);
+    } else {
+      next.add(folderKey);
+    }
+    expandedDiffFolders = next;
+  };
+
   const selectDiffFile = (item) => {
     selectedDiffFilePath = filePathKey(item);
   };
@@ -137,6 +382,47 @@
   }
   $: selectedDiffItem =
     modifiedItems.find((item) => filePathKey(item) === selectedDiffFilePath) || null;
+  $: {
+    const treeNodes = toDiffTree(modifiedItems);
+    const allFolders = collectDiffFolderKeys(treeNodes);
+    const nextExpanded = new Set();
+    for (const key of expandedDiffFolders) {
+      if (allFolders.has(key)) nextExpanded.add(key);
+    }
+    for (const key of allFolders) {
+      if (!nextExpanded.has(key)) nextExpanded.add(key);
+    }
+
+    let changed = nextExpanded.size !== expandedDiffFolders.size;
+    if (!changed) {
+      for (const key of nextExpanded) {
+        if (!expandedDiffFolders.has(key)) {
+          changed = true;
+          break;
+        }
+      }
+    }
+
+    const activeExpanded = changed ? nextExpanded : expandedDiffFolders;
+    if (changed) {
+      expandedDiffFolders = nextExpanded;
+    }
+
+    diffTreeRows = flattenDiffTree(treeNodes, activeExpanded);
+  }
+  $: {
+    const nextContentKey = selectedDiffItem
+      ? `${selectedDiffItem.file_path}|${selectedDiffItem.from_file_version_id}|${selectedDiffItem.to_file_version_id}`
+      : '';
+
+    if (!nextContentKey) {
+      selectedDiffContentKey = '';
+      resetSelectedDiffContentState();
+    } else if (nextContentKey !== selectedDiffContentKey) {
+      selectedDiffContentKey = nextContentKey;
+      loadSelectedDiffContent(selectedDiffItem, nextContentKey);
+    }
+  }
 
   const loadWatched = async () => {
     const data = await getWatchedPaths();
@@ -158,6 +444,9 @@
   const loadSessions = async () => {
     if (!selectedWatchedPath) {
       sessions = [];
+      fromSessionId = '';
+      toSessionId = '';
+      restoreSessionId = '';
       return;
     }
 
@@ -200,7 +489,6 @@
     pageError = '';
     diffResult = null;
     restorePreview = null;
-    selectedSessionDetail = null;
 
     try {
       await loadWatched();
@@ -278,12 +566,6 @@
     try {
       await renameCheckpointSession(session.id, cleaned);
       await loadSessions();
-      if (selectedSessionDetail?.id === session.id) {
-        selectedSessionDetail = {
-          ...selectedSessionDetail,
-          name: ' '.concat(cleaned).trim().replace(/\s+/g, ' ')
-        };
-      }
     } catch (e) {
       pageError = e.message || 'Failed to rename checkpoint';
     } finally {
@@ -291,25 +573,12 @@
     }
   };
 
-  const viewManifest = async (sessionId) => {
-    detailLoading = true;
-    pageError = '';
-    try {
-      selectedSessionDetail = await getCheckpointSessionDetail(sessionId);
-    } catch (e) {
-      pageError = e.message || 'Failed to load checkpoint detail';
-      selectedSessionDetail = null;
-    } finally {
-      detailLoading = false;
-    }
-  };
-
-  const openManifest = async (sessionId) => {
-    await viewManifest(sessionId);
-    activeTab = TAB_MANIFEST;
-  };
-
   const compareSessions = async () => {
+    if (!selectedWatchedPath) {
+      pageError = 'Select a tracked project from the header first.';
+      return;
+    }
+
     if (!fromSessionId || !toSessionId) {
       pageError = 'Pick both sessions to compare.';
       return;
@@ -400,10 +669,13 @@
   };
 
   const onWatchedChange = async () => {
-    selectedSessionDetail = null;
     diffResult = null;
     restorePreview = null;
     restoreDestinationRoot = '';
+    sessions = [];
+    fromSessionId = '';
+    toSessionId = '';
+    restoreSessionId = '';
     await loadSessions();
   };
 
@@ -418,13 +690,30 @@
       <h1 class="mb-1">Checkpoint Sessions</h1>
       <p class="text-muted mb-0">Use the top tabs to focus on one workflow at a time.</p>
     </div>
-    <button class="btn btn-secondary" on:click={refreshAll} disabled={loadingSessions || creating || diffLoading || restoreLoading || restoreExecuting}>
-      Refresh
-    </button>
+    <div class="checkpoint-header-actions">
+      <div class="project-picker">
+        <label class="form-label fw-semibold" for="checkpoint-project-select">Tracked Project</label>
+        <select
+          id="checkpoint-project-select"
+          class="form-select"
+          bind:value={selectedWatchedPath}
+          on:change={onWatchedChange}
+          disabled={loadingSessions || watchedPaths.length === 0}
+        >
+          <option value="">Select tracked project</option>
+          {#each watchedPaths as row (row.path)}
+            <option value={row.path}>{projectNameFromPath(row.path)}</option>
+          {/each}
+        </select>
+      </div>
+      <button class="btn refresh-header-btn" on:click={refreshAll} disabled={loadingSessions || creating || diffLoading || restoreLoading || restoreExecuting}>
+        Refresh
+      </button>
+    </div>
   </header>
 
   <nav class="checkpoint-top-nav" aria-label="Checkpoint navigation">
-    {#each topTabs as tab}
+    {#each topTabs as tab (tab.id)}
       <button
         class="top-nav-item {activeTab === tab.id ? 'is-active' : ''}"
         type="button"
@@ -447,14 +736,12 @@
       </div>
       <div class="panel-body">
         <div class="form-grid">
-          <div>
-            <label class="form-label fw-semibold" for="checkpoint-watched-path">Watched Folder</label>
-            <select id="checkpoint-watched-path" class="form-select" bind:value={selectedWatchedPath} on:change={onWatchedChange}>
-              <option value="">Select watched folder</option>
-              {#each watchedPaths as row}
-                <option value={row.path}>{row.path}</option>
-              {/each}
-            </select>
+          <div class="small text-muted">
+            {#if selectedWatchedPath}
+              Using tracked project: <span class="fw-semibold">{projectNameFromPath(selectedWatchedPath)}</span>
+            {:else}
+              Select a tracked project from the header to create a checkpoint.
+            {/if}
           </div>
 
           <div class="split-row">
@@ -514,37 +801,29 @@
               <thead>
                 <tr>
                   <th>Name</th>
+                  <th>Project</th>
                   <th>Scope</th>
-                  <th>Items</th>
-                  <th>Created</th>
-                  <th class="text-end pe-3">Actions</th>
+                  <th class="col-items">Items</th>
+                  <th class="col-created">Created</th>
+                  <th class="text-end pe-3 col-actions">Actions</th>
                 </tr>
               </thead>
               <tbody>
-                {#each sessions as session}
+                {#each sessions as session (session.id)}
                   <tr>
                     <td class="fw-semibold">{session.name}</td>
+                    <td>{projectNameFromPath(session.watched_path)}</td>
                     <td>{toScopeLabel(session.scope)}</td>
-                    <td>{session.item_count}</td>
-                    <td class="small text-muted">{formatTime(session.created_at)}</td>
+                    <td class="col-items">{session.item_count}</td>
+                    <td class="small text-muted col-created">{formatTime(session.created_at)}</td>
                     <td class="text-end pe-3">
-                      <div class="d-inline-flex gap-2 flex-wrap justify-content-end">
+                      <div class="history-actions-row">
                         <button
                           class="btn btn-sm btn-secondary"
                           on:click={() => renameSession(session)}
                           disabled={renamingSessionId === String(session.id)}
                         >
                           {renamingSessionId === String(session.id) ? 'Saving...' : 'Rename'}
-                        </button>
-                        <button class="btn btn-sm btn-primary" on:click={() => openManifest(session.id)}>Manifest</button>
-                        <button
-                          class="btn btn-sm btn-success"
-                          on:click={() => {
-                            fromSessionId = String(session.id);
-                            activeTab = TAB_DIFF;
-                          }}
-                        >
-                          Use In Diff
                         </button>
                       </div>
                     </td>
@@ -567,7 +846,7 @@
             <label class="form-label fw-semibold" for="checkpoint-diff-from">From</label>
             <select id="checkpoint-diff-from" class="form-select" bind:value={fromSessionId}>
               <option value="">Select base session</option>
-              {#each sessions as session}
+              {#each sessions as session (session.id)}
                 <option value={String(session.id)}>{session.name} ({formatTime(session.created_at)})</option>
               {/each}
             </select>
@@ -577,7 +856,7 @@
             <label class="form-label fw-semibold" for="checkpoint-diff-to">To</label>
             <select id="checkpoint-diff-to" class="form-select" bind:value={toSessionId}>
               <option value="">Select target session</option>
-              {#each sessions as session}
+              {#each sessions as session (session.id)}
                 <option value={String(session.id)}>{session.name} ({formatTime(session.created_at)})</option>
               {/each}
             </select>
@@ -588,7 +867,7 @@
               <input id="include-unchanged" class="form-check-input" type="checkbox" bind:checked={includeUnchanged} />
               <label class="form-check-label" for="include-unchanged">Include unchanged</label>
             </div>
-            <button class="btn btn-primary" on:click={compareSessions} disabled={diffLoading || sessions.length < 2}>
+            <button class="btn btn-primary" on:click={compareSessions} disabled={diffLoading || loadingSessions || sessions.length < 2}>
               {diffLoading ? 'Comparing...' : 'Compare'}
             </button>
           </div>
@@ -618,20 +897,34 @@
                 {#if modifiedItems.length === 0}
                   <div class="empty-state diff-empty">No modified files in this comparison.</div>
                 {:else}
-                  <ul class="diff-files-list">
-                    {#each modifiedItems as item}
+                  <ul class="diff-tree-list">
+                    {#each diffTreeRows as row (row.key)}
                       <li>
-                        <button
-                          class="diff-file-row {selectedDiffFilePath === filePathKey(item) ? 'is-active' : ''}"
-                          type="button"
-                          on:click={() => selectDiffFile(item)}
-                        >
-                          <span class="mono-text diff-file-row-path">{item.file_path}</span>
-                          <span class="line-badges">
-                            <span class="line-delta line-add">{formatDelta(item.added_lines, '+')}</span>
-                            <span class="line-delta line-remove">{formatDelta(item.removed_lines, '-')}</span>
-                          </span>
-                        </button>
+                        {#if row.kind === 'folder'}
+                          <button
+                            class="diff-tree-row diff-folder-row"
+                            type="button"
+                            on:click={() => toggleDiffFolder(row.key)}
+                            style={`padding-left: ${row.depth * 14 + 10}px`}
+                          >
+                            <span class="tree-caret">{row.expanded ? '▾' : '▸'}</span>
+                            <span class="tree-name">{row.name}</span>
+                            <span class="tree-meta">{row.childCount}</span>
+                          </button>
+                        {:else}
+                          <button
+                            class="diff-tree-row diff-file-row {selectedDiffFilePath === filePathKey(row.item) ? 'is-active' : ''}"
+                            type="button"
+                            on:click={() => selectDiffFile(row.item)}
+                            style={`padding-left: ${row.depth * 14 + 24}px`}
+                          >
+                            <span class="tree-name mono-text" title={row.fullPath}>{row.name}</span>
+                            <span class="line-badges">
+                              <span class="line-delta line-add">{formatDelta(row.item?.added_lines, '+')}</span>
+                              <span class="line-delta line-remove">{formatDelta(row.item?.removed_lines, '-')}</span>
+                            </span>
+                          </button>
+                        {/if}
                       </li>
                     {/each}
                   </ul>
@@ -649,29 +942,64 @@
                   </div>
                 </header>
 
-                {#if selectedDiffItem.line_diff?.available}
-                  {#if selectedDiffItem.line_diff.hunks?.length > 0}
-                    <div class="hunk-list diff-view-scroll">
-                      {#each selectedDiffItem.line_diff.hunks as hunk}
-                        <div class="hunk">
-                          <div class="hunk-head mono-text">@@ -{hunk.from_start},{hunk.from_count} +{hunk.to_start},{hunk.to_count} @@</div>
-                          {#each hunk.removed_preview as line, removedIndex}
-                            <div class="diff-line line-remove"><span class="line-number">{hunk.from_start + removedIndex}</span><span class="line-prefix">-</span><span class="line-content">{line || ' '}</span></div>
-                          {/each}
-                          {#each hunk.added_preview as line, addedIndex}
-                            <div class="diff-line line-add"><span class="line-number">{hunk.to_start + addedIndex}</span><span class="line-prefix">+</span><span class="line-content">{line || ' '}</span></div>
-                          {/each}
-                        </div>
-                      {/each}
-                      {#if selectedDiffItem.line_diff.truncated_hunks}
-                        <div class="small text-muted diff-footnote">Additional hunks omitted for readability.</div>
-                      {/if}
-                    </div>
-                  {:else}
-                    <div class="empty-state diff-empty">No line-level hunks were generated for this file.</div>
-                  {/if}
+                {#if selectedDiffContentLoading}
+                  <div class="empty-state diff-empty">Loading full file states...</div>
+                {:else if selectedDiffContentError}
+                  <div class="empty-state diff-empty">{selectedDiffContentError}</div>
                 {:else}
-                  <div class="empty-state diff-empty">{getDiffReason(selectedDiffItem.line_diff?.reason)}</div>
+                  <div class="file-state-grid">
+                    <section class="file-state-column">
+                      <div class="file-state-column-head">Before (From)</div>
+                      {#if selectedDiffBeforeState?.type !== 'text'}
+                        <div class="empty-state diff-empty">{selectedDiffBeforeState?.content || 'Before version is not text-renderable.'}</div>
+                      {:else}
+                        <div class="file-state-pane" bind:this={beforeStatePaneEl} on:scroll={onBeforeStateScroll}>
+                          {#if selectedDiffBeforeLines.length === 0}
+                            <div class="empty-state diff-empty">File was empty in the From session.</div>
+                          {:else}
+                            <div class="file-state-line-list mono-text">
+                              {#each selectedDiffBeforeLines as line, idx (idx)}
+                                <div class="state-line {selectedDiffBeforeHighlights.has(idx + 1) ? 'is-changed-removed' : ''}">
+                                  <span class="state-line-number">{idx + 1}</span>
+                                  <span class="state-line-content">{line || ' '}</span>
+                                </div>
+                              {/each}
+                            </div>
+                          {/if}
+                        </div>
+                      {/if}
+                    </section>
+
+                    <section class="file-state-column">
+                      <div class="file-state-column-head">After (To)</div>
+                      {#if selectedDiffAfterState?.type !== 'text'}
+                        <div class="empty-state diff-empty">{selectedDiffAfterState?.content || 'After version is not text-renderable.'}</div>
+                      {:else}
+                        <div class="file-state-pane" bind:this={afterStatePaneEl} on:scroll={onAfterStateScroll}>
+                          {#if selectedDiffAfterLines.length === 0}
+                            <div class="empty-state diff-empty">File is empty in the To session.</div>
+                          {:else}
+                            <div class="file-state-line-list mono-text">
+                              {#each selectedDiffAfterLines as line, idx (idx)}
+                                <div class="state-line {selectedDiffAfterHighlights.has(idx + 1) ? 'is-changed-added' : ''}">
+                                  <span class="state-line-number">{idx + 1}</span>
+                                  <span class="state-line-content">{line || ' '}</span>
+                                </div>
+                              {/each}
+                            </div>
+                          {/if}
+                        </div>
+                      {/if}
+                    </section>
+                  </div>
+
+                  <div class="small text-muted diff-footnote">
+                    {#if selectedDiffItem.line_diff?.available}
+                      Highlighted lines mark changed regions in each file state.
+                    {:else}
+                      {getDiffReason(selectedDiffItem.line_diff?.reason)}
+                    {/if}
+                  </div>
                 {/if}
               {:else}
                 <div class="empty-state diff-empty">Select a modified file to inspect line-level changes.</div>
@@ -692,7 +1020,7 @@
                   <div class="small text-muted">No added files.</div>
                 {:else}
                   <ul class="diff-list mono-text">
-                    {#each diffResult.added as item}
+                    {#each diffResult.added as item (item.file_path)}
                       <li>{item.file_path}</li>
                     {/each}
                   </ul>
@@ -705,7 +1033,7 @@
                   <div class="small text-muted">No removed files.</div>
                 {:else}
                   <ul class="diff-list mono-text">
-                    {#each diffResult.removed as item}
+                    {#each diffResult.removed as item (item.file_path)}
                       <li>{item.file_path}</li>
                     {/each}
                   </ul>
@@ -718,7 +1046,7 @@
                   <div class="small text-muted">No renamed files.</div>
                 {:else}
                   <ul class="diff-list mono-text">
-                    {#each diffResult.renamed as item}
+                    {#each diffResult.renamed as item (`${item.from_path}->${item.to_path}`)}
                       <li>{item.from_path} -> {item.to_path}</li>
                     {/each}
                   </ul>
@@ -732,7 +1060,7 @@
                     <div class="small text-muted">No unchanged files.</div>
                   {:else}
                     <ul class="diff-list mono-text">
-                      {#each diffResult.unchanged as item}
+                      {#each diffResult.unchanged as item (item.file_path)}
                         <li>{item.file_path}</li>
                       {/each}
                     </ul>
@@ -752,111 +1080,86 @@
         <span class="panel-badge">Preview Then Execute</span>
       </div>
       <div class="panel-body">
-        <div class="form-grid">
-          <div>
-            <label class="form-label fw-semibold" for="checkpoint-restore-session">Session</label>
-            <select id="checkpoint-restore-session" class="form-select" bind:value={restoreSessionId}>
-              <option value="">Select session</option>
-              {#each sessions as session}
-                <option value={String(session.id)}>{session.name} ({formatTime(session.created_at)})</option>
-              {/each}
-            </select>
+        {#if !selectedWatchedPath}
+          <div class="empty-state">Select a tracked project first to preview or restore checkpoint files.</div>
+        {:else}
+          <div class="restore-controls-grid">
+            <div>
+              <label class="form-label fw-semibold" for="checkpoint-restore-session">Session</label>
+              <select id="checkpoint-restore-session" class="form-select" bind:value={restoreSessionId}>
+                <option value="">Select session</option>
+                {#each sessions as session (session.id)}
+                  <option value={String(session.id)}>{session.name} ({formatTime(session.created_at)})</option>
+                {/each}
+              </select>
+            </div>
+
+            <div>
+              <label class="form-label fw-semibold" for="checkpoint-restore-destination">Destination Root (optional)</label>
+              <input
+                id="checkpoint-restore-destination"
+                class="form-control mono-input"
+                type="text"
+                bind:value={restoreDestinationRoot}
+                placeholder="Leave empty to restore inside original watched folder"
+              />
+            </div>
+
+            <div>
+              <label class="form-label fw-semibold" for="checkpoint-restore-strategy">Conflict Strategy</label>
+              <select id="checkpoint-restore-strategy" class="form-select" bind:value={restoreConflictStrategy}>
+                <option value="rename">Rename</option>
+                <option value="overwrite">Overwrite</option>
+                <option value="skip">Skip</option>
+              </select>
+            </div>
           </div>
 
-          <div>
-            <label class="form-label fw-semibold" for="checkpoint-restore-destination">Destination Root (optional)</label>
-            <input
-              id="checkpoint-restore-destination"
-              class="form-control mono-input"
-              type="text"
-              bind:value={restoreDestinationRoot}
-              placeholder="Leave empty to restore inside original watched folder"
-            />
-          </div>
+          {#if restorePreview}
+            <div class="restore-preview">
+              <div class="summary-badges mb-2">
+                <span class="badge-soft badge-soft-secondary">Planned: {restorePreview.summary.planned}</span>
+                {#if restorePreview.dry_run}
+                  <span class="badge-soft badge-soft-success">Would Restore: {restorePreview.summary.would_restore}</span>
+                {:else}
+                  <span class="badge-soft badge-soft-success">Restored: {restorePreview.summary.restored}</span>
+                  <span class="badge-soft badge-soft-danger">Failed: {restorePreview.summary.failed}</span>
+                {/if}
+                <span class="badge-soft badge-soft-secondary">Conflicts: {restorePreview.summary.conflicts}</span>
+                <span class="badge-soft badge-soft-secondary">Skipped: {restorePreview.summary.skipped}</span>
+              </div>
 
-          <div>
-            <label class="form-label fw-semibold" for="checkpoint-restore-strategy">Conflict Strategy</label>
-            <select id="checkpoint-restore-strategy" class="form-select" bind:value={restoreConflictStrategy}>
-              <option value="rename">Rename</option>
-              <option value="overwrite">Overwrite</option>
-              <option value="skip">Skip</option>
-            </select>
-          </div>
+              {#if restorePreview.conflicts?.length > 0}
+                <details class="diff-block" open>
+                  <summary>Conflicts ({restorePreview.conflicts.length})</summary>
+                  <ul class="diff-list mono-text">
+                    {#each restorePreview.conflicts as conflict, idx (`${conflict.file_path}|${conflict.resolved_target_path}|${conflict.action}|${idx}`)}
+                      <li>{conflict.file_path} -> {conflict.resolved_target_path} ({conflict.action})</li>
+                    {/each}
+                  </ul>
+                </details>
+              {/if}
 
-          <div class="panel-actions">
+              {#if restorePreview.failed?.length > 0}
+                <details class="diff-block mt-2" open>
+                  <summary>Failed ({restorePreview.failed.length})</summary>
+                  <ul class="diff-list mono-text">
+                    {#each restorePreview.failed as row, idx (`${row.file_path}|${row.reason}|${idx}`)}
+                      <li>{row.file_path}: {row.reason}</li>
+                    {/each}
+                  </ul>
+                </details>
+              {/if}
+            </div>
+          {/if}
+
+          <div class="panel-actions restore-actions-row">
             <button class="btn btn-outline-secondary" on:click={previewRestore} disabled={restoreLoading || restoreExecuting || sessions.length === 0}>
               {restoreLoading ? 'Previewing...' : 'Preview'}
             </button>
             <button class="btn btn-primary" on:click={executeRestore} disabled={restoreExecuting || restoreLoading || sessions.length === 0}>
               {restoreExecuting ? 'Restoring...' : 'Restore'}
             </button>
-          </div>
-        </div>
-
-        {#if restorePreview}
-          <div class="restore-preview">
-            <div class="summary-badges mb-2">
-              <span class="badge-soft badge-soft-secondary">Planned: {restorePreview.summary.planned}</span>
-              {#if restorePreview.dry_run}
-                <span class="badge-soft badge-soft-success">Would Restore: {restorePreview.summary.would_restore}</span>
-              {:else}
-                <span class="badge-soft badge-soft-success">Restored: {restorePreview.summary.restored}</span>
-                <span class="badge-soft badge-soft-danger">Failed: {restorePreview.summary.failed}</span>
-              {/if}
-              <span class="badge-soft badge-soft-secondary">Conflicts: {restorePreview.summary.conflicts}</span>
-              <span class="badge-soft badge-soft-secondary">Skipped: {restorePreview.summary.skipped}</span>
-            </div>
-
-            {#if restorePreview.conflicts?.length > 0}
-              <details class="diff-block" open>
-                <summary>Conflicts ({restorePreview.conflicts.length})</summary>
-                <ul class="diff-list mono-text">
-                  {#each restorePreview.conflicts as conflict}
-                    <li>{conflict.file_path} -> {conflict.resolved_target_path} ({conflict.action})</li>
-                  {/each}
-                </ul>
-              </details>
-            {/if}
-
-            {#if restorePreview.failed?.length > 0}
-              <details class="diff-block mt-2" open>
-                <summary>Failed ({restorePreview.failed.length})</summary>
-                <ul class="diff-list mono-text">
-                  {#each restorePreview.failed as row}
-                    <li>{row.file_path}: {row.reason}</li>
-                  {/each}
-                </ul>
-              </details>
-            {/if}
-          </div>
-        {/if}
-      </div>
-
-    {:else}
-      <div class="panel-head">
-        <h2>Checkpoint Manifest</h2>
-        {#if selectedSessionDetail}
-          <span class="panel-badge">Session #{selectedSessionDetail.id}</span>
-        {/if}
-      </div>
-      <div class="panel-body">
-        {#if detailLoading}
-          <div class="empty-state">Loading manifest...</div>
-        {:else if !selectedSessionDetail}
-          <div class="empty-state">Open a checkpoint from History to inspect exact file versions.</div>
-        {:else}
-          <div class="manifest-meta">
-            <div class="fw-semibold">{selectedSessionDetail.name}</div>
-            <div class="small text-muted">{toScopeLabel(selectedSessionDetail.scope)} | {selectedSessionDetail.item_count} items | {formatTime(selectedSessionDetail.created_at)}</div>
-          </div>
-
-          <div class="manifest-list">
-            {#each selectedSessionDetail.items as item}
-              <div class="manifest-row">
-                <span class="mono-text text-truncate">{item.file_path}</span>
-                <span class="small text-muted">v{item.file_version_id}</span>
-              </div>
-            {/each}
           </div>
         {/if}
       </div>
@@ -881,10 +1184,45 @@
     padding: 0.2rem 0.1rem;
   }
 
-  .checkpoint-header .btn {
+  .checkpoint-header-actions {
+    display: flex;
+    align-items: flex-end;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+  }
+
+  .project-picker {
+    min-width: 220px;
+  }
+
+  .project-picker .form-label {
+    margin-bottom: 0.25rem;
+  }
+
+  .checkpoint-header-actions .btn {
     width: auto;
-    min-width: 120px;
+    min-width: 96px;
     align-self: flex-start;
+  }
+
+  .refresh-header-btn {
+    padding: 0.44rem 0.9rem;
+    border-radius: 999px;
+    border: 1px solid var(--border-subtle);
+    background: var(--surface-elevated);
+    color: var(--text-primary);
+    font-weight: 650;
+    box-shadow: none;
+  }
+
+  .refresh-header-btn:hover:not(:disabled) {
+    background: var(--surface-soft);
+    border-color: var(--border-strong);
+    color: var(--text-primary);
+  }
+
+  .refresh-header-btn:disabled {
+    opacity: 0.7;
   }
 
   .checkpoint-header h1 {
@@ -1033,13 +1371,38 @@
     border-color: var(--border-subtle);
   }
 
+  .checkpoint-table th,
+  .checkpoint-table td {
+    padding: 0.52rem 0.6rem;
+  }
+
+  .checkpoint-table .col-items {
+    width: 70px;
+  }
+
+  .checkpoint-table .col-created {
+    width: 190px;
+  }
+
+  .checkpoint-table .col-actions {
+    width: 112px;
+  }
+
+  .history-actions-row {
+    display: inline-flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 0.4rem;
+    flex-wrap: nowrap;
+  }
+
   .checkpoint-table tbody tr:hover td {
     background: var(--surface-soft);
   }
 
   .diff-controls {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(260px, 320px);
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
     gap: 0.65rem;
     align-items: end;
     margin-bottom: 0.85rem;
@@ -1047,9 +1410,11 @@
 
   .diff-controls-inline {
     display: flex;
+    grid-column: 1 / -1;
     align-items: center;
-    justify-content: space-between;
+    justify-content: flex-start;
     gap: 0.7rem;
+    flex-wrap: wrap;
     padding-bottom: 0.1rem;
   }
 
@@ -1061,9 +1426,9 @@
 
   .diff-explorer {
     display: grid;
-    grid-template-columns: minmax(260px, 340px) minmax(0, 1fr);
+    grid-template-columns: minmax(180px, 230px) minmax(0, 1fr);
     gap: 0.75rem;
-    min-height: min(65vh, calc(100vh - 355px));
+    min-height: min(72vh, calc(100vh - 280px));
     margin-bottom: 0.65rem;
   }
 
@@ -1097,48 +1462,75 @@
     color: var(--text-muted);
   }
 
-  .diff-files-scroll,
-  .diff-view-scroll {
+  .diff-files-scroll {
     min-height: 0;
     overflow: auto;
   }
 
-  .diff-files-list {
+  .diff-tree-list {
     list-style: none;
     margin: 0;
     padding: 0;
   }
 
-  .diff-file-row {
+  .diff-tree-row {
     width: 100%;
     border: none;
     border-top: 1px solid var(--border-subtle);
     background: transparent;
     color: inherit;
     text-align: left;
-    padding: 0.52rem 0.7rem;
+    padding-top: 0.46rem;
+    padding-bottom: 0.46rem;
+    padding-right: 0.45rem;
     display: flex;
-    align-items: flex-start;
+    align-items: center;
     justify-content: space-between;
     gap: 0.6rem;
     transition: background-color 0.14s ease, box-shadow 0.14s ease;
   }
 
-  .diff-file-row:hover {
+  .diff-tree-list > li:first-child > .diff-tree-row {
+    border-top: none;
+  }
+
+  .diff-tree-row:hover {
     background: var(--surface-soft);
+  }
+
+  .diff-folder-row {
+    color: var(--text-muted);
+    font-size: 0.77rem;
+    font-weight: 600;
+  }
+
+  .tree-caret {
+    width: 12px;
+    color: var(--text-muted);
+    opacity: 0.9;
+  }
+
+  .tree-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+  }
+
+  .tree-meta {
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    opacity: 0.8;
+  }
+
+  .diff-file-row {
+    font-size: 0.76rem;
   }
 
   .diff-file-row.is-active {
     background: color-mix(in srgb, var(--accent-soft) 62%, var(--surface-elevated));
     box-shadow: inset 3px 0 0 var(--accent);
-  }
-
-  .diff-file-row-path {
-    min-width: 0;
-    font-size: 0.76rem;
-    line-height: 1.35;
-    word-break: break-word;
-    padding-top: 0.06rem;
   }
 
   .diff-view-head {
@@ -1147,11 +1539,77 @@
     background: color-mix(in srgb, var(--surface-soft) 88%, var(--surface-elevated));
   }
 
-  .diff-view-scroll {
+  .file-state-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 0.55rem;
     padding: 0.6rem;
+  }
+
+  .file-state-column {
+    border: 1px solid var(--border-subtle);
+    border-radius: 0.55rem;
+    overflow: hidden;
     display: flex;
     flex-direction: column;
-    gap: 0.55rem;
+    min-height: 0;
+    background: var(--surface-soft);
+  }
+
+  .file-state-column-head {
+    border-bottom: 1px solid var(--border-subtle);
+    padding: 0.34rem 0.55rem;
+    font-size: 0.74rem;
+    letter-spacing: 0.02em;
+    color: var(--text-muted);
+    font-weight: 700;
+    background: color-mix(in srgb, var(--surface-elevated) 82%, var(--surface-soft));
+  }
+
+  .file-state-pane {
+    min-height: 0;
+    max-height: min(65vh, 650px);
+    overflow: auto;
+  }
+
+  .file-state-line-list {
+    font-size: 0.75rem;
+  }
+
+  .state-line {
+    display: grid;
+    grid-template-columns: 40px minmax(0, 1fr);
+    align-items: start;
+    gap: 0.28rem;
+    padding: 0.14rem 0.34rem 0.14rem 0.18rem;
+    border-bottom: 1px solid color-mix(in srgb, var(--border-subtle) 90%, transparent);
+    line-height: 1.45;
+  }
+
+  .state-line:last-child {
+    border-bottom: none;
+  }
+
+  .state-line-number {
+    color: var(--text-muted);
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+    border-right: 1px solid color-mix(in srgb, var(--border-subtle) 88%, transparent);
+    padding-right: 0.24rem;
+    user-select: none;
+  }
+
+  .state-line-content {
+    min-width: 0;
+    white-space: pre;
+  }
+
+  .state-line.is-changed-added {
+    background: rgba(46, 160, 67, 0.12);
+  }
+
+  .state-line.is-changed-removed {
+    background: rgba(207, 34, 46, 0.1);
   }
 
   .diff-empty {
@@ -1275,82 +1733,20 @@
     border-color: rgba(207, 34, 46, 0.24);
   }
 
-  .hunk-list {
-    display: flex;
-    flex-direction: column;
-    gap: 0.45rem;
-  }
-
-  .hunk {
-    border: 1px solid var(--border-subtle);
-    border-radius: 0.5rem;
-    overflow: hidden;
-  }
-
-  .hunk-head {
-    padding: 0.2rem 0.5rem;
-    font-size: 0.72rem;
-    color: var(--text-muted);
-    background: var(--surface-soft);
-    border-bottom: 1px solid var(--border-subtle);
-  }
-
-  .diff-line {
-    display: grid;
-    grid-template-columns: 58px 14px minmax(0, 1fr);
-    align-items: start;
-    gap: 0.35rem;
-    padding: 0.16rem 0.5rem;
-    font-size: 0.74rem;
-    font-family: var(--font-mono);
-    white-space: pre-wrap;
-    word-break: break-word;
-  }
-
-  .line-number {
-    color: var(--text-muted);
-    text-align: right;
-    font-variant-numeric: tabular-nums;
-    border-right: 1px solid color-mix(in srgb, var(--border-subtle) 88%, transparent);
-    padding-right: 0.45rem;
-    user-select: none;
-  }
-
-  .line-prefix {
-    font-weight: 700;
-    opacity: 0.9;
-  }
-
-  .line-content {
-    min-width: 0;
-  }
-
   .restore-preview {
     margin-top: 0.75rem;
+    margin-bottom: 0.45rem;
   }
 
-  .manifest-meta {
-    margin-bottom: 0.55rem;
-  }
-
-  .manifest-list {
-    border: 1px solid var(--border-subtle);
-    border-radius: 0.65rem;
-    max-height: min(70vh, calc(100vh - 300px));
-    overflow: auto;
-  }
-
-  .manifest-row {
+  .restore-controls-grid {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: center;
-    gap: 0.75rem;
-    padding: 0.45rem 0.65rem;
-    border-bottom: 1px solid var(--border-subtle);
+    grid-template-columns: minmax(220px, 1fr) minmax(320px, 1.8fr) minmax(200px, 1fr);
+    gap: 0.7rem;
+    align-items: end;
   }
 
-  .manifest-row:last-child {
-    border-bottom: none;
+  .restore-actions-row {
+    margin-top: 0.5rem;
   }
 
   .mono-input,
@@ -1374,6 +1770,14 @@
     color: #f85149;
     background: rgba(248, 81, 73, 0.16);
     border-color: rgba(248, 81, 73, 0.3);
+  }
+
+  :global(body.theme-dark) .state-line.is-changed-added {
+    background: rgba(63, 185, 80, 0.2);
+  }
+
+  :global(body.theme-dark) .state-line.is-changed-removed {
+    background: rgba(248, 81, 73, 0.17);
   }
 
   @media (max-width: 1080px) {
@@ -1400,6 +1804,14 @@
       max-height: min(38vh, 320px);
     }
 
+    .file-state-grid {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .file-state-pane {
+      max-height: min(36vh, 300px);
+    }
+
     .diff-secondary-summary {
       flex-direction: column;
       align-items: flex-start;
@@ -1407,6 +1819,10 @@
 
     .split-row {
       grid-template-columns: minmax(0, 1fr);
+    }
+
+    .restore-controls-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
     }
   }
 
@@ -1431,6 +1847,10 @@
     .top-nav-item {
       font-size: 0.74rem;
       padding: 0.34rem 0.64rem;
+    }
+
+    .restore-controls-grid {
+      grid-template-columns: minmax(0, 1fr);
     }
   }
 </style>

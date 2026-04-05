@@ -1,6 +1,7 @@
+<svelte:options runes={false} />
 <script>
   import { onMount } from 'svelte';
-  import { showMessage } from '../dialogStore.js';
+  import { askForText, askQuestion, showMessage } from '../dialogStore.js';
   import {
     getSecuritySettings,
     setSecuritySettings,
@@ -8,6 +9,7 @@
     setTrackingExclusions,
     getSnapshotSettings,
     updateSnapshotSettings,
+    deleteAllSnapshots,
     getRuntimeSettings,
     updateRuntimeSettings
   } from '../api.js';
@@ -52,6 +54,7 @@
   let snapshotCaptureOnWindowChange = true;
   let snapshotAllowDelete = false;
   let snapshotVaultInfo = '';
+  let snapshotDeleteAllRunning = false;
 
   let runtimeSettingsLoading = false;
   let runtimeSettingsSaving = false;
@@ -234,6 +237,58 @@
       snapshotSettingsError = e.message || 'Failed to apply snapshot settings.';
     } finally {
       snapshotSettingsSaving = false;
+    }
+  };
+
+  const deleteAllStoredSnapshots = async () => {
+    snapshotSettingsError = '';
+    snapshotVaultInfo = '';
+
+    const confirmed = await askQuestion(
+      'This permanently deletes all stored snapshots and timeline images. This action cannot be undone. Continue?',
+      'Delete All Stored Snapshots',
+      {
+        type: 'warning',
+        okLabel: 'Continue',
+        cancelLabel: 'Cancel'
+      }
+    );
+    if (!confirmed) return;
+
+    const passphrase = await askForText(
+      'Enter your master password or recovery password to confirm deletion of all snapshots.',
+      'Confirm Deletion',
+      {
+        type: 'warning',
+        okLabel: 'Delete All',
+        cancelLabel: 'Cancel',
+        inputLabel: 'Master Password or Recovery Password',
+        placeholder: 'Enter credential',
+        maxLength: 256
+      }
+    );
+    if (passphrase == null) return;
+
+    const cleanedPassphrase = String(passphrase).trim();
+    if (!cleanedPassphrase) {
+      snapshotSettingsError = 'Password or recovery password is required to delete snapshots.';
+      return;
+    }
+
+    snapshotDeleteAllRunning = true;
+    try {
+      const result = await deleteAllSnapshots(cleanedPassphrase);
+      snapshotVaultInfo = result.message || 'All stored snapshots were deleted.';
+      await showMessage(
+        `Deleted ${result.deleted_snapshots ?? 0} snapshots and cleared ${result.deleted_images ?? 0} stored images.`,
+        'Snapshots Deleted',
+        'info',
+        { messageScale: 1.15 }
+      );
+    } catch (e) {
+      snapshotSettingsError = e.message || 'Failed to delete stored snapshots.';
+    } finally {
+      snapshotDeleteAllRunning = false;
     }
   };
 
@@ -453,11 +508,33 @@
           </label>
         </div>
 
+        <div class="settings-row">
+          <div>
+            <h3>Delete All Stored Snapshots</h3>
+            <p class="muted">Permanently removes all snapshot history and images. Requires unlocked vault and credential confirmation.</p>
+          </div>
+          <button
+            class="btn btn-danger apply-btn"
+            on:click={deleteAllStoredSnapshots}
+            disabled={snapshotDeleteAllRunning || snapshotSettingsSaving}
+          >
+            {snapshotDeleteAllRunning ? 'Deleting…' : 'Delete All'}
+          </button>
+        </div>
+
         <div class="d-flex justify-content-end">
           <button class="btn btn-primary apply-btn" on:click={saveSnapshotSettings} disabled={snapshotSettingsSaving}>
             {snapshotSettingsSaving ? 'Applying…' : 'Apply'}
           </button>
         </div>
+
+        {#if snapshotVaultInfo}
+          <div class="settings-note" style="margin-top: 12px;">{snapshotVaultInfo}</div>
+        {/if}
+
+        {#if snapshotSettingsError}
+          <div class="settings-note text-danger" style="margin-top: 12px;">{snapshotSettingsError}</div>
+        {/if}
 
       {/if}
     </div>

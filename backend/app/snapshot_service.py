@@ -917,6 +917,30 @@ class SnapshotService:
 
         return crud.delete_activity_snapshot(db, snapshot_id)
 
+    def delete_all_snapshots(self, db) -> dict[str, Any]:
+        deleted_snapshots = crud.delete_all_activity_snapshots(db)
+        deleted_images = 0
+
+        try:
+            if SNAPSHOT_IMAGE_ROOT.exists():
+                deleted_images = sum(
+                    1
+                    for child in SNAPSHOT_IMAGE_ROOT.iterdir()
+                    if child.is_file() or child.is_symlink()
+                )
+        except Exception:
+            deleted_images = 0
+
+        self._wipe_snapshot_images_dir()
+        self._last_fingerprint = None
+
+        return {
+            "ok": True,
+            "deleted_snapshots": int(deleted_snapshots),
+            "deleted_images": int(deleted_images),
+            "message": "All stored snapshots were deleted",
+        }
+
     def reset_passphrase(self, db) -> dict[str, Any]:
         deleted_count = crud.delete_all_activity_snapshots(db)
         self._wipe_snapshot_images_dir()

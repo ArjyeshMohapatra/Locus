@@ -614,3 +614,16 @@ export async function deleteSnapshot(snapshotId) {
   }
   return await res.json();
 }
+
+export async function deleteAllSnapshots(passphrase) {
+  const res = await fetch(`${BASE_URL}/snapshots/delete-all`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ passphrase })
+  });
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => ({}));
+    throw new Error(errorData.detail || 'Failed to delete all snapshots');
+  }
+  return await res.json();
+}
