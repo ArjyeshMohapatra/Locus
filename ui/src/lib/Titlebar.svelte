@@ -1,5 +1,7 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
+  import { getCurrentWindow } from '@tauri-apps/api/window';
+  import { exit as tauriExit } from '@tauri-apps/plugin-process';
   import { subscribeFileEvents } from '../api.js';
   import Fa from 'svelte-fa';
   import { faMinus, faSquare, faXmark, faCloud } from '@fortawesome/free-solid-svg-icons';
@@ -10,6 +12,11 @@
   let isMaximized = false;
   let eventSource;
   let snapshotProgress = null;
+  let detachWindowResizeListener = null;
+
+  const isTauriRuntime = () => (
+    typeof window !== 'undefined' && !!(window.__TAURI__ || window.__TAURI_INTERNALS__ || window.__TAURI_IPC__)
+  );
 
   const formatEta = (seconds) => {
     if (seconds === null || seconds === undefined) return 'ETA --:--';
@@ -23,24 +30,31 @@
     return `ETA ${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
   };
 
-  onMount(async () => {
+  onMount(() => {
     document.body.classList.add('has-custom-titlebar');
-    if (window.__TAURI__) {
-      const { appWindow: tauriWindow } = await import('@tauri-apps/api/window');
-      appWindow = tauriWindow;
-      if (typeof appWindow.setDecorations === 'function') {
-        await appWindow.setDecorations(false);
+    const initWindowControls = async () => {
+      if (!isTauriRuntime()) return;
+
+      try {
+        appWindow = getCurrentWindow();
+        if (typeof appWindow.setDecorations === 'function') {
+          await appWindow.setDecorations(false);
+        }
+
+        const updateMaximized = async () => {
+          if (!appWindow || typeof appWindow.isMaximized !== 'function') return;
+          isMaximized = await appWindow.isMaximized();
+        };
+
+        await updateMaximized();
+        window.addEventListener('resize', updateMaximized);
+        detachWindowResizeListener = () => window.removeEventListener('resize', updateMaximized);
+      } catch (error) {
+        console.error('Failed to initialize titlebar controls:', error);
       }
-      
-      // Update maximize state
-      const updateMaximized = async () => {
-        isMaximized = await appWindow.isMaximized();
-      };
-      
-      updateMaximized();
-      window.addEventListener('resize', updateMaximized);
-      return () => window.removeEventListener('resize', updateMaximized);
-    }
+    };
+
+    void initWindowControls();
   });
 
   onMount(() => {
@@ -78,23 +92,61 @@
   });
 
   onDestroy(() => {
+    if (typeof detachWindowResizeListener === 'function') {
+      detachWindowResizeListener();
+      detachWindowResizeListener = null;
+    }
     if (eventSource) {
       eventSource.close();
     }
     document.body.classList.remove('has-custom-titlebar');
   });
 
-  const minimize = () => appWindow?.minimize();
+  const handleTitlebarMouseDown = async (event) => {
+    if (!appWindow || !isTauriRuntime() || event.button !== 0) return;
+
+    const target = event.target;
+    if (target instanceof Element && target.closest('.titlebar-controls')) {
+      return;
+    }
+
+    if (typeof appWindow.startDragging !== 'function') return;
+
+    try {
+      await appWindow.startDragging();
+    } catch {
+      // Keep native drag-region behavior as the primary path.
+    }
+  };
+
+  const handleTitlebarDoubleClick = async (event) => {
+    const target = event.target;
+    if (target instanceof Element && target.closest('.titlebar-controls')) {
+      return;
+    }
+    await toggleMaximize();
+  };
+
+  const minimize = async () => {
+    try {
+      await appWindow?.minimize();
+    } catch (e) {
+      console.error('Failed to minimize window:', e);
+    }
+  };
   const toggleMaximize = async () => {
-    await appWindow?.toggleMaximize();
-    isMaximized = await appWindow?.isMaximized();
+    try {
+      await appWindow?.toggleMaximize();
+      isMaximized = await appWindow?.isMaximized();
+    } catch (e) {
+      console.error('Failed to toggle maximize:', e);
+    }
   };
   const close = async () => {
     try {
       if (closeBehavior === 'shutdown') {
-        if (window.__TAURI__) {
-          const { exit } = await import('@tauri-apps/api/process');
-          await exit(0);
+        if (isTauriRuntime()) {
+          await tauriExit(0);
           return;
         }
         window.close();
@@ -113,7 +165,8 @@
   };
 </script>
 
-<div class="titlebar" data-tauri-drag-region>
+<!-- svelte-ignore a11y_no_static_element_interactions: Desktop titlebar requires mouse handlers for drag and double-click maximize. -->
+<div class="titlebar" on:mousedown={handleTitlebarMouseDown} on:dblclick={handleTitlebarDoubleClick}>
   <div class="titlebar-brand" data-tauri-drag-region>
     <span class="titlebar-icon">
       <Fa icon={faCloud} />

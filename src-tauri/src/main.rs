@@ -14,10 +14,9 @@ use std::collections::HashSet;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 
-use tauri::{
-    CustomMenuItem, Manager, RunEvent, State, SystemTray, SystemTrayEvent, SystemTrayMenu,
-    SystemTrayMenuItem, WindowEvent,
-};
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+use tauri::tray::TrayIconBuilder;
+use tauri::{Emitter, Manager, RunEvent, State, WindowEvent};
 
 const DEFAULT_BACKEND_PORT: u16 = 8000;
 const BACKEND_PORT_SEARCH_LIMIT: u16 = 20;
@@ -172,10 +171,7 @@ fn start_linux_theme_watcher(app: tauri::AppHandle) {
 
             if let Some(current_theme) = detect_linux_system_theme() {
                 if last_theme.as_deref() != Some(current_theme.as_str()) {
-                    let _ = app.emit_all(
-                        "locus://linux-system-theme-changed",
-                        current_theme.clone(),
-                    );
+                    let _ = app.emit("locus://linux-system-theme-changed", current_theme.clone());
                     last_theme = Some(current_theme);
                 }
             } else {
@@ -423,6 +419,39 @@ fn start_release_backend(port: u16) -> Child {
     child
 }
 
+fn setup_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
+    let show_item = MenuItem::with_id(app, "show", "Show", true, None::<&str>)?;
+    let separator = PredefinedMenuItem::separator(app)?;
+    let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+    let tray_menu = Menu::with_items(app, &[&show_item, &separator, &quit_item])?;
+
+    let mut tray_builder = TrayIconBuilder::with_id("locus-tray").menu(&tray_menu);
+    if let Some(icon) = app.default_window_icon().cloned() {
+        tray_builder = tray_builder.icon(icon);
+    }
+
+    let _ = tray_builder
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            "quit" => {
+                let state: State<BackendState> = app.state();
+                stop_backend_process(&state);
+                app.exit(0);
+            }
+            "show" => {
+                if let Some(window) = app.get_webview_window("main") {
+                    if let Err(err) = window.show() {
+                        eprintln!("[tauri] failed to show window: {}", err);
+                    }
+                    let _ = window.set_focus();
+                }
+            }
+            _ => {}
+        })
+        .build(app)?;
+
+    Ok(())
+}
+
 fn main() {
     let selected_port = if cfg!(debug_assertions) {
         DEFAULT_BACKEND_PORT
@@ -437,49 +466,30 @@ fn main() {
         Some(start_release_backend(selected_port))
     };
 
-    let tray_menu = SystemTrayMenu::new()
-        .add_item(CustomMenuItem::new("show".to_string(), "Show"))
-        .add_native_item(SystemTrayMenuItem::Separator)
-        .add_item(CustomMenuItem::new("quit".to_string(), "Quit"));
-    let system_tray = SystemTray::new().with_menu(tray_menu);
-
     tauri::Builder::default()
         .manage(BackendState {
             child: Mutex::new(backend_child),
             port: selected_port,
         })
-        .system_tray(system_tray)
-        .on_system_tray_event(|app, event| {
-            if let SystemTrayEvent::MenuItemClick { id, .. } = event {
-                match id.as_str() {
-                    "quit" => {
-                        let state: State<BackendState> = app.state();
-                        stop_backend_process(&state);
-                        app.exit(0);
-                    }
-                    "show" => {
-                        if let Some(window) = app.get_window("main") {
-                            if let Err(err) = window.show() {
-                                eprintln!("[tauri] failed to show window: {}", err);
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        })
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_process::init())
         .setup(|app| {
             if cfg!(debug_assertions) {
                 // In dev mode, we assume the user is running the backend manually.
                 println!("[tauri] Dev mode: Skipping sidecar spawn, expecting backend on port {}", DEFAULT_BACKEND_PORT);
             }
 
-            #[cfg(target_os = "linux")]
-            {
-                start_linux_theme_watcher(app.handle());
+            if let Err(err) = setup_tray(app.handle()) {
+                eprintln!("[tauri] failed to setup tray: {}", err);
             }
 
-            if let Some(window) = app.get_window("main") {
+            #[cfg(target_os = "linux")]
+            {
+                start_linux_theme_watcher(app.handle().clone());
+            }
+
+            if let Some(window) = app.get_webview_window("main") {
                 let _ = window.set_decorations(false);
                 let _ = window.maximize();
             }
@@ -497,10 +507,10 @@ fn main() {
             );
             let _ = window.eval(script.as_str());
         })
-        .on_window_event(|event| {
-            match event.event() {
+        .on_window_event(|window, event| {
+            match event {
                 WindowEvent::CloseRequested { api, .. } => {
-                    if let Err(err) = event.window().hide() {
+                    if let Err(err) = window.hide() {
                         eprintln!("[tauri] failed to hide window on close request: {}", err);
                     }
                     api.prevent_close();
@@ -512,7 +522,7 @@ fn main() {
                     } else {
                         "light"
                     };
-                    let _ = event.window().emit("locus://theme-changed", payload);
+                    let _ = window.emit("locus://theme-changed", payload);
                 }
 
                 _ => {}

@@ -3,7 +3,10 @@ const DEFAULT_BASE_URL = 'http://127.0.0.1:8000';
 const DEFAULT_REQUEST_TIMEOUT_MS = 15000;
 
 function isTauriRuntime() {
-  return typeof window !== 'undefined' && !!(window.__TAURI__ || window.__TAURI_IPC__);
+  return (
+    typeof window !== 'undefined'
+    && !!(window.__TAURI__ || window.__TAURI_INTERNALS__ || window.__TAURI_IPC__)
+  );
 }
 
 function resolveBaseUrl() {

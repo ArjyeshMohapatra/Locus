@@ -1,5 +1,6 @@
 <script>
   import { onMount } from 'svelte';
+  import { open as openDialog } from '@tauri-apps/plugin-dialog';
   import { getWatchedPaths, addWatchedPath, relinkWatchedPath, removeWatchedPath } from '../api.js';
   import { showMessage, askForText, askQuestion } from '../dialogStore.js';
   import Fa from 'svelte-fa';
@@ -9,10 +10,14 @@
   let newPathInput = "";
   let isTauriAvailable = false;
 
+  const detectTauriRuntime = () => (
+    typeof window !== 'undefined' && !!(window.__TAURI__ || window.__TAURI_INTERNALS__ || window.__TAURI_IPC__)
+  );
+
   onMount(() => {
     loadPaths();
-    // Check if Tauri is available
-    isTauriAvailable = typeof window !== 'undefined' && window.__TAURI__;
+    // Check if Tauri is available.
+    isTauriAvailable = detectTauriRuntime();
   });
 
   async function loadPaths() {
@@ -29,8 +34,7 @@
     // 1. Try Tauri Dialog
     if (isTauriAvailable) {
        try {
-          const { open } = await import('@tauri-apps/api/dialog');
-          const selected = await open({
+          const selected = await openDialog({
             directory: true,
             multiple: false,
             title: `Select New Location for ${oldPath}`
@@ -101,8 +105,7 @@
     if (useNativeDialog) {
       try {
         if (isTauriAvailable) {
-          const { open } = await import('@tauri-apps/api/dialog');
-          const selected = await open({
+          const selected = await openDialog({
             directory: true,
             multiple: false,
             title: "Select Folder to Track"
@@ -116,7 +119,7 @@
           }
         } 
       } catch (err) {
-        await showMessage("Native dialog failed: " + err, 'Error', 'error');
+        await showMessage("Native dialog failed: " + (err?.message || err), 'Error', 'error');
       }
     }
     
