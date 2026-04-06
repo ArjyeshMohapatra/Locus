@@ -591,6 +591,67 @@ export async function getSnapshotHistory(payload = {}) {
   return await res.json();
 }
 
+
+export async function getSnapshotApps() {
+  const payload = await getSnapshotHistory({ limit: 1000 });
+
+  const facetApps = Array.isArray(payload?.facets?.apps) ? payload.facets.apps : [];
+  const fromFacets = facetApps
+    .map((entry) => {
+      if (Array.isArray(entry)) {
+        return String(entry[0] || '').trim();
+      }
+      if (entry && typeof entry === 'object') {
+        return String(entry.app_name || entry.name || entry.app || '').trim();
+      }
+      return '';
+    })
+    .filter(Boolean);
+
+  const sourceNames = fromFacets.length > 0
+    ? fromFacets
+    : (Array.isArray(payload?.items) ? payload.items : [])
+      .map((item) => String(item?.app_name || '').trim())
+      .filter(Boolean);
+
+  const apps = Array.from(new Set(sourceNames))
+    .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+
+  return {
+    apps,
+    count: apps.length
+  };
+}
+
+export async function stopWatchedSnapshotScan(watchedPath, options = {}) {
+  const normalizedPath = String(watchedPath || '').trim();
+  if (!normalizedPath) {
+    throw new Error('Watched path is required');
+  }
+
+  const shouldRemoveWatchedPath = options?.removeWatchedPath !== false;
+  if (!shouldRemoveWatchedPath) {
+    throw new Error('Stopping a scan without removing the watched path is not supported by this backend');
+  }
+
+  const watchedPaths = await getWatchedPaths();
+  const watchedEntry = (Array.isArray(watchedPaths) ? watchedPaths : [])
+    .find((entry) => String(entry?.path || '').trim() === normalizedPath);
+
+  if (!watchedEntry?.id) {
+    throw new Error('Watched path not found');
+  }
+
+  const removeResult = await removeWatchedPath(Number(watchedEntry.id));
+  return {
+    ok: true,
+    watched_path: normalizedPath,
+    remove_watched_path: shouldRemoveWatchedPath,
+    purge_storage: options?.purgeStorage !== false,
+    result: removeResult
+  };
+}
+
 export async function executeSnapshotAction(actionType, value) {
   const res = await fetch(`${BASE_URL}/snapshots/execute-action`, {
     method: 'POST',
