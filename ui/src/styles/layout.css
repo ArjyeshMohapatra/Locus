@@ -1,11 +1,16 @@
 /* layout: shell, container, sidebar, view wrappers */
 .app-shell {
-  height: calc(100vh - 40px);
-  margin-top: 40px;
+  height: 100vh;
+  margin-top: 0;
   display: flex;
   align-items: stretch;
   overflow: hidden;
   background: transparent;
+}
+
+body.has-custom-titlebar .app-shell {
+  height: calc(100vh - 40px);
+  margin-top: 40px;
 }
 
 .app-container {

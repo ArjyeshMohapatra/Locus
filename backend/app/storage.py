@@ -670,7 +670,9 @@ def _delete_file_with_stats(path: Path, kind: str) -> tuple[int, int]:
 
 
 def _cleanup_top_level_storage_files(
-    now: float, is_storage_filename_active: Callable[[str], bool]
+    now: float,
+    is_storage_filename_active: Callable[[str], bool],
+    respect_grace_period: bool = True,
 ) -> tuple[int, int]:
     cleaned_count = 0
     cleaned_bytes = 0
@@ -678,7 +680,7 @@ def _cleanup_top_level_storage_files(
     for stored_file in STORAGE_ROOT.iterdir():
         if not stored_file.is_file():
             continue
-        if _is_within_grace_period(stored_file, now):
+        if respect_grace_period and _is_within_grace_period(stored_file, now):
             continue
         if is_storage_filename_active(stored_file.name):
             continue
@@ -692,7 +694,11 @@ def _cleanup_top_level_storage_files(
     return cleaned_count, cleaned_bytes
 
 
-def _cleanup_chunk_files(now: float, active_chunk_hashes: set[str]) -> tuple[int, int]:
+def _cleanup_chunk_files(
+    now: float,
+    active_chunk_hashes: set[str],
+    respect_grace_period: bool = True,
+) -> tuple[int, int]:
     cleaned_count = 0
     cleaned_bytes = 0
 
@@ -702,7 +708,7 @@ def _cleanup_chunk_files(now: float, active_chunk_hashes: set[str]) -> tuple[int
     for chunk_file in CHUNK_DIR.glob("*.chunk"):
         if not chunk_file.is_file():
             continue
-        if _is_within_grace_period(chunk_file, now):
+        if respect_grace_period and _is_within_grace_period(chunk_file, now):
             continue
 
         if chunk_file.stem in active_chunk_hashes:
@@ -715,7 +721,10 @@ def _cleanup_chunk_files(now: float, active_chunk_hashes: set[str]) -> tuple[int
     return cleaned_count, cleaned_bytes
 
 
-def run_garbage_collection(is_storage_filename_active: Callable[[str], bool]) -> None:
+def run_garbage_collection(
+    is_storage_filename_active: Callable[[str], bool],
+    respect_grace_period: bool = True,
+) -> None:
     """
     Simple Garbage Collection (GC).
 
@@ -733,9 +742,15 @@ def run_garbage_collection(is_storage_filename_active: Callable[[str], bool]) ->
     active_chunk_hashes = _collect_active_chunk_hashes(is_storage_filename_active)
 
     files_deleted, files_bytes = _cleanup_top_level_storage_files(
-        now, is_storage_filename_active
+        now,
+        is_storage_filename_active,
+        respect_grace_period=respect_grace_period,
     )
-    chunks_deleted, chunks_bytes = _cleanup_chunk_files(now, active_chunk_hashes)
+    chunks_deleted, chunks_bytes = _cleanup_chunk_files(
+        now,
+        active_chunk_hashes,
+        respect_grace_period=respect_grace_period,
+    )
 
     cleaned_count = files_deleted + chunks_deleted
     cleaned_bytes = files_bytes + chunks_bytes

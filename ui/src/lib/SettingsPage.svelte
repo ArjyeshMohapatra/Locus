@@ -1,6 +1,6 @@
 <svelte:options runes={false} />
 <script>
-  import { onMount } from 'svelte';
+  import { onDestroy, onMount } from 'svelte';
   import { askForText, askQuestion, showMessage } from '../dialogStore.js';
   import {
     getSecuritySettings,
@@ -53,7 +53,8 @@
   let snapshotExcludePrivate = true;
   let snapshotCaptureOnWindowChange = true;
   let snapshotAllowDelete = false;
-  let snapshotVaultInfo = '';
+  let snapshotCount = 0;
+  let snapshotBaseline = null;
   let snapshotDeleteAllRunning = false;
 
   let runtimeSettingsLoading = false;
@@ -61,10 +62,180 @@
   let runtimeSettingsError = '';
   let runInBackgroundService = true;
   let uiZoomScale = 1;
+  let fontZoomScale = 1;
   let shareCrashDiagnostics = false;
+  let runtimeBaseline = null;
+  let snapshotSettingsDirty = false;
+  let runtimeSettingsDirty = false;
   const MIN_UI_ZOOM_SCALE = 0.5;
   const MAX_UI_ZOOM_SCALE = 3;
   const UI_ZOOM_STEP = 0.05;
+  const MIN_FONT_ZOOM_SCALE = 0.8;
+  const MAX_FONT_ZOOM_SCALE = 1.5;
+  const FONT_ZOOM_STEP = 0.05;
+  const SETTINGS_AUTO_SAVE_DEBOUNCE_MS = 550;
+
+  let snapshotAutoSaveTimer = null;
+  let runtimeAutoSaveTimer = null;
+  let snapshotSettingsInitialized = false;
+  let runtimeSettingsInitialized = false;
+
+  const normalizeIntegerSetting = (value, fallback, min, max) => {
+    const parsed = Number.parseInt(String(value), 10);
+    if (!Number.isFinite(parsed)) return fallback;
+    return Math.min(max, Math.max(min, parsed));
+  };
+
+  const normalizeDecimalSetting = (value, fallback, min, max) => {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return fallback;
+    const clamped = Math.min(max, Math.max(min, parsed));
+    return Number(clamped.toFixed(2));
+  };
+
+  const snapshotSettingsState = () => ({
+    interval_seconds: normalizeIntegerSetting(snapshotIntervalSeconds, 10, 5, 300),
+    retention_days: normalizeIntegerSetting(snapshotRetentionDays, 10, 1, 365),
+    exclude_private_browsing: !!snapshotExcludePrivate,
+    capture_on_window_change: !!snapshotCaptureOnWindowChange,
+    allow_individual_delete: !!snapshotAllowDelete
+  });
+
+  const runtimeSettingsState = () => ({
+    run_in_background_service: !!runInBackgroundService,
+    ui_zoom_scale: normalizeDecimalSetting(uiZoomScale, 1, MIN_UI_ZOOM_SCALE, MAX_UI_ZOOM_SCALE),
+    font_zoom_scale: normalizeDecimalSetting(fontZoomScale, 1, MIN_FONT_ZOOM_SCALE, MAX_FONT_ZOOM_SCALE),
+    share_crash_diagnostics: !!shareCrashDiagnostics
+  });
+
+  const statesMatch = (left, right) =>
+    JSON.stringify(left || {}) === JSON.stringify(right || {});
+
+  const isSnapshotSettingsDirtyNow = () => (
+    snapshotBaseline
+      ? !statesMatch(snapshotBaseline, snapshotSettingsState())
+      : false
+  );
+
+  const isRuntimeSettingsDirtyNow = () => (
+    runtimeBaseline
+      ? !statesMatch(runtimeBaseline, runtimeSettingsState())
+      : false
+  );
+
+  $: snapshotSettingsDirty = isSnapshotSettingsDirtyNow();
+
+  $: runtimeSettingsDirty = isRuntimeSettingsDirtyNow();
+
+  const clearSnapshotAutoSaveTimer = () => {
+    if (snapshotAutoSaveTimer) {
+      clearTimeout(snapshotAutoSaveTimer);
+      snapshotAutoSaveTimer = null;
+    }
+  };
+
+  const clearRuntimeAutoSaveTimer = () => {
+    if (runtimeAutoSaveTimer) {
+      clearTimeout(runtimeAutoSaveTimer);
+      runtimeAutoSaveTimer = null;
+    }
+  };
+
+  const scheduleSnapshotSettingsAutoSave = () => {
+    if (
+      !snapshotSettingsInitialized
+      || snapshotSettingsLoading
+      || snapshotSettingsSaving
+      || snapshotDeleteAllRunning
+      || !isSnapshotSettingsDirtyNow()
+    ) {
+      return;
+    }
+
+    clearSnapshotAutoSaveTimer();
+    snapshotAutoSaveTimer = setTimeout(() => {
+      snapshotAutoSaveTimer = null;
+      void saveSnapshotSettings({ silent: true });
+    }, SETTINGS_AUTO_SAVE_DEBOUNCE_MS);
+  };
+
+  const scheduleRuntimeSettingsAutoSave = () => {
+    if (
+      !runtimeSettingsInitialized
+      || runtimeSettingsLoading
+      || runtimeSettingsSaving
+      || !isRuntimeSettingsDirtyNow()
+    ) {
+      return;
+    }
+
+    clearRuntimeAutoSaveTimer();
+    runtimeAutoSaveTimer = setTimeout(() => {
+      runtimeAutoSaveTimer = null;
+      void saveRuntimeSettings({ silent: true });
+    }, SETTINGS_AUTO_SAVE_DEBOUNCE_MS);
+  };
+
+  $: if (
+    !snapshotSettingsInitialized
+    || snapshotSettingsLoading
+    || snapshotSettingsSaving
+    || snapshotDeleteAllRunning
+    || !isSnapshotSettingsDirtyNow()
+  ) {
+    clearSnapshotAutoSaveTimer();
+  } else {
+    scheduleSnapshotSettingsAutoSave();
+  }
+
+  $: if (
+    !runtimeSettingsInitialized
+    || runtimeSettingsLoading
+    || runtimeSettingsSaving
+    || !isRuntimeSettingsDirtyNow()
+  ) {
+    clearRuntimeAutoSaveTimer();
+  } else {
+    scheduleRuntimeSettingsAutoSave();
+  }
+
+  const flushPendingSettingsAutoSave = () => {
+    clearSnapshotAutoSaveTimer();
+    clearRuntimeAutoSaveTimer();
+
+    if (
+      snapshotSettingsInitialized
+      && !snapshotSettingsLoading
+      && !snapshotSettingsSaving
+      && !snapshotDeleteAllRunning
+      && isSnapshotSettingsDirtyNow()
+    ) {
+      void saveSnapshotSettings({ silent: true });
+    }
+
+    if (
+      runtimeSettingsInitialized
+      && !runtimeSettingsLoading
+      && !runtimeSettingsSaving
+      && isRuntimeSettingsDirtyNow()
+    ) {
+      void saveRuntimeSettings({ silent: true });
+    }
+  };
+
+  const persistSnapshotSettingsNow = () => {
+    if (!snapshotSettingsInitialized || snapshotSettingsLoading || snapshotDeleteAllRunning) {
+      return;
+    }
+    void saveSnapshotSettings({ silent: true });
+  };
+
+  const persistRuntimeSettingsNow = () => {
+    if (!runtimeSettingsInitialized || runtimeSettingsLoading) {
+      return;
+    }
+    void saveRuntimeSettings({ silent: true });
+  };
 
 
   const toggleGc = () => {
@@ -108,12 +279,17 @@
     loadRuntimeSettings();
 
     return () => {
+      flushPendingSettingsAutoSave();
       if (mediaQuery.removeEventListener) {
         mediaQuery.removeEventListener('change', handleSystemChange);
       } else {
         mediaQuery.removeListener(handleSystemChange);
       }
     };
+  });
+
+  onDestroy(() => {
+    flushPendingSettingsAutoSave();
   });
 
   $: themeIndex = themeMode === 'light' ? 0 : themeMode === 'system' ? 1 : 2;
@@ -199,9 +375,9 @@
   };
 
   const loadSnapshotSettings = async () => {
+    snapshotSettingsInitialized = false;
     snapshotSettingsLoading = true;
     snapshotSettingsError = '';
-    snapshotVaultInfo = '';
     try {
       const data = await getSnapshotSettings();
       snapshotIntervalSeconds = data.interval_seconds ?? 10;
@@ -209,30 +385,39 @@
       snapshotExcludePrivate = !!data.exclude_private_browsing;
       snapshotCaptureOnWindowChange = data.capture_on_window_change ?? true;
       snapshotAllowDelete = !!data.allow_individual_delete;
+      snapshotCount = Math.max(Number(data.snapshot_count) || 0, 0);
+      snapshotBaseline = snapshotSettingsState();
     } catch (e) {
       snapshotSettingsError = e.message || 'Failed to load snapshot settings.';
     } finally {
       snapshotSettingsLoading = false;
+      snapshotSettingsInitialized = true;
     }
   };
 
-  const saveSnapshotSettings = async () => {
+  const saveSnapshotSettings = async ({ silent = true } = {}) => {
+    if (!isSnapshotSettingsDirtyNow()) return;
+
     snapshotSettingsSaving = true;
     snapshotSettingsError = '';
     try {
-      await updateSnapshotSettings({
-        interval_seconds: Number(snapshotIntervalSeconds),
-        retention_days: Number(snapshotRetentionDays),
-        exclude_private_browsing: !!snapshotExcludePrivate,
-        capture_on_window_change: !!snapshotCaptureOnWindowChange,
-        allow_individual_delete: !!snapshotAllowDelete
-      });
-      await showMessage(
-        'Snapshot settings applied successfully.',
-        'Settings Updated',
-        'info',
-        { messageScale: 1.15 }
-      );
+      const saved = await updateSnapshotSettings(snapshotSettingsState());
+      snapshotIntervalSeconds = saved.interval_seconds ?? snapshotIntervalSeconds;
+      snapshotRetentionDays = saved.retention_days ?? snapshotRetentionDays;
+      snapshotExcludePrivate = saved.exclude_private_browsing ?? snapshotExcludePrivate;
+      snapshotCaptureOnWindowChange =
+        saved.capture_on_window_change ?? snapshotCaptureOnWindowChange;
+      snapshotAllowDelete = saved.allow_individual_delete ?? snapshotAllowDelete;
+      snapshotCount = Math.max(Number(saved.snapshot_count) || snapshotCount, 0);
+      snapshotBaseline = snapshotSettingsState();
+      if (!silent) {
+        await showMessage(
+          'Snapshot settings applied successfully.',
+          'Settings Updated',
+          'info',
+          { messageScale: 1.15 }
+        );
+      }
     } catch (e) {
       snapshotSettingsError = e.message || 'Failed to apply snapshot settings.';
     } finally {
@@ -241,8 +426,9 @@
   };
 
   const deleteAllStoredSnapshots = async () => {
+    if (snapshotCount <= 0 || snapshotDeleteAllRunning) return;
+
     snapshotSettingsError = '';
-    snapshotVaultInfo = '';
 
     const confirmed = await askQuestion(
       'This permanently deletes all stored snapshots and timeline images. This action cannot be undone. Continue?',
@@ -276,23 +462,29 @@
     }
 
     snapshotDeleteAllRunning = true;
+    let successMessage = '';
     try {
       const result = await deleteAllSnapshots(cleanedPassphrase);
-      snapshotVaultInfo = result.message || 'All stored snapshots were deleted.';
-      await showMessage(
-        `Deleted ${result.deleted_snapshots ?? 0} snapshots and cleared ${result.deleted_images ?? 0} stored images.`,
-        'Snapshots Deleted',
-        'info',
-        { messageScale: 1.15 }
-      );
+      snapshotCount = 0;
+      successMessage = `Deleted ${result.deleted_snapshots ?? 0} snapshots and cleared ${result.deleted_images ?? 0} stored images.`;
     } catch (e) {
       snapshotSettingsError = e.message || 'Failed to delete stored snapshots.';
     } finally {
       snapshotDeleteAllRunning = false;
     }
+
+    if (successMessage) {
+      await showMessage(
+        successMessage,
+        'Snapshots Deleted',
+        'info',
+        { messageScale: 1.15 }
+      );
+    }
   };
 
   const loadRuntimeSettings = async () => {
+    runtimeSettingsInitialized = false;
     runtimeSettingsLoading = true;
     runtimeSettingsError = '';
     try {
@@ -302,11 +494,17 @@
       uiZoomScale = Number.isFinite(parsedZoom)
         ? Math.min(MAX_UI_ZOOM_SCALE, Math.max(MIN_UI_ZOOM_SCALE, parsedZoom))
         : 1;
+      const parsedFontZoom = Number(data.font_zoom_scale ?? 1);
+      fontZoomScale = Number.isFinite(parsedFontZoom)
+        ? Math.min(MAX_FONT_ZOOM_SCALE, Math.max(MIN_FONT_ZOOM_SCALE, parsedFontZoom))
+        : 1;
       shareCrashDiagnostics = !!data.share_crash_diagnostics;
+      runtimeBaseline = runtimeSettingsState();
     } catch (e) {
       runtimeSettingsError = e.message || 'Failed to load runtime settings.';
     } finally {
       runtimeSettingsLoading = false;
+      runtimeSettingsInitialized = true;
     }
   };
 
@@ -316,6 +514,7 @@
         detail: {
           runInBackgroundService,
           uiZoomScale,
+          fontZoomScale,
           shareCrashDiagnostics
         }
       })
@@ -335,6 +534,15 @@
   const normalizeUiZoomScale = (value) =>
     Number(clampUiZoomScale(value).toFixed(2));
 
+  const clampFontZoomScale = (value) => {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return 1;
+    return Math.min(MAX_FONT_ZOOM_SCALE, Math.max(MIN_FONT_ZOOM_SCALE, parsed));
+  };
+
+  const normalizeFontZoomScale = (value) =>
+    Number(clampFontZoomScale(value).toFixed(2));
+
   const nudgeUiZoomScale = async (delta) => {
     uiZoomScale = normalizeUiZoomScale(Number(uiZoomScale) + delta);
     previewUiZoomScale();
@@ -347,24 +555,39 @@
     await saveRuntimeSettings({ silent: true });
   };
 
-  const saveRuntimeSettings = async ({ silent = false } = {}) => {
+  const nudgeFontZoomScale = async (delta) => {
+    fontZoomScale = normalizeFontZoomScale(Number(fontZoomScale) + delta);
+    previewUiZoomScale();
+    await saveRuntimeSettings({ silent: true });
+  };
+
+  const commitFontZoomScaleInput = async () => {
+    fontZoomScale = normalizeFontZoomScale(fontZoomScale);
+    previewUiZoomScale();
+    await saveRuntimeSettings({ silent: true });
+  };
+
+  const saveRuntimeSettings = async ({ silent = true } = {}) => {
+    if (!isRuntimeSettingsDirtyNow()) return;
+
     runtimeSettingsSaving = true;
     runtimeSettingsError = '';
     try {
-      const data = await updateRuntimeSettings({
-        run_in_background_service: !!runInBackgroundService,
-        ui_zoom_scale: Number(uiZoomScale),
-        share_crash_diagnostics: !!shareCrashDiagnostics
-      });
+      const data = await updateRuntimeSettings(runtimeSettingsState());
       runInBackgroundService = data.run_in_background_service ?? runInBackgroundService;
       const parsedZoom = Number(data.ui_zoom_scale ?? uiZoomScale);
       uiZoomScale = Number.isFinite(parsedZoom)
         ? Math.min(MAX_UI_ZOOM_SCALE, Math.max(MIN_UI_ZOOM_SCALE, parsedZoom))
         : uiZoomScale;
+      const parsedFontZoom = Number(data.font_zoom_scale ?? fontZoomScale);
+      fontZoomScale = Number.isFinite(parsedFontZoom)
+        ? Math.min(MAX_FONT_ZOOM_SCALE, Math.max(MIN_FONT_ZOOM_SCALE, parsedFontZoom))
+        : fontZoomScale;
       shareCrashDiagnostics = !!data.share_crash_diagnostics;
+      runtimeBaseline = runtimeSettingsState();
       emitRuntimeSettingsChange();
       if (!silent) {
-        await showMessage(
+        void showMessage(
           'Runtime preferences applied successfully.',
           'Settings Updated',
           'info',
@@ -409,7 +632,7 @@
             <Fa icon={faChevronDown} class="section-chevron" />
           </summary>
           <div class="chip-list" style="margin-top:8px;">
-            {#each excludedFolders as folder}
+            {#each excludedFolders as folder (folder)}
               <span class="chip is-readonly">{folder}</span>
             {/each}
           </div>
@@ -429,7 +652,7 @@
           </button>
         </div>
         <div class="chip-list">
-          {#each customExclusions as folder, index}
+          {#each customExclusions as folder, index (`${folder}-${index}`)}
             <span class="chip">
               {folder}
               <button class="chip-remove" on:click={() => removeCustomExclusion(index)} disabled={exclusionsSaving}>
@@ -464,7 +687,14 @@
             <h3>Capture Interval (seconds)</h3>
             <p class="muted">How often Locus captures active-window snapshots.</p>
           </div>
-          <input class="settings-input" type="number" min="5" max="300" bind:value={snapshotIntervalSeconds} />
+          <input
+            class="settings-input"
+            type="number"
+            min="5"
+            max="300"
+            bind:value={snapshotIntervalSeconds}
+            on:change={persistSnapshotSettingsNow}
+          />
         </div>
 
         <div class="settings-row">
@@ -472,7 +702,14 @@
             <h3>Retention (days)</h3>
             <p class="muted">Older encrypted snapshots are removed automatically.</p>
           </div>
-          <input class="settings-input" type="number" min="1" max="365" bind:value={snapshotRetentionDays} />
+          <input
+            class="settings-input"
+            type="number"
+            min="1"
+            max="365"
+            bind:value={snapshotRetentionDays}
+            on:change={persistSnapshotSettingsNow}
+          />
         </div>
 
         <div class="settings-row">
@@ -481,7 +718,11 @@
             <p class="muted">Skip Incognito/InPrivate windows automatically.</p>
           </div>
           <label class="switch">
-            <input type="checkbox" bind:checked={snapshotExcludePrivate} />
+            <input
+              type="checkbox"
+              bind:checked={snapshotExcludePrivate}
+              on:change={persistSnapshotSettingsNow}
+            />
             <span class="slider"></span>
           </label>
         </div>
@@ -492,7 +733,11 @@
             <p class="muted">Take an immediate snapshot when active app/window changes.</p>
           </div>
           <label class="switch">
-            <input type="checkbox" bind:checked={snapshotCaptureOnWindowChange} />
+            <input
+              type="checkbox"
+              bind:checked={snapshotCaptureOnWindowChange}
+              on:change={persistSnapshotSettingsNow}
+            />
             <span class="slider"></span>
           </label>
         </div>
@@ -503,7 +748,11 @@
             <p class="muted">Off by default for integrity. Enable only if needed.</p>
           </div>
           <label class="switch">
-            <input type="checkbox" bind:checked={snapshotAllowDelete} />
+            <input
+              type="checkbox"
+              bind:checked={snapshotAllowDelete}
+              on:change={persistSnapshotSettingsNow}
+            />
             <span class="slider"></span>
           </label>
         </div>
@@ -516,21 +765,11 @@
           <button
             class="btn btn-danger apply-btn"
             on:click={deleteAllStoredSnapshots}
-            disabled={snapshotDeleteAllRunning || snapshotSettingsSaving}
+            disabled={snapshotDeleteAllRunning || snapshotSettingsSaving || snapshotCount <= 0}
           >
             {snapshotDeleteAllRunning ? 'Deleting…' : 'Delete All'}
           </button>
         </div>
-
-        <div class="d-flex justify-content-end">
-          <button class="btn btn-primary apply-btn" on:click={saveSnapshotSettings} disabled={snapshotSettingsSaving}>
-            {snapshotSettingsSaving ? 'Applying…' : 'Apply'}
-          </button>
-        </div>
-
-        {#if snapshotVaultInfo}
-          <div class="settings-note" style="margin-top: 12px;">{snapshotVaultInfo}</div>
-        {/if}
 
         {#if snapshotSettingsError}
           <div class="settings-note text-danger" style="margin-top: 12px;">{snapshotSettingsError}</div>
@@ -718,6 +957,7 @@
               bind:value={uiZoomScale}
               on:input={previewUiZoomScale}
               on:change={commitUiZoomScaleInput}
+              on:blur={commitUiZoomScaleInput}
               disabled={runtimeSettingsSaving}
             />
             <button
@@ -734,11 +974,54 @@
 
         <div class="settings-row">
           <div>
+            <h3>Font Zoom</h3>
+            <p class="muted">Scale text from 0.8x to 1.5x for better readability.</p>
+          </div>
+          <div class="d-flex align-items-center gap-2 zoom-control-group" style="min-width: 240px; justify-content: flex-end;">
+            <button
+              class="btn zoom-step-btn"
+              type="button"
+              on:click={() => nudgeFontZoomScale(-FONT_ZOOM_STEP)}
+              aria-label="Decrease font zoom"
+              disabled={runtimeSettingsSaving}
+            >
+              -
+            </button>
+            <input
+              class="settings-input zoom-value-input"
+              type="number"
+              min={MIN_FONT_ZOOM_SCALE}
+              max={MAX_FONT_ZOOM_SCALE}
+              step={FONT_ZOOM_STEP}
+              bind:value={fontZoomScale}
+              on:input={previewUiZoomScale}
+              on:change={commitFontZoomScaleInput}
+              on:blur={commitFontZoomScaleInput}
+              disabled={runtimeSettingsSaving}
+            />
+            <button
+              class="btn zoom-step-btn"
+              type="button"
+              on:click={() => nudgeFontZoomScale(FONT_ZOOM_STEP)}
+              aria-label="Increase font zoom"
+              disabled={runtimeSettingsSaving}
+            >
+              +
+            </button>
+          </div>
+        </div>
+
+        <div class="settings-row">
+          <div>
             <h3>Run In Background Service Mode</h3>
             <p class="muted">When enabled, closing Locus after unlock keeps it running in tray on Linux and Windows.</p>
           </div>
           <label class="switch">
-            <input type="checkbox" bind:checked={runInBackgroundService} />
+            <input
+              type="checkbox"
+              bind:checked={runInBackgroundService}
+              on:change={persistRuntimeSettingsNow}
+            />
             <span class="slider"></span>
           </label>
         </div>
@@ -749,15 +1032,13 @@
             <p class="muted">Allow detailed crash reports to be forwarded to developers.</p>
           </div>
           <label class="switch">
-            <input type="checkbox" bind:checked={shareCrashDiagnostics} />
+            <input
+              type="checkbox"
+              bind:checked={shareCrashDiagnostics}
+              on:change={persistRuntimeSettingsNow}
+            />
             <span class="slider"></span>
           </label>
-        </div>
-
-        <div class="d-flex justify-content-end">
-          <button class="btn btn-primary apply-btn" on:click={saveRuntimeSettings} disabled={runtimeSettingsSaving}>
-            {runtimeSettingsSaving ? 'Applying…' : 'Apply'}
-          </button>
         </div>
 
         {#if runtimeSettingsError}

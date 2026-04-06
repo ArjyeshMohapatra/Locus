@@ -1,10 +1,11 @@
+<svelte:options runes={false} />
 <script>
-  import { onMount, tick } from 'svelte';
+  import { onDestroy, onMount, tick } from 'svelte';
   import { createEventDispatcher } from 'svelte';
   import { setupAuth, unlockAuth, resetAuth } from '../api.js';
   import { askForText, askQuestion } from '../dialogStore.js';
   import Fa from 'svelte-fa';
-  import { faEye, faEyeSlash } from '@fortawesome/free-solid-svg-icons';
+  import { faCheck, faCopy, faEye, faEyeSlash } from '@fortawesome/free-solid-svg-icons';
   
   export let isSetupRequired = false;
   
@@ -16,7 +17,11 @@
   let isLoading = false;
   let recoveryKey = '';
   let showRecovery = false;
+  let recoveryCopied = false;
+  let recoveryCopyTimer;
   let isForgotMode = false;
+  let previousDocumentZoom = '';
+  let previousFontZoomScale = '';
 
   let setupPasswordInput;
   let setupConfirmPasswordInput;
@@ -93,8 +98,71 @@
   };
 
   onMount(() => {
+    // Keep the auth view spatially stable regardless of saved runtime zoom values.
+    previousDocumentZoom = document.documentElement.style.zoom || '';
+    previousFontZoomScale = document.documentElement.style.getPropertyValue('--locus-font-zoom-scale') || '';
+    document.documentElement.style.zoom = '1';
+    document.documentElement.style.setProperty('--locus-font-zoom-scale', '1');
     void focusForCurrentMode();
   });
+
+  onDestroy(() => {
+    if (previousDocumentZoom) {
+      document.documentElement.style.zoom = previousDocumentZoom;
+    } else {
+      document.documentElement.style.removeProperty('zoom');
+    }
+
+    if (previousFontZoomScale) {
+      document.documentElement.style.setProperty('--locus-font-zoom-scale', previousFontZoomScale);
+    } else {
+      document.documentElement.style.removeProperty('--locus-font-zoom-scale');
+    }
+
+    if (recoveryCopyTimer) {
+      clearTimeout(recoveryCopyTimer);
+      recoveryCopyTimer = null;
+    }
+  });
+
+  const copyRecoveryKey = async () => {
+    errorMsg = '';
+    const value = String(recoveryKey || '').trim();
+    if (!value) {
+      errorMsg = 'Recovery key is empty and cannot be copied.';
+      return;
+    }
+
+    try {
+      if (navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(value);
+      } else {
+        const area = document.createElement('textarea');
+        area.value = value;
+        area.setAttribute('readonly', 'readonly');
+        area.style.position = 'fixed';
+        area.style.top = '-9999px';
+        area.style.left = '-9999px';
+        document.body.appendChild(area);
+        area.select();
+        const copied = document.execCommand('copy');
+        document.body.removeChild(area);
+        if (!copied) {
+          throw new Error('Copy command was blocked.');
+        }
+      }
+
+      recoveryCopied = true;
+      if (recoveryCopyTimer) {
+        clearTimeout(recoveryCopyTimer);
+      }
+      recoveryCopyTimer = setTimeout(() => {
+        recoveryCopied = false;
+      }, 1500);
+    } catch (error) {
+      errorMsg = error?.message || 'Failed to copy recovery key.';
+    }
+  };
   
   const handleSetup = async () => {
     errorMsg = '';
@@ -177,7 +245,7 @@
 
     isLoading = true;
     try {
-      await resetAuth(password, typedConfirmation);
+      await resetAuth('', typedConfirmation);
       window.location.reload();
     } catch (e) {
       errorMsg = e.message;
@@ -209,9 +277,18 @@
         <div class="alert alert-warning" style="font-size: 0.9rem;">
           <strong>IMPORTANT:</strong> Save this key. It is the ONLY way to recover your data if you forget your master password.
         </div>
-        <div class="recovery-box">
-          <code>{recoveryKey}</code>
+        <div class="recovery-wrap">
+          <div class="recovery-box">
+            <code>{recoveryKey}</code>
+          </div>
+          <button class="btn btn-outline-primary recovery-copy-btn" on:click={copyRecoveryKey}>
+            <Fa icon={recoveryCopied ? faCheck : faCopy} />
+            <span>{recoveryCopied ? 'Copied' : 'Copy'}</span>
+          </button>
         </div>
+        {#if recoveryCopied}
+          <div class="recovery-copy-toast">Recovery key copied.</div>
+        {/if}
         <button class="btn btn-primary w-100 mt-3" on:click={finishSetup}>I have saved it secretly</button>
       
       {:else if isSetupRequired}
@@ -326,7 +403,7 @@
 <style>
   .lock-screen-wrapper {
     position: fixed;
-    top: 40px;
+    top: 0;
     left: 0;
     right: 0;
     bottom: 0;
@@ -334,8 +411,18 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    z-index: 10000;
+    z-index: 980;
     padding: 18px;
+  }
+
+  :global(body.has-custom-titlebar) .lock-screen-wrapper {
+    top: 40px;
+    padding-top: 18px;
+  }
+
+  :global(body:not(.has-custom-titlebar)) .lock-screen-wrapper {
+    top: 0;
+    padding-top: 18px;
   }
 
   .lock-card {
@@ -427,6 +514,47 @@
     border-radius: 10px;
     word-break: break-all;
     text-align: center;
+  }
+
+  .recovery-wrap {
+    display: flex;
+    align-items: stretch;
+    gap: 10px;
+  }
+
+  .recovery-wrap .recovery-box {
+    flex: 1;
+  }
+
+  .recovery-copy-btn {
+    min-width: 92px;
+    border-radius: 10px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    font-weight: 600;
+  }
+
+  .recovery-copy-toast {
+    margin-top: 10px;
+    border: 1px solid color-mix(in srgb, var(--success) 45%, var(--border-subtle));
+    background: color-mix(in srgb, var(--success) 18%, var(--surface-elevated));
+    color: var(--text-primary);
+    border-radius: 9px;
+    padding: 8px 10px;
+    font-size: 0.83rem;
+    font-weight: 600;
+  }
+
+  @media (max-width: 560px) {
+    .recovery-wrap {
+      flex-direction: column;
+    }
+
+    .recovery-copy-btn {
+      width: 100%;
+    }
   }
 
   :global(.theme-dark) .recovery-box {

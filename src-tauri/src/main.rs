@@ -17,13 +17,14 @@ use std::os::windows::process::CommandExt;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{Emitter, Manager, RunEvent, State, WindowEvent};
+use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
 const DEFAULT_BACKEND_PORT: u16 = 8000;
 const BACKEND_PORT_SEARCH_LIMIT: u16 = 20;
 const BACKEND_STARTUP_TIMEOUT_SECS: u64 = 45;
 const BACKEND_POLL_INTERVAL_MS: u64 = 150;
-const LINUX_THEME_POLL_INTERVAL_MS: u64 = 5000;
-const LINUX_THEME_POLL_FALLBACK_INTERVAL_MS: u64 = 15000;
+const LINUX_THEME_POLL_INTERVAL_MS: u64 = 1000;
+const LINUX_THEME_POLL_FALLBACK_INTERVAL_MS: u64 = 3000;
 
 struct BackendState {
     child: Mutex<Option<Child>>,
@@ -420,7 +421,7 @@ fn start_release_backend(port: u16) -> Child {
 }
 
 fn setup_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
-    let show_item = MenuItem::with_id(app, "show", "Show", true, None::<&str>)?;
+    let show_item = MenuItem::with_id(app, "show", "Open", true, None::<&str>)?;
     let separator = PredefinedMenuItem::separator(app)?;
     let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
     let tray_menu = Menu::with_items(app, &[&show_item, &separator, &quit_item])?;
@@ -433,12 +434,48 @@ fn setup_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
     let _ = tray_builder
         .on_menu_event(|app, event| match event.id().as_ref() {
             "quit" => {
-                let state: State<BackendState> = app.state();
-                stop_backend_process(&state);
-                app.exit(0);
+                let mut emitted_in_app_confirmation = false;
+
+                if let Some(window) = app.get_webview_window("main") {
+                    let is_visible = window.is_visible().unwrap_or(false);
+                    let is_minimized = window.is_minimized().unwrap_or(false);
+
+                    if is_visible && !is_minimized {
+                        let _ = window.set_focus();
+                        let _ = window.emit("locus://tray-quit-requested", ());
+                        emitted_in_app_confirmation = true;
+                    }
+                }
+
+                if !emitted_in_app_confirmation {
+                    let app_handle = app.clone();
+                    thread::spawn(move || {
+                        let confirmed = app_handle
+                            .dialog()
+                            .message(
+                                "Do you really want to shut down Locus? This stops monitoring until you open the app again.",
+                            )
+                            .title("Quit Locus")
+                            .kind(MessageDialogKind::Warning)
+                            .buttons(MessageDialogButtons::OkCancelCustom(
+                                "Yes, Quit".to_string(),
+                                "No".to_string(),
+                            ))
+                            .blocking_show();
+
+                        if !confirmed {
+                            return;
+                        }
+
+                        let state: State<BackendState> = app_handle.state();
+                        stop_backend_process(&state);
+                        app_handle.exit(0);
+                    });
+                }
             }
             "show" => {
                 if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.unminimize();
                     if let Err(err) = window.show() {
                         eprintln!("[tauri] failed to show window: {}", err);
                     }

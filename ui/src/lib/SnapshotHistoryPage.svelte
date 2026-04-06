@@ -5,6 +5,7 @@
     BASE_URL,
     deleteSnapshot,
     executeSnapshotAction,
+    getSnapshotApps,
     getSnapshotHistory,
     getSnapshotSettings
   } from '../api.js';
@@ -22,6 +23,7 @@
   const FILTER_MODE_WEEK = 'week';
   const FILTER_MODE_DAY = 'day';
   const FILTER_MODE_TIME_OF_DAY = 'time_of_day';
+  const FILTER_APP_ALL = '__all_apps__';
 
   const TIME_OF_DAY_BUCKETS = [
     { value: 'morning', label: 'Morning (05:00-11:59)' },
@@ -87,6 +89,8 @@
   };
 
   let filterMode = FILTER_MODE_NONE;
+  let filterApp = FILTER_APP_ALL;
+  let appFilterOptions = [];
   let filterYear = String(nowLocal.getFullYear());
   let filterMonth = toMonthInputValue(nowLocal);
   let filterWeek = toIsoWeekInputValue(nowLocal);
@@ -188,13 +192,41 @@
 
   const applyClientSideFilters = (source) => {
     const rows = Array.isArray(source) ? source : [];
+    const filteredByApp = filterApp === FILTER_APP_ALL
+      ? rows
+      : rows.filter((item) => String(item?.app_name || '').trim() === filterApp);
+
     if (filterMode !== FILTER_MODE_TIME_OF_DAY) {
-      return rows;
+      return filteredByApp;
     }
-    return rows.filter((item) => {
+    return filteredByApp.filter((item) => {
       const capturedAt = parseSnapshotDate(item?.captured_at);
       return isInTimeOfDayBucket(capturedAt, filterTimeOfDay);
     });
+  };
+
+  const mergeAppFilterOptions = (names) => {
+    const normalized = Array.from(
+      new Set(
+        (Array.isArray(names) ? names : [])
+          .map((name) => String(name || '').trim())
+          .filter(Boolean)
+      )
+    ).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+
+    appFilterOptions = normalized;
+    if (filterApp !== FILTER_APP_ALL && !normalized.includes(filterApp)) {
+      filterApp = FILTER_APP_ALL;
+    }
+  };
+
+  const loadAppFilters = async () => {
+    try {
+      const payload = await getSnapshotApps();
+      mergeAppFilterOptions(payload?.apps || []);
+    } catch {
+      // API layer tracks this error centrally.
+    }
   };
 
   const revokeImageObjectUrl = (id) => {
@@ -350,13 +382,26 @@
     const currentIndex = scrubIndex;
 
     try {
+      if (!auto) {
+        await loadAppFilters();
+      }
       const payload = {
         limit: Number(limit) || 200,
+        ...(filterApp !== FILTER_APP_ALL ? { app_name: filterApp } : {}),
         ...(range.start_time ? { start_time: range.start_time } : {}),
         ...(range.end_time ? { end_time: range.end_time } : {})
       };
       const data = await getSnapshotHistory(payload);
       items = data.items || [];
+      const facetApps = Array.isArray(data?.facets?.apps)
+        ? data.facets.apps.map((entry) => {
+            if (Array.isArray(entry)) return entry[0];
+            if (entry && typeof entry === 'object') return entry.app_name || entry.name;
+            return null;
+          })
+        : [];
+      const itemApps = items.map((item) => item?.app_name || null);
+      mergeAppFilterOptions([...(appFilterOptions || []), ...facetApps, ...itemApps]);
       pruneImageObjectUrlCache(new Set(items.map((item) => item.id)));
       
       if (auto && isAtRightEdge) {
@@ -432,11 +477,12 @@
 
   const clearTimelineFilter = async () => {
     filterMode = FILTER_MODE_NONE;
+    filterApp = FILTER_APP_ALL;
     await loadHistory();
   };
 
   onMount(async () => {
-    await Promise.all([loadSettings(), loadHistory()]);
+    await Promise.all([loadSettings(), loadAppFilters(), loadHistory()]);
     refreshTimer = setInterval(() => {
       if (!isScrubbing) {
         loadHistory(true);
@@ -469,7 +515,7 @@
     </div>
     <div class="snapshot-head-meta">
       <span class="badge-soft badge-soft-secondary">
-        {#if filterMode === FILTER_MODE_NONE}
+        {#if filterMode === FILTER_MODE_NONE && filterApp === FILTER_APP_ALL}
           {items.length} snapshots
         {:else}
           {timelineItems.length} of {items.length} snapshots
@@ -489,7 +535,7 @@
 
     <div class="timeline-filter-row">
       <div class="timeline-filter-field">
-        <label class="form-label fw-semibold" for="snapshot-filter-mode">Filter By</label>
+        <label class="form-label fw-semibold" for="snapshot-filter-mode">Filter By Time</label>
         <select id="snapshot-filter-mode" class="form-select" bind:value={filterMode}>
           <option value={FILTER_MODE_NONE}>None</option>
           <option value={FILTER_MODE_YEAR}>Year</option>
@@ -531,18 +577,32 @@
         <div class="timeline-filter-field">
           <label class="form-label fw-semibold" for="snapshot-filter-time">Time of Day</label>
           <select id="snapshot-filter-time" class="form-select" bind:value={filterTimeOfDay}>
-            {#each TIME_OF_DAY_BUCKETS as bucket}
+            {#each TIME_OF_DAY_BUCKETS as bucket (bucket.value)}
               <option value={bucket.value}>{bucket.label}</option>
             {/each}
           </select>
         </div>
       {/if}
 
+      <div class="timeline-filter-field timeline-filter-app">
+        <label class="form-label fw-semibold" for="snapshot-filter-app">Filter By Apps</label>
+        <select id="snapshot-filter-app" class="form-select" bind:value={filterApp}>
+          <option value={FILTER_APP_ALL}>All Apps</option>
+          {#each appFilterOptions as appName (appName)}
+            <option value={appName}>{appName}</option>
+          {/each}
+        </select>
+      </div>
+
       <div class="timeline-filter-actions">
         <button class="btn btn-sm btn-primary" on:click={applyTimelineFilter} disabled={loading}>
           Apply
         </button>
-        <button class="btn btn-sm btn-outline-secondary" on:click={clearTimelineFilter} disabled={loading || filterMode === FILTER_MODE_NONE}>
+        <button
+          class="btn btn-sm btn-outline-secondary"
+          on:click={clearTimelineFilter}
+          disabled={loading || (filterMode === FILTER_MODE_NONE && filterApp === FILTER_APP_ALL)}
+        >
           Clear
         </button>
       </div>
@@ -686,15 +746,21 @@
   }
 
   .timeline-filter-row {
-    display: grid;
+    display: flex;
+    flex-wrap: nowrap;
     gap: 0.6rem;
-    grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
     margin: 0.45rem 0 0.7rem;
     align-items: end;
+    overflow-x: auto;
   }
 
   .timeline-filter-field {
     min-width: 0;
+    flex: 0 0 190px;
+  }
+
+  .timeline-filter-field.timeline-filter-app {
+    flex-basis: 220px;
   }
 
   .timeline-filter-field .form-label {
@@ -706,8 +772,10 @@
     display: flex;
     align-items: end;
     gap: 0.4rem;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     justify-content: flex-start;
+    margin-left: auto;
+    flex: 0 0 auto;
   }
 
   .timeline-caption {
@@ -799,6 +867,24 @@
   @media (max-width: 720px) {
     .recall-strip {
       padding: 0.75rem 0.78rem;
+    }
+
+    .timeline-filter-row {
+      flex-wrap: wrap;
+      overflow: visible;
+    }
+
+    .timeline-filter-field {
+      flex: 1 1 160px;
+    }
+
+    .timeline-filter-field.timeline-filter-app {
+      flex-basis: 100%;
+    }
+
+    .timeline-filter-actions {
+      margin-left: 0;
+      width: 100%;
     }
 
     .preview-actions {

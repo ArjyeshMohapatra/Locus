@@ -1,3 +1,4 @@
+<svelte:options runes={false} />
 <script>
   import { onMount, onDestroy } from 'svelte';
   import {
@@ -8,7 +9,9 @@
     getRuntimeSettings,
     sendTelemetryEvent
   } from './api.js';
+  import { askQuestion } from './dialogStore.js';
   import { listen } from '@tauri-apps/api/event';
+  import { exit as tauriExit } from '@tauri-apps/plugin-process';
   import WatchedFolders from './lib/WatchedFolders.svelte';
   import ActivityTimeline from './lib/ActivityTimeline.svelte';
   import SettingsPage from './lib/SettingsPage.svelte';
@@ -17,7 +20,7 @@
   import Titlebar from './lib/Titlebar.svelte';
   import CustomDialog from './lib/CustomDialog.svelte';
   import LockScreen from './lib/LockScreen.svelte';
-  import { errorMessages, clearErrorMessages, removeErrorMessage } from './errorStore.js';
+  import { addErrorMessage, errorMessages, clearErrorMessages, removeErrorMessage } from './errorStore.js';
   import Fa from 'svelte-fa';
   import {
     faBars,
@@ -31,7 +34,9 @@
     faServer,
     faMemory,
     faDatabase,
-    faHeartPulse
+    faHeartPulse,
+    faCopy,
+    faCheck
   } from '@fortawesome/free-solid-svg-icons';
 
   let status = 'initializing...';
@@ -46,6 +51,8 @@
   let notificationsOpen = false;
   let runInBackgroundService = true;
   let uiZoomScale = 1;
+  let fontZoomScale = 1;
+  let copiedErrorId = null;
   let dashboardSummary = { total_files: 0, total_versions: 0, storage_bytes: 0, ram_usage_bytes: 0, db_size_bytes: 0, total_snapshots: 0, last_snapshot_time: null };
 
   let healthRefreshTimer;
@@ -54,15 +61,21 @@
   let tauriThemeUnlisten;
   let locusThemeUnlisten;
   let linuxThemeUnlisten;
+  let trayQuitUnlisten;
   let systemThemeOverride = null;
   const MIN_UI_ZOOM_SCALE = 0.5;
   const MAX_UI_ZOOM_SCALE = 3;
   const DEFAULT_UI_ZOOM_SCALE = 1;
+  const MIN_FONT_ZOOM_SCALE = 0.8;
+  const MAX_FONT_ZOOM_SCALE = 1.5;
+  const DEFAULT_FONT_ZOOM_SCALE = 1;
   const THEME_TRANSITION_MS = 220;
   const TELEMETRY_WINDOW_MS = 10000;
   const TELEMETRY_WINDOW_MAX_EVENTS = 8;
 
   let telemetryEventWindow = [];
+  let copiedErrorTimer;
+  let trayQuitConfirmInFlight = false;
 
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -70,6 +83,12 @@
     const parsed = Number(value);
     if (!Number.isFinite(parsed)) return DEFAULT_UI_ZOOM_SCALE;
     return Math.min(MAX_UI_ZOOM_SCALE, Math.max(MIN_UI_ZOOM_SCALE, parsed));
+  };
+
+  const clampFontZoomScale = (value) => {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return DEFAULT_FONT_ZOOM_SCALE;
+    return Math.min(MAX_FONT_ZOOM_SCALE, Math.max(MIN_FONT_ZOOM_SCALE, parsed));
   };
 
   const canSendTelemetryEvent = () => {
@@ -115,6 +134,65 @@
       } catch {
         // Ignore storage errors in restricted runtime contexts.
       }
+    }
+  };
+
+  const applyFontZoomScale = (value, { persist = false } = {}) => {
+    const clamped = clampFontZoomScale(value);
+    fontZoomScale = clamped;
+    document.documentElement.style.setProperty('--locus-font-zoom-scale', String(clamped));
+
+    if (persist) {
+      try {
+        localStorage.setItem('locus-font-zoom', String(clamped));
+      } catch {
+        // Ignore storage errors in restricted runtime contexts.
+      }
+    }
+  };
+
+  const copyTextToClipboard = async (value) => {
+    const text = String(value || '').trim();
+    if (!text) return false;
+    if (navigator?.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+
+    const area = document.createElement('textarea');
+    area.value = text;
+    area.setAttribute('readonly', 'readonly');
+    area.style.position = 'fixed';
+    area.style.top = '-9999px';
+    area.style.left = '-9999px';
+    document.body.appendChild(area);
+    area.select();
+    let copied = false;
+    try {
+      copied = document.execCommand('copy');
+    } finally {
+      document.body.removeChild(area);
+    }
+    return copied;
+  };
+
+  const copyErrorMessage = async (item) => {
+    if (!item?.message) return;
+    try {
+      const copied = await copyTextToClipboard(item.message);
+      if (!copied) {
+        addErrorMessage('Could not copy the selected error message.');
+        return;
+      }
+      copiedErrorId = item.id;
+      if (copiedErrorTimer) {
+        clearTimeout(copiedErrorTimer);
+      }
+      copiedErrorTimer = setTimeout(() => {
+        copiedErrorId = null;
+      }, 1400);
+    } catch (error) {
+      addErrorMessage(error?.message || 'Could not copy the selected error message.');
     }
   };
 
@@ -179,6 +257,7 @@
       isSetupRequired = !!authRes.setup_required;
     } catch (e) {
       console.error('Auth status fetch failed:', e);
+      addErrorMessage(e?.message || 'Auth status fetch failed.');
       // Conservative fallback: if setup cannot be verified, prefer unlock screen over setup screen.
       isSetupRequired = false;
       isLocked = true;
@@ -190,8 +269,10 @@
       const runtime = await getRuntimeSettings();
       runInBackgroundService = runtime?.run_in_background_service ?? true;
       applyUiZoomScale(runtime?.ui_zoom_scale ?? uiZoomScale, { persist: true });
+      applyFontZoomScale(runtime?.font_zoom_scale ?? fontZoomScale, { persist: true });
     } catch (e) {
       console.error('Runtime settings fetch failed:', e);
+      addErrorMessage(e?.message || 'Runtime settings fetch failed.');
       runInBackgroundService = true;
     }
   };
@@ -212,7 +293,9 @@
 
   onMount(async () => {
     const savedZoomScale = localStorage.getItem('locus-ui-zoom');
+    const savedFontZoomScale = localStorage.getItem('locus-font-zoom');
     applyUiZoomScale(savedZoomScale ?? DEFAULT_UI_ZOOM_SCALE);
+    applyFontZoomScale(savedFontZoomScale ?? DEFAULT_FONT_ZOOM_SCALE);
 
     await refreshAuthState();
     await refreshRuntimeSettings();
@@ -257,6 +340,9 @@
       if (event.detail?.uiZoomScale !== undefined) {
         applyUiZoomScale(event.detail.uiZoomScale, { persist: true });
       }
+      if (event.detail?.fontZoomScale !== undefined) {
+        applyFontZoomScale(event.detail.fontZoomScale, { persist: true });
+      }
     };
 
     window.addEventListener('locus-theme-change', handleThemeEvent);
@@ -285,11 +371,15 @@
         applyThemePayload(event.payload);
       });
 
+      trayQuitUnlisten = await listen('locus://tray-quit-requested', () => {
+        void confirmTrayQuit();
+      });
+
       themeRefreshTimer = setInterval(() => {
         if (themeMode === 'system') {
           applyTheme('system');
         }
-      }, 2000);
+      }, 400);
     } catch {
       // Ignored for normal browser envs
     }
@@ -356,6 +446,7 @@
     handleWindowError = (event) => {
       const message = event?.error?.message || event?.message || 'Unhandled UI error';
       const stack = event?.error?.stack || null;
+      addErrorMessage(message);
       reportUiTelemetry({
         eventType: 'unhandled_error',
         message,
@@ -373,6 +464,7 @@
       const reason = event?.reason;
       const message = reason?.message || String(reason || 'Unhandled promise rejection');
       const stack = reason?.stack || null;
+      addErrorMessage(message);
       reportUiTelemetry({
         eventType: 'unhandled_rejection',
         message,
@@ -428,12 +520,19 @@
     if (typeof linuxThemeUnlisten === 'function') {
       linuxThemeUnlisten();
     }
+    if (typeof trayQuitUnlisten === 'function') {
+      trayQuitUnlisten();
+    }
     if (themeRefreshTimer) {
       clearInterval(themeRefreshTimer);
     }
     if (themeTransitionTimer) {
       clearTimeout(themeTransitionTimer);
       themeTransitionTimer = null;
+    }
+    if (copiedErrorTimer) {
+      clearTimeout(copiedErrorTimer);
+      copiedErrorTimer = null;
     }
     document.body.classList.remove('theme-transitioning');
     if (healthRefreshTimer) {
@@ -478,6 +577,7 @@
       dashboardSummary = summaryData || { total_files: 0, total_versions: 0, storage_bytes: 0, ram_usage_bytes: 0, db_size_bytes: 0, total_snapshots: 0, last_snapshot_time: null };
     } catch (e) {
       console.error('Failed to refresh dashboard summaries', e);
+      addErrorMessage(e?.message || 'Failed to refresh dashboard summaries.');
       dashboardSummary = { total_files: 0, total_versions: 0, storage_bytes: 0, ram_usage_bytes: 0, db_size_bytes: 0, total_snapshots: 0, last_snapshot_time: null };
     }
   };
@@ -488,6 +588,40 @@
       isLocked = true;
     } catch (e) {
       console.error("Lock app failed:", e);
+      addErrorMessage(e?.message || 'Lock app failed.');
+    }
+  };
+
+  const confirmTrayQuit = async () => {
+    if (trayQuitConfirmInFlight) return;
+
+    trayQuitConfirmInFlight = true;
+    try {
+      const confirmed = await askQuestion(
+        'Do you really want to shut down Locus? This stops monitoring until you open the app again.',
+        'Quit Locus',
+        {
+          type: 'warning',
+          okLabel: 'Yes, Quit',
+          cancelLabel: 'No'
+        }
+      );
+
+      if (!confirmed) return;
+
+      const isTauriRuntime =
+        typeof window !== 'undefined' &&
+        !!(window.__TAURI__ || window.__TAURI_INTERNALS__ || window.__TAURI_IPC__);
+
+      if (isTauriRuntime) {
+        await tauriExit(0);
+      } else {
+        window.close();
+      }
+    } catch (error) {
+      addErrorMessage(error?.message || 'Could not process quit confirmation.');
+    } finally {
+      trayQuitConfirmInFlight = false;
     }
   };
 </script>
@@ -694,45 +828,49 @@
   </main>
 </div>
 
-{#if currentView === 'dashboard'}
-  <div class="notification-fab">
-    <button class="fab-button" on:click={toggleNotifications} aria-label="Open notifications">
-      <Fa icon={faMessage} />
-      {#if $errorMessages.length > 0}
-        <span class="fab-badge">{$errorMessages.length}</span>
-      {/if}
-    </button>
+<div class="notification-fab">
+  <button class="fab-button" on:click={toggleNotifications} aria-label="Open notifications">
+    <Fa icon={faMessage} />
+    {#if $errorMessages.length > 0}
+      <span class="fab-badge">{$errorMessages.length}</span>
+    {/if}
+  </button>
 
-    {#if notificationsOpen}
-      <div class="fab-popover">
-        <div class="fab-header">
-          <span class="fw-semibold">Messages</span>
-          <button class="btn btn-sm btn-link" on:click={clearErrorMessages}>
-            Clear
-          </button>
-        </div>
+  {#if notificationsOpen}
+    <div class="fab-popover">
+      <div class="fab-header">
+        <span class="fw-semibold">Messages</span>
+        <button class="btn btn-sm btn-link" on:click={clearErrorMessages}>
+          Clear
+        </button>
+      </div>
 
-        {#if $errorMessages.length === 0}
-          <div class="fab-empty">No errors yet.</div>
-        {:else}
-          <div class="fab-list">
-            {#each $errorMessages as item (item.id)}
-              <div class="fab-item">
-                <div class="fab-item-text">
-                  <div class="fab-item-message">{item.message}</div>
-                  <div class="fab-item-time">{formatTimestamp(item.timestamp)}</div>
-                </div>
+      {#if $errorMessages.length === 0}
+        <div class="fab-empty">No errors yet.</div>
+      {:else}
+        <div class="fab-list">
+          {#each $errorMessages as item (item.id)}
+            <div class="fab-item">
+              <div class="fab-item-text">
+                <div class="fab-item-message">{item.message}</div>
+                <div class="fab-item-time">{formatTimestamp(item.timestamp)}</div>
+              </div>
+              <div class="fab-item-actions">
+                <button class="fab-copy" on:click={() => copyErrorMessage(item)}>
+                  <Fa icon={copiedErrorId === item.id ? faCheck : faCopy} />
+                  <span>{copiedErrorId === item.id ? 'Copied' : 'Copy'}</span>
+                </button>
                 <button class="fab-remove" on:click={() => removeErrorMessage(item.id)}>
                   ×
                 </button>
               </div>
-            {/each}
-          </div>
-        {/if}
-      </div>
-    {/if}
-  </div>
-{/if}
+            </div>
+          {/each}
+        </div>
+      {/if}
+    </div>
+  {/if}
+</div>
 
 {/if}
 
@@ -992,7 +1130,7 @@
     position: fixed;
     right: 20px;
     bottom: 20px;
-    z-index: 2000;
+    z-index: 12000;
   }
 
   .fab-button {
@@ -1091,6 +1229,30 @@
   .fab-item-time {
     font-size: 0.7rem;
     color: var(--text-muted);
+  }
+
+  .fab-item-actions {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .fab-copy {
+    border: 1px solid var(--border-subtle);
+    background: var(--surface-elevated);
+    border-radius: 7px;
+    color: var(--text-secondary);
+    font-size: 0.7rem;
+    padding: 3px 7px;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    cursor: pointer;
+  }
+
+  .fab-copy:hover {
+    border-color: var(--border-strong);
+    color: var(--text-primary);
   }
 
   .fab-remove {

@@ -4,6 +4,7 @@ import pytest
 
 from app import storage, event_stream
 from app.database import crud
+from app import main as main_app
 
 pytestmark = pytest.mark.slow
 
@@ -172,6 +173,47 @@ def test_remove_watched_path_purges_tracked_data(client, db_session, tmp_path: P
 
     watched_after = client.get("/files/watched").json()
     assert all(item["id"] != watched_id for item in watched_after)
+
+
+def test_stop_snapshot_scan_returns_zero_when_no_scan_running(client):
+    response = client.post("/files/watched/snapshot/stop", json={})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["cancelled_count"] == 0
+    assert payload["cancelled_paths"] == []
+
+
+def test_stop_snapshot_scan_for_unknown_path_returns_404(client, tmp_path: Path):
+    watched = tmp_path / "not-running"
+    response = client.post(
+        "/files/watched/snapshot/stop",
+        json={"watched_path": str(watched)},
+    )
+    assert response.status_code == 404
+
+
+def test_stop_snapshot_scan_cancels_registered_path(client, tmp_path: Path):
+    watched = tmp_path / "running"
+    watched_path = str(watched)
+
+    cancel_event, created = main_app._register_snapshot_cancel_event(watched_path)
+    assert created is True
+
+    try:
+        response = client.post(
+            "/files/watched/snapshot/stop",
+            json={"watched_path": watched_path},
+        )
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["cancelled_count"] == 1
+        assert payload["cancelled_paths"] == [
+            main_app._normalize_watched_path(watched_path)
+        ]
+        assert cancel_event.is_set() is True
+    finally:
+        main_app._clear_snapshot_cancel_event(watched_path, cancel_event)
 
 
 def test_activity_log_and_timeline(client):

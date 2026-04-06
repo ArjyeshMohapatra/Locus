@@ -1,7 +1,16 @@
+<svelte:options runes={false} />
+
 <script>
   import { onMount } from 'svelte';
   import { open as openDialog } from '@tauri-apps/plugin-dialog';
-  import { getWatchedPaths, addWatchedPath, relinkWatchedPath, removeWatchedPath } from '../api.js';
+  import {
+    getWatchedPaths,
+    addWatchedPath,
+    relinkWatchedPath,
+    removeWatchedPath,
+    getTrackingExclusions,
+    setTrackingExclusions
+  } from '../api.js';
   import { showMessage, askForText, askQuestion } from '../dialogStore.js';
   import Fa from 'svelte-fa';
   import { faLink, faFolderPlus, faTrashCan } from '@fortawesome/free-solid-svg-icons';
@@ -13,6 +22,89 @@
   const detectTauriRuntime = () => (
     typeof window !== 'undefined' && !!(window.__TAURI__ || window.__TAURI_INTERNALS__ || window.__TAURI_IPC__)
   );
+
+  const parseExclusionInput = (value) => Array.from(
+    new Set(
+      String(value || '')
+        .split(/[\n,;\t]+/)
+        .map((entry) => entry.trim())
+        .filter(Boolean)
+    )
+  );
+
+  async function promptTrackingExclusionsBeforeAdd(pathToAdd) {
+    const entered = await askForText(
+      `Before tracking starts, you can add exclusions for this folder.\n\nPath: "${pathToAdd}"\n\nEnter folder/file names to ignore (comma or new-line separated), or leave empty to continue.`,
+      'Optional Tracking Exclusions',
+      {
+        type: 'question',
+        okLabel: 'Continue',
+        cancelLabel: 'Cancel',
+        inputLabel: 'Exclude names (optional)',
+        placeholder: '.gitignore, node_modules, dist',
+        maxLength: 1200
+      }
+    );
+
+    if (entered === null) {
+      return false;
+    }
+
+    const requestedExclusions = parseExclusionInput(entered);
+    if (requestedExclusions.length === 0) {
+      return true;
+    }
+
+    try {
+      const current = await getTrackingExclusions();
+      const existing = Array.isArray(current?.custom_exclusions)
+        ? current.custom_exclusions
+            .map((item) => String(item || '').trim())
+            .filter(Boolean)
+        : [];
+
+      const merged = Array.from(new Set([...existing, ...requestedExclusions]));
+      await setTrackingExclusions(merged);
+      await showMessage(
+        `Saved ${requestedExclusions.length} new exclusion${requestedExclusions.length === 1 ? '' : 's'}.`,
+        'Exclusions Updated',
+        'info'
+      );
+      return true;
+    } catch (e) {
+      const proceed = await askQuestion(
+        `Could not save exclusions: ${e?.message || e}\n\nProceed with folder tracking anyway?`,
+        'Exclusions Not Saved',
+        {
+          type: 'warning',
+          okLabel: 'Proceed Anyway',
+          cancelLabel: 'Cancel'
+        }
+      );
+      return !!proceed;
+    }
+  }
+
+  async function addWatchedPathWithPrompt(pathToAdd) {
+    const normalizedPath = String(pathToAdd || '').trim();
+    if (!normalizedPath) {
+      return false;
+    }
+
+    const shouldContinue = await promptTrackingExclusionsBeforeAdd(normalizedPath);
+    if (!shouldContinue) {
+      return false;
+    }
+
+    try {
+      await addWatchedPath(normalizedPath);
+      await loadPaths();
+      return true;
+    } catch (e) {
+      await showMessage('Add path failed: ' + (e?.message || e), 'Error', 'error');
+      return false;
+    }
+  }
 
   onMount(() => {
     loadPaths();
@@ -113,8 +205,7 @@
           
           if (selected) {
             const pathToAdd = Array.isArray(selected) ? selected[0] : selected;
-            await addWatchedPath(pathToAdd);
-            await loadPaths();
+            await addWatchedPathWithPrompt(pathToAdd);
             return;
           }
         } 
@@ -125,9 +216,10 @@
     
     // Fallback to text input
     if(newPathInput){
-      await addWatchedPath(newPathInput);
-      newPathInput = "";
-      await loadPaths();
+      const added = await addWatchedPathWithPrompt(newPathInput);
+      if (added) {
+        newPathInput = "";
+      }
     }
   }
 
@@ -160,7 +252,7 @@
       <p class="text-muted">No folders being watched yet.</p>
     {:else}
       <ul class="list-group list-group-flush">
-        {#each paths as p}
+        {#each paths as p (p.id ?? p.path)}
           <li class="list-group-item d-flex justify-content-between align-items-center px-0">
             <span class="text-break me-2">{p.path}</span>
             <div class="d-flex align-items-center gap-3">

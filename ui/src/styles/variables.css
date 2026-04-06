@@ -42,6 +42,7 @@
   --font-size-title-2: 1.25rem;
   --font-size-title-1: 1.75rem;
   --line-height-body: 1.5;
+  --locus-font-zoom-scale: 1;
 }
 
 body.theme-dark {
@@ -95,6 +96,7 @@ body,
 }
 
 html {
+  font-size: calc(16px * var(--locus-font-zoom-scale, 1));
   overscroll-behavior: none;
   overflow: hidden;
 }
@@ -148,6 +150,14 @@ h6 {
   border-color: var(--accent);
   color: var(--text-primary);
   box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.form-control:disabled,
+.form-select:disabled {
+  background-color: var(--surface-soft);
+  border-color: var(--border-subtle);
+  color: var(--text-muted);
+  opacity: 1;
 }
 
 .form-control::placeholder {

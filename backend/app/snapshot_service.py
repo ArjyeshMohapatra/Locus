@@ -24,7 +24,7 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from PIL import ImageGrab
 
-from app.database import crud
+from app.database import crud, models
 from app.database.models import SessionLocal
 
 PRIVATE_BROWSING_MARKERS = ("incognito", "inprivate", "private browsing")
@@ -437,6 +437,7 @@ class SnapshotService:
             "has_existing_key": bool(
                 (crud.get_setting(db, "snapshot_key_verifier", None) or "").strip()
             ),
+            "snapshot_count": int(db.query(models.ActivitySnapshotRecord).count()),
         }
         return settings
 
