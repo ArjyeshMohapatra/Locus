@@ -1,0 +1,77 @@
+repos:
+  # 🔹 Ruff (lint + import sort + auto-fix)
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.9
+    hooks:
+      - id: ruff
+        args: [--fix]
+
+  # 🔹 Black (formatter)
+  - repo: https://github.com/psf/black
+    rev: 26.3.1
+    hooks:
+      - id: black
+
+  # # 🔹 Mypy (type checking)
+  # - repo: https://github.com/pre-commit/mirrors-mypy
+  #   rev: v1.20.0
+  #   hooks:
+  #     - id: mypy
+  #       args:
+  #         - "--explicit-package-bases"
+  #         - "--config-file=pyproject.toml"
+  #         - "--ignore-missing-imports"
+  #         - "--disable-error-code=misc"
+  #         - "backend"
+  #       pass_filenames: false
+  #       additional_dependencies:
+  #         - sqlalchemy
+  #         - fastapi
+  #         - pytest
+  #         - requests
+  #         - types-requests
+
+  # 🔹 Bandit (security check)
+  - repo: https://github.com/PyCQA/bandit
+    rev: 1.9.4
+    hooks:
+      - id: bandit
+        args: ["-r", "backend", "--exclude", "tests"]
+        pass_filenames: false
+
+  # 🔹 Pytest (tests)
+  - repo: local
+    hooks:
+      - id: pytest
+        name: pytest
+        entry: pytest
+        language: system
+        pass_filenames: false
+
+  # 🔹 Basic file hygiene
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-added-large-files
+      - id: check-merge-conflict
+      - id: check-case-conflict
+      - id: check-json
+      - id: check-toml
+      - id: debug-statements
+      - id: check-added-large-files
+        args: ["--maxkb=500"]
+
+  # Detect secrets (Prevent API Keys, Passwords, Tokens to get committed)
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.4.0
+    hooks:
+      - id: detect-secrets
+
+  # Keeps Commit message clean and meaningful
+  - repo: https://github.com/commitizen-tools/commitizen
+    rev: v3.27.0
+    hooks:
+      - id: commitizen

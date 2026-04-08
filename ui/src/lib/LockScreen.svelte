@@ -6,11 +6,11 @@
   import { askForText, askQuestion } from '../dialogStore.js';
   import Fa from 'svelte-fa';
   import { faCheck, faCopy, faEye, faEyeSlash } from '@fortawesome/free-solid-svg-icons';
-  
+
   export let isSetupRequired = false;
-  
+
   const dispatch = createEventDispatcher();
-  
+
   let password = '';
   let confirmPassword = '';
   let errorMsg = '';
@@ -251,7 +251,7 @@
       errorMsg = error?.message || 'Failed to copy recovery key.';
     }
   };
-  
+
   const handleSetup = async () => {
     errorMsg = '';
     if (password.length < 12) {
@@ -280,11 +280,11 @@
       isLoading = false;
     }
   };
-  
+
   const finishSetup = () => {
     dispatch('unlocked');
   };
-  
+
   const handleUnlock = async () => {
     errorMsg = '';
     if (!password) return;
@@ -298,7 +298,7 @@
       isLoading = false;
     }
   };
-  
+
   const handleReset = async () => {
     if (isResetCountdownActive) {
       return;
@@ -404,7 +404,7 @@
         {/if}
       </p>
     </div>
-    
+
     <div class="lock-body">
       {#if showRecovery}
         <div class="alert alert-warning" style="font-size: 0.9rem;">
@@ -423,7 +423,7 @@
           <div class="recovery-copy-toast">Recovery key copied.</div>
         {/if}
         <button class="btn btn-primary w-100 mt-3" on:click={finishSetup}>I have saved it secretly</button>
-      
+
       {:else if isSetupRequired}
         <div class="password-input-group mb-3">
           <input
@@ -471,7 +471,7 @@
         </div>
         {#if errorMsg}<div class="text-danger small mb-3">{errorMsg}</div>{/if}
         <button class="btn btn-primary w-100" on:click={handleSetup} disabled={isLoading}>{isLoading ? 'Setting up...' : 'Create Vault'}</button>
-      
+
       {:else if isForgotMode}
         <div class="password-input-group mb-3">
           <input
@@ -532,7 +532,7 @@
         <button class="btn btn-outline-danger w-100" on:click={handleReset} disabled={isLoading || isResetCountdownActive}>{isResetCountdownActive ? 'Safety Delay Running...' : 'Factory Reset Locus'}</button>
         <button class="btn btn-outline-secondary w-100 mt-2" on:click={goToRecoveryMode} disabled={isLoading}>Back to Recovery</button>
         <button class="btn btn-outline-secondary w-100 mt-2" on:click={goToUnlockMode} disabled={isLoading}>Back to Login</button>
-      
+
       {:else}
         <div class="password-input-group mb-3">
           <input

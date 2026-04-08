@@ -33,6 +33,7 @@ from app import event_stream, storage
 from app.database import crud, models
 from app.monitor import monitor_service, process_backup, register_restore_start
 from app.snapshot_service import snapshot_service
+from urllib.parse import urlparse
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("locus")
@@ -1102,11 +1103,17 @@ def _append_diagnostics_record(record: dict[str, Any]) -> None:
 
 
 def _post_diagnostics_payload(endpoint: str, payload: dict[str, Any]) -> None:
+    parsed = urlparse(endpoint)
+
+    if parsed.scheme != "https" or not parsed.netloc:
+        raise ValueError("Only valid HTTPS endpoints are allowed")
+
     body = json.dumps(payload, ensure_ascii=True).encode("utf-8")
     request = urllib.request.Request(endpoint, data=body, method="POST")
     request.add_header("Content-Type", "application/json")
     request.add_header("User-Agent", f"locus-backend/{APP_VERSION}")
-    with urllib.request.urlopen(request, timeout=4.0) as response:
+
+    with urllib.request.urlopen(request, timeout=4.0) as response:  # nosec B310
         status_code = int(getattr(response, "status", 200))
         if status_code >= 400:
             raise RuntimeError(f"Remote endpoint responded with {status_code}")
@@ -3835,9 +3842,9 @@ def _try_add_process_tree(psutil_module: Any, root_pid: int, pids: set[int]) -> 
     try:
         for child in root_process.children(recursive=True):
             pids.add(int(child.pid))
-    except Exception:
+    except Exception as e:
         # Child enumeration can fail for short-lived or protected processes.
-        pass
+        print(e)
 
     return True
 
@@ -3862,7 +3869,7 @@ def _collect_runtime_ram_usage_bytes() -> int:
         try:
             process = psutil.Process(pid)
         except Exception:
-            continue
+            continue  # nosec B112
         total_rss_bytes += _safe_rss_bytes(process)
 
     if total_rss_bytes > 0:

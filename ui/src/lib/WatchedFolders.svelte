@@ -122,7 +122,7 @@
 
   async function handleRelink(oldPath) {
     let newPath = null;
-    
+
     // 1. Try Tauri Dialog
     if (isTauriAvailable) {
        try {
@@ -131,15 +131,15 @@
             multiple: false,
             title: `Select New Location for ${oldPath}`
           });
-          
+
           if (selected) {
             newPath = Array.isArray(selected) ? selected[0] : selected;
           }
 
           if (newPath && newPath !== oldPath) {
             const shouldMoveFiles = await askQuestion(
-              `Do you want Locus to MOVE the files on disk for you?\n\n` + 
-              `YES = I want Locus to move files from "${oldPath}" to "${newPath}".\n` + 
+              `Do you want Locus to MOVE the files on disk for you?\n\n` +
+              `YES = I want Locus to move files from "${oldPath}" to "${newPath}".\n` +
               `NO = I have already moved them manually.`,
               'Relink Folder',
               { type: 'warning', okLabel: 'Yes, Move Files', cancelLabel: 'No, Already Moved' }
@@ -202,18 +202,18 @@
             multiple: false,
             title: "Select Folder to Track"
           });
-          
+
           if (selected) {
             const pathToAdd = Array.isArray(selected) ? selected[0] : selected;
             await addWatchedPathWithPrompt(pathToAdd);
             return;
           }
-        } 
+        }
       } catch (err) {
         await showMessage("Native dialog failed: " + (err?.message || err), 'Error', 'error');
       }
     }
-    
+
     // Fallback to text input
     if(newPathInput){
       const added = await addWatchedPathWithPrompt(newPathInput);
@@ -256,8 +256,8 @@
           <li class="list-group-item d-flex justify-content-between align-items-center px-0">
             <span class="text-break me-2">{p.path}</span>
             <div class="d-flex align-items-center gap-3">
-               <button 
-                  class="btn btn-sm btn-outline-secondary" 
+               <button
+                  class="btn btn-sm btn-outline-secondary"
                   title="Relink Path (Move History)"
                   on:click={() => handleRelink(p.path)}
                 >

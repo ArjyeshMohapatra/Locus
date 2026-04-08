@@ -23,7 +23,7 @@
     let currentVersionNumber = null;
     let currentVersionId = null;
     let currentHash = null;
-  
+
   // Preview State
   let selectedVersion = null;
   let viewMode = 'preview';
@@ -227,7 +227,7 @@
     );
 
     if(!shouldRestore) return;
-    
+
     try {
       loading = true; // Show loading indicator during restore
       const resp = await restoreFileVersion(versionId);
@@ -245,7 +245,7 @@
       loading = false;
     }
   }
-  
+
   function formatSize(bytes) {
       if (bytes === 0) return '0 Bytes';
       const k = 1024;
@@ -314,7 +314,7 @@
                     <button type="button" class="btn-close" aria-label="Close modal" on:click={onClose}></button>
                 </div>
       </div>
-      
+
       <div class="modal-body">
                 <div class="file-meta-row mb-4">
                         <div class="file-meta-main">
@@ -334,7 +334,7 @@
                 <button type="button" class="btn-close ms-auto" aria-label="Dismiss" on:click={() => successMsg = null}></button>
             </div>
         {/if}
-        
+
         {#if error}
             <div class="alert soft-bg-danger border-0 px-4 py-3 mb-4 rounded-3" role="alert">
                 {error}
@@ -399,7 +399,7 @@
                 {/if}
             </div>
             </div>
-        
+
         {:else}
             <!-- Version List View -->
             <div transition:fade={{ duration: 200 }}>
@@ -420,7 +420,7 @@
                         {#each versions as v}
                             <!-- svelte-ignore a11y-click-events-have-key-events -->
                             <!-- svelte-ignore a11y-no-static-element-interactions -->
-                            <div 
+                            <div
                                 class="list-group-item list-group-item-action d-flex justify-content-between align-items-center cursor-pointer version-row py-3 mb-2 rounded-3 shadow-sm border"
                                 on:click={() => openPreview(v)}
                                 on:keydown={(e) => e.key === 'Enter' && openPreview(v)}
@@ -444,8 +444,8 @@
                                         {/if}
                                     </div>
                                 </div>
-                                <button 
-                                    class="btn btn-sm btn-outline-primary rounded-pill px-4 fw-medium btn-preview-hover" 
+                                <button
+                                    class="btn btn-sm btn-outline-primary rounded-pill px-4 fw-medium btn-preview-hover"
                                     on:click|stopPropagation={() => openPreview(v)}
                                 >
                                     <Fa icon={faEye} class="me-2" aria-hidden="true"/>Preview
@@ -458,7 +458,7 @@
             </div>
         {/if}
       </div>
-      
+
     </div>
   </div>
 </div>
@@ -704,7 +704,7 @@
         mask-image: linear-gradient(to bottom, transparent 0%, black 5%, black 95%, transparent 100%);
         -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 5%, black 95%, transparent 100%);
         padding: 16px 8px;
-        margin: -16px -8px; 
+        margin: -16px -8px;
     }
     .version-list-scroll::-webkit-scrollbar {
         width: 6px;

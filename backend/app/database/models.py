@@ -14,7 +14,7 @@ from sqlalchemy import (
     create_engine,
     event,
 )
-from sqlalchemy.orm import declarative_base, relationship, sessionmaker
+from sqlalchemy.orm import Mapped, declarative_base, relationship, sessionmaker
 from sqlalchemy.sql import func
 
 # models.py is at backend/app/database/models.py → 3 dirname levels to reach backend/
@@ -172,7 +172,7 @@ class FileVersion(Base):
     file_size_bytes = Column(BigInteger, nullable=True)
 
     # Relationship
-    file_record = relationship("FileRecord")
+    file_record: Mapped["FileRecord"] = relationship()
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -186,8 +186,7 @@ class CheckpointSession(Base):
     item_count = Column(Integer, nullable=False, default=0)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
 
-    items = relationship(
-        "CheckpointSessionItem",
+    items: Mapped[list["CheckpointSessionItem"]] = relationship(
         back_populates="session",
         cascade="all, delete-orphan",
     )
@@ -210,9 +209,9 @@ class CheckpointSessionItem(Base):
     file_size_bytes = Column(BigInteger, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
-    session = relationship("CheckpointSession", back_populates="items")
-    file_record = relationship("FileRecord")
-    file_version = relationship("FileVersion")
+    session: Mapped["CheckpointSession"] = relationship(back_populates="items")
+    file_record: Mapped["FileRecord"] = relationship()
+    file_version: Mapped["FileVersion"] = relationship()
 
 
 # tracks what a user is doing on their system

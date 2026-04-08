@@ -279,7 +279,7 @@ export async function relinkWatchedPath(oldPath, newPath, moveFiles = false) {
     new_path: String(newPath).trim(),
     move_files: !!moveFiles
   };
-  
+
   const res = await apiFetch(`${BASE_URL}/files/watched/relink`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

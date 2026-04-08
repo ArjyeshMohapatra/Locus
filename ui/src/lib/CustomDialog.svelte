@@ -3,11 +3,11 @@
   import { fade, scale } from 'svelte/transition';
   import { dialogStore } from '../dialogStore.js';
   import Fa from 'svelte-fa';
-  import { 
-    faCircleInfo, 
-    faTriangleExclamation, 
-    faCircleQuestion, 
-    faCircleXmark 
+  import {
+    faCircleInfo,
+    faTriangleExclamation,
+    faCircleQuestion,
+    faCircleXmark
   } from '@fortawesome/free-solid-svg-icons';
 
   $: ({
@@ -86,15 +86,15 @@
 </script>
 
 {#if isOpen}
-  <div 
-    class="dialog-backdrop" 
+  <div
+    class="dialog-backdrop"
     on:click={handleBackdropClick}
     on:keydown={handleKeyDown}
     role="presentation"
     transition:fade={{ duration: 200 }}
   >
-    <div 
-      class="dialog-content" 
+    <div
+      class="dialog-content"
       style="--dialog-message-scale: {messageScale || 1};"
       role="dialog"
       aria-modal="true"
@@ -108,7 +108,7 @@
           <h5 class="dialog-title" style="color: {type === 'danger' || type === 'error' ? '#fff' : 'var(--text-primary)'};">{title}</h5>
         </div>
       </div>
-      
+
       <div class="dialog-body">
         <p class="dialog-message" style="white-space: pre-wrap; line-height: 1.55;">
           {message}
@@ -138,15 +138,15 @@
 
       <div class="dialog-footer">
         {#if cancelLabel}
-          <button 
-            class="btn btn-outline-secondary dialog-btn" 
+          <button
+            class="btn btn-outline-secondary dialog-btn"
             on:click={onCancel}
           >
             {cancelLabel}
           </button>
         {/if}
-        <button 
-          class="btn {type === 'error' || type === 'danger' ? 'btn-danger' : 'btn-primary'} dialog-btn" 
+        <button
+          class="btn {type === 'error' || type === 'danger' ? 'btn-danger' : 'btn-primary'} dialog-btn"
           on:click={handleConfirm}
         >
           {confirmLabel}

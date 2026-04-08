@@ -370,7 +370,7 @@
       loading = false;
       return;
     }
-    
+
     let isAtRightEdge = false;
     if (timelineItems.length > 0) {
        const newestWithImg = [...timelineItems].map((item, idx) => ({item, idx})).reverse().find(e => e.item?.image_available);
@@ -403,7 +403,7 @@
       const itemApps = items.map((item) => item?.app_name || null);
       mergeAppFilterOptions([...(appFilterOptions || []), ...facetApps, ...itemApps]);
       pruneImageObjectUrlCache(new Set(items.map((item) => item.id)));
-      
+
       if (auto && isAtRightEdge) {
         buildTimeline(null, null);
       } else {
