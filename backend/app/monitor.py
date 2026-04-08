@@ -2,22 +2,21 @@
 
 # pyright: reportGeneralTypeIssues=false, reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false, reportUnknownParameterType=false
 
-import time
+import logging
 import os
-import threading
 import queue
-from watchdog.observers import Observer
+import threading
+import time
 from typing import Any, Protocol, cast
-from watchdog.events import FileSystemEvent, FileSystemEventHandler
-from watchdog.observers.api import ObservedWatch
+
 from sqlalchemy.orm import Session
+from watchdog.events import FileSystemEvent, FileSystemEventHandler
+from watchdog.observers import Observer
+from watchdog.observers.api import ObservedWatch
+
+from app import event_stream, storage
 from app.database import crud
 from app.database.models import SessionLocal
-from app import storage
-from app import event_stream
-
-
-import logging
 
 logger = logging.getLogger("locus.monitor")
 

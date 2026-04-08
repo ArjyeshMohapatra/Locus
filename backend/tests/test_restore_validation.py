@@ -1,4 +1,5 @@
 import os
+
 from app.main import _is_within_watched_paths
 
 

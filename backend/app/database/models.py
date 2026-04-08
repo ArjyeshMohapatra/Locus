@@ -1,21 +1,21 @@
+import os as _os
+import sys as _sys
+from pathlib import Path as _Path
+
 from sqlalchemy import (
+    BigInteger,
+    Boolean,
     Column,
-    Integer,
-    String,
     DateTime,
     ForeignKey,
-    Boolean,
+    Integer,
+    String,
     Text,
-    BigInteger,
     create_engine,
     event,
 )
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker
 from sqlalchemy.sql import func
-
-import os as _os
-import sys as _sys
-from pathlib import Path as _Path
 
 # models.py is at backend/app/database/models.py → 3 dirname levels to reach backend/
 _APP_DIR = _os.path.dirname(

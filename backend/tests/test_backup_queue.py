@@ -1,10 +1,10 @@
 from pathlib import Path
-from pytest import fail
 
+from pytest import fail
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from app.database import models, crud
+from app.database import crud, models
 
 
 def _make_session(tmp_path: Path):

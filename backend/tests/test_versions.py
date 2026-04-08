@@ -1,6 +1,7 @@
-import requests
-import time
 import os
+import time
+
+import requests
 
 API_URL = "http://localhost:8000"
 TEST_FOLDER = os.path.abspath("test_watch_folder")

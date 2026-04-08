@@ -1,8 +1,8 @@
 from pathlib import Path
 
-from app import storage, monitor
-from app.database import models
 from app import main as main_app
+from app import monitor, storage
+from app.database import models
 
 
 def test_initial_snapshot_creates_mirror_and_versions(
@@ -50,11 +50,15 @@ def test_initial_snapshot_publishes_cancelled_complete_event(
     (watched / "b.txt").write_text("b")
 
     events: list[dict[str, object]] = []
-    monkeypatch.setattr(main_app.event_stream, "publish", lambda payload: events.append(payload))
+    monkeypatch.setattr(
+        main_app.event_stream, "publish", lambda payload: events.append(payload)
+    )
 
     processed_calls = {"count": 0}
 
-    def _fake_process_snapshot_file(file_path: str, root_path: str, storage_subdir: str) -> None:
+    def _fake_process_snapshot_file(
+        file_path: str, root_path: str, storage_subdir: str
+    ) -> None:
         _ = (file_path, root_path, storage_subdir)
         processed_calls["count"] += 1
         if processed_calls["count"] == 1:

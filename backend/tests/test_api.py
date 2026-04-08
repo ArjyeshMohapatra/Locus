@@ -1,10 +1,12 @@
-from pathlib import Path
 import json
+from pathlib import Path
+
 import pytest
 
-from app import storage, event_stream
-from app.database import crud
+from app import event_stream
 from app import main as main_app
+from app import storage
+from app.database import crud
 
 pytestmark = pytest.mark.slow
 

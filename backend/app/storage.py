@@ -1,17 +1,18 @@
 # pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false
 
+import ctypes
+import gzip
+import hashlib
+import json
+import logging
 import os
 import shutil
-import hashlib
-import uuid
-import gzip
+import subprocess  # nosec B404
 import time
-import json
+import uuid
 from pathlib import Path
 from typing import Any, Callable, Optional
-import ctypes
-import subprocess  # nosec B404
-import logging
+
 from app.database import models as db_models
 
 logger = logging.getLogger("locus.storage")

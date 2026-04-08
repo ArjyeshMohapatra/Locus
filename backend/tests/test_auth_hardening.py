@@ -41,7 +41,6 @@ def test_auth_unlock_rate_limited_after_repeated_failures(
     assert locked_resp.status_code == 429
 
 
-
 def test_auth_reset_requires_intent_header(client: TestClient) -> None:
     resp = client.post(
         "/auth/reset",
@@ -54,7 +53,6 @@ def test_auth_reset_requires_intent_header(client: TestClient) -> None:
     assert resp.status_code == 400
 
 
-
 def test_auth_reset_allows_without_passphrase_when_vault_locked(
     client: TestClient,
     monkeypatch: MonkeyPatch,
@@ -64,7 +62,9 @@ def test_auth_reset_allows_without_passphrase_when_vault_locked(
         return True, "ok"
 
     monkeypatch.setattr(main_app.snapshot_service, "is_unlocked", lambda: False)
-    monkeypatch.setattr(snapshot_module, "SNAPSHOT_IMAGE_ROOT", tmp_path / ".snapshot_images")
+    monkeypatch.setattr(
+        snapshot_module, "SNAPSHOT_IMAGE_ROOT", tmp_path / ".snapshot_images"
+    )
     monkeypatch.setattr(main_app, "_validate_reset_challenge", _valid_reset_challenge)
 
     request_resp = client.post(
@@ -126,6 +126,7 @@ def test_auth_reset_cors_preflight_allows_reset_intent_header(
     )
     assert resp.status_code == 200
     assert resp.headers.get("access-control-allow-origin") == "tauri://localhost"
-    assert "x-locus-reset-intent" in resp.headers.get(
-        "access-control-allow-headers", ""
-    ).lower()
+    assert (
+        "x-locus-reset-intent"
+        in resp.headers.get("access-control-allow-headers", "").lower()
+    )

@@ -4,8 +4,8 @@ from pathlib import Path
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from app.database import models, crud
 from app import monitor
+from app.database import crud, models
 
 
 def _make_sessionmaker(tmp_path: Path):

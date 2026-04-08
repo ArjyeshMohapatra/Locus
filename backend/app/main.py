@@ -1,39 +1,38 @@
 # type: ignore
 
-from fastapi import FastAPI, Depends, HTTPException, Request, Response, Query
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
-from contextlib import asynccontextmanager
-from app.database import models, crud
-from app.monitor import monitor_service, register_restore_start, process_backup
-from app import storage
-from app import event_stream
-from app.snapshot_service import snapshot_service
-from sqlalchemy import text
-from sqlalchemy.orm import Session
-from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
-from typing import Annotated, Any, Awaitable, Callable, Literal
-import threading
-import time
-import uvicorn
-import os
+import asyncio
+import difflib
 import errno
 import gzip
-import asyncio
-import socket
-import shutil  # Added shutil for file operations
 import json
+import logging
+import os
 import re
-import uuid
-import difflib
+import secrets
+import shutil
+import socket
+import threading
+import time
 import traceback
 import urllib.parse
 import urllib.request
-from datetime import datetime, timedelta, timezone
-import secrets
+import uuid
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone
+from typing import Annotated, Any, Awaitable, Callable, Literal
 
+import uvicorn
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
+from sqlalchemy import text
+from sqlalchemy.orm import Session
 
-import logging
+from app import event_stream, storage
+from app.database import crud, models
+from app.monitor import monitor_service, process_backup, register_restore_start
+from app.snapshot_service import snapshot_service
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("locus")
@@ -409,7 +408,9 @@ def _extract_auth_session_token(request: Request) -> str:
     if cookie_token:
         return cookie_token
 
-    query_token = str(request.query_params.get(AUTH_SESSION_QUERY_PARAM, "") or "").strip()
+    query_token = str(
+        request.query_params.get(AUTH_SESSION_QUERY_PARAM, "") or ""
+    ).strip()
     return query_token
 
 
@@ -1372,6 +1373,7 @@ async def capture_unhandled_backend_exceptions(
             )
         raise
 
+
 # CORS middleware to allow frontend requests
 
 
@@ -1626,9 +1628,7 @@ def _detect_renames(
         item for item in added if _dict_path(item) not in renamed_added_paths
     ]
     filtered_removed = [
-        item
-        for item in removed
-        if _dict_path(item) not in renamed_removed_paths
+        item for item in removed if _dict_path(item) not in renamed_removed_paths
     ]
 
     return filtered_added, filtered_removed, renamed
@@ -1715,14 +1715,16 @@ def _diff_checkpoint_session_items(
         ),
         "renamed": sorted(
             renamed,
-            key=lambda item: f"{item.get('from_path','')}->{item.get('to_path','')}",
+            key=lambda item: f"{item.get('from_path', '')}->{item.get('to_path', '')}",
         ),
-        "unchanged": sorted(
-            unchanged,
-            key=lambda item: str(item.get("file_path") or ""),
-        )
-        if include_unchanged
-        else [],
+        "unchanged": (
+            sorted(
+                unchanged,
+                key=lambda item: str(item.get("file_path") or ""),
+            )
+            if include_unchanged
+            else []
+        ),
     }
 
 
@@ -1907,7 +1909,9 @@ def _resolve_restore_target_path(
     relative_path: str,
     destination_root: str,
 ) -> tuple[str | None, str | None]:
-    target_path = os.path.normpath(os.path.abspath(os.path.join(destination_root, relative_path)))
+    target_path = os.path.normpath(
+        os.path.abspath(os.path.join(destination_root, relative_path))
+    )
     if not _is_within_watched_paths(target_path, [destination_root]):
         return None, "Resolved restore path escapes destination root"
     return target_path, None
@@ -2064,7 +2068,9 @@ def _execute_restore_plan_entry(
         )
 
     register_restore_start(resolved_target_path)
-    if not storage.restore_file_version(str(version.storage_path), resolved_target_path):
+    if not storage.restore_file_version(
+        str(version.storage_path), resolved_target_path
+    ):
         return "failed", _build_restore_failure_result(
             entry,
             "Failed to restore file from storage",
@@ -2176,7 +2182,9 @@ def _ensure_file_has_version(
     file_record = crud.create_file_record(db, file_path, content_hash=current_hash)
     versions = crud.get_file_versions(db, file_path)
     for version in versions:
-        if version.file_hash == current_hash and os.path.exists(str(version.storage_path)):
+        if version.file_hash == current_hash and os.path.exists(
+            str(version.storage_path)
+        ):
             return version, file_record.id if file_record else None
 
     meta = storage.save_file_version(file_path, known_hash=current_hash)
@@ -2298,7 +2306,9 @@ def add_watched_path(path_data: PathCreate, db: DbSession):
         normalized_path = os.path.normpath(os.path.abspath(path_data.path))
 
         if not os.path.isdir(normalized_path):
-            raise HTTPException(status_code=400, detail="Watched path must be an existing directory")
+            raise HTTPException(
+                status_code=400, detail="Watched path must be an existing directory"
+            )
 
         oversized_count, oversized_examples = _collect_oversized_files_under_root(
             normalized_path
@@ -2558,7 +2568,9 @@ def restore_checkpoint_session(
         )
 
     if payload.dry_run:
-        would_restore = len([entry for entry in plan if str(entry.get("action")) != "skip"])
+        would_restore = len(
+            [entry for entry in plan if str(entry.get("action")) != "skip"]
+        )
         return {
             "dry_run": True,
             "session": _serialize_checkpoint_session(session),
@@ -2679,15 +2691,17 @@ def stop_snapshot_scan(payload: SnapshotScanStopPayload, db: DbSession):
 
         storage_cleanup: dict[str, Any] = {
             "snapshot_dir": {
-                "path": str(storage.STORAGE_ROOT / storage.storage_subdir_name(watched_path)),
+                "path": str(
+                    storage.STORAGE_ROOT / storage.storage_subdir_name(watched_path)
+                ),
                 "deleted_files": 0,
                 "deleted_dirs": 0,
             },
             "orphan_gc": "skipped",
         }
         if payload.purge_storage:
-            storage_cleanup["snapshot_dir"] = storage.purge_snapshot_dir_for_watched_path(
-                watched_path
+            storage_cleanup["snapshot_dir"] = (
+                storage.purge_snapshot_dir_for_watched_path(watched_path)
             )
             storage.run_garbage_collection(
                 lambda filename: crud.storage_filename_exists(db, filename),
@@ -2974,14 +2988,16 @@ def _run_initial_snapshot(root_path: str) -> None:
             _publish_snapshot_error(root_path, err)
             logger.warning(f"Snapshot pre-scan error for {root_path}: {err}")
 
-        processed, skipped, error_count, _last_error, cancelled = _process_snapshot_files(
-            db,
-            job,
-            root_path,
-            storage_subdir,
-            files,
-            errors,
-            stop_event=stop_event,
+        processed, skipped, error_count, _last_error, cancelled = (
+            _process_snapshot_files(
+                db,
+                job,
+                root_path,
+                storage_subdir,
+                files,
+                errors,
+                stop_event=stop_event,
+            )
         )
 
         if cancelled:
@@ -3457,6 +3473,7 @@ def _assert_path_allowed(target_path: str, db: Session) -> None:
             detail="Path must be within a watched folder",
         )
 
+
 @app.post(
     "/files/restore",
     responses={
@@ -3590,7 +3607,9 @@ def update_snapshot_settings(payload: SnapshotSettingsUpdate, db: DbSession):
 
 @app.get("/settings/runtime")
 def get_runtime_settings(db: DbSession):
-    run_in_background_service = _read_bool_setting(db, "run_in_background_service", True)
+    run_in_background_service = _read_bool_setting(
+        db, "run_in_background_service", True
+    )
     return {
         "run_in_background_service": run_in_background_service,
         "ui_zoom_scale": _read_ui_zoom_scale(db),
@@ -3749,7 +3768,9 @@ class UnlockPayload(BaseModel):
         429: {"description": "Too many unlock attempts"},
     },
 )
-def auth_unlock(payload: UnlockPayload, db: DbSession, request: Request, response: Response):
+def auth_unlock(
+    payload: UnlockPayload, db: DbSession, request: Request, response: Response
+):
     client_key = _auth_client_key(request)
     remaining_lockout = _auth_lockout_remaining_seconds(client_key)
     if remaining_lockout > 0:
@@ -3856,7 +3877,6 @@ def _collect_runtime_ram_usage_bytes() -> int:
 @app.get("/dashboard/summary")
 def get_dashboard_summary(db: DbSession):
     from app.database import models
-
     from app.snapshot_service import SNAPSHOT_IMAGE_ROOT
 
     total_files = db.query(models.FileRecord).count()
@@ -3884,9 +3904,7 @@ def get_dashboard_summary(db: DbSession):
         .first()
     )
     last_snapshot_time = (
-        last_snap.captured_at.replace(tzinfo=timezone.utc)
-        if last_snap
-        else None
+        last_snap.captured_at.replace(tzinfo=timezone.utc) if last_snap else None
     )
 
     return {
@@ -3953,9 +3971,10 @@ def auth_reset_factory(
 ):
     """Factory reset: wipe all data and return to first-run setup."""
     import shutil
+
     from app.database.models import Base
-    from app.storage import STORAGE_ROOT
     from app.snapshot_service import SNAPSHOT_IMAGE_ROOT
+    from app.storage import STORAGE_ROOT
 
     header_value = str(request.headers.get(RESET_INTENT_HEADER, "")).strip().lower()
     if header_value != "confirm":

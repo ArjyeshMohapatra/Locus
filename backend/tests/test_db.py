@@ -1,8 +1,9 @@
 """Simple script to test DB interactions without running the full API server"""
 
-from app.database import models, crud
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+
+from app.database import crud, models
 
 # Setup test DB
 DATABASE_URL = "sqlite:///./locus_test.db"

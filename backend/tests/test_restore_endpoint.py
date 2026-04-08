@@ -1,9 +1,10 @@
 from types import SimpleNamespace
+
 import pytest
 from fastapi.testclient import TestClient
 
-from app.main import app, get_db
 from app.database import crud
+from app.main import app, get_db
 
 pytestmark = pytest.mark.slow
 

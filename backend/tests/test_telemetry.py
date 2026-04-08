@@ -13,10 +13,7 @@ def test_telemetry_event_persists_local_record(client, monkeypatch, tmp_path):
             "severity": "error",
             "message": "frontend exploded",
             "stack": "Error: frontend exploded",
-            "context": {
-                "screen": "dashboard",
-                "component": "App"
-            },
+            "context": {"screen": "dashboard", "component": "App"},
         },
     )
 

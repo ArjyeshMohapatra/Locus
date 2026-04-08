@@ -280,8 +280,8 @@ class SnapshotService:
             self._fernet = None
 
     def setup_master_password(self, master_passphrase: str, db) -> str:
-        import secrets
         import base64
+        import secrets
 
         master_passphrase = (master_passphrase or "").strip()
         if len(master_passphrase) < MIN_SNAPSHOT_PASSPHRASE_LENGTH:
@@ -619,16 +619,24 @@ class SnapshotService:
             },
         }
 
-    def _execute_open_url_action(self, clean_value: str, clean_type: str) -> dict[str, Any]:
+    def _execute_open_url_action(
+        self, clean_value: str, clean_type: str
+    ) -> dict[str, Any]:
         webbrowser.open(clean_value, new=2)
         return {"ok": True, "message": "URL opened", "type": clean_type}
 
-    def _execute_open_file_action(self, clean_value: str, clean_type: str) -> dict[str, Any]:
+    def _execute_open_file_action(
+        self, clean_value: str, clean_type: str
+    ) -> dict[str, Any]:
         if not os.path.exists(clean_value):
-            return {"ok": False, "message": "File/path does not exist", "type": clean_type}
+            return {
+                "ok": False,
+                "message": "File/path does not exist",
+                "type": clean_type,
+            }
 
-        import sys
         import subprocess  # nosec B404
+        import sys
 
         if sys.platform == "win32":
             os.startfile(clean_value)  # nosec B606
@@ -639,7 +647,9 @@ class SnapshotService:
 
         return {"ok": True, "message": "File/path opened", "type": clean_type}
 
-    def _execute_launch_app_action(self, clean_value: str, clean_type: str) -> dict[str, Any]:
+    def _execute_launch_app_action(
+        self, clean_value: str, clean_type: str
+    ) -> dict[str, Any]:
         if clean_value == "unknown":
             return {
                 "ok": False,
@@ -661,7 +671,11 @@ class SnapshotService:
         clean_type = (action_type or "").strip().lower()
         clean_value = (value or "").strip()
         if not clean_value:
-            return {"ok": False, "message": "Action value is required", "type": clean_type}
+            return {
+                "ok": False,
+                "message": "Action value is required",
+                "type": clean_type,
+            }
 
         handlers = {
             "open_url": self._execute_open_url_action,
@@ -671,7 +685,11 @@ class SnapshotService:
         }
         handler = handlers.get(clean_type)
         if not handler:
-            return {"ok": False, "message": f"Unsupported action type: {clean_type}", "type": clean_type}
+            return {
+                "ok": False,
+                "message": f"Unsupported action type: {clean_type}",
+                "type": clean_type,
+            }
 
         try:
             return handler(clean_value, clean_type)
@@ -987,7 +1005,9 @@ class SnapshotService:
         now_monotonic: float,
         current_title: str,
     ) -> tuple[bool, bool]:
-        interval = max(5, int(settings.get("interval_seconds", DEFAULT_INTERVAL_SECONDS)))
+        interval = max(
+            5, int(settings.get("interval_seconds", DEFAULT_INTERVAL_SECONDS))
+        )
         title_changed = current_title != self._last_window_title_check
         time_elapsed = (now_monotonic - self._last_capture_time) >= interval
         capture_on_window_change = bool(settings.get("capture_on_window_change", True))
@@ -1063,9 +1083,8 @@ class SnapshotService:
         probe_payload: dict[str, Any] | None = None
         resolved_title = window_title or self._get_active_window_title()
 
-        if (
-            sys.platform == "linux"
-            and (not resolved_title or str(resolved_title).strip().lower() == "unknown")
+        if sys.platform == "linux" and (
+            not resolved_title or str(resolved_title).strip().lower() == "unknown"
         ):
             probe_payload = self._linux_probe_payload()
             if probe_payload:
@@ -1122,9 +1141,9 @@ class SnapshotService:
         fingerprint: str,
         force_capture: bool,
     ) -> bool:
-        if settings.get("exclude_private_browsing", True) and self._looks_private_browsing(
-            window_title
-        ):
+        if settings.get(
+            "exclude_private_browsing", True
+        ) and self._looks_private_browsing(window_title):
             return True
 
         if self._is_locus_window(window_title, app_name):
@@ -1237,7 +1256,9 @@ class SnapshotService:
     def _cleanup_orphaned_images(self, db) -> None:
         """Deletes any .enc files in SNAPSHOT_IMAGE_ROOT that are not referenced in the DB."""
         if not self.is_unlocked():
-            logger.warning("[SnapshotService] Vault is locked; bypassing orphaned image cleanup to prevent data loss.")
+            logger.warning(
+                "[SnapshotService] Vault is locked; bypassing orphaned image cleanup to prevent data loss."
+            )
             return
 
         if not SNAPSHOT_IMAGE_ROOT.exists():
@@ -1421,7 +1442,11 @@ class SnapshotService:
 
         if title == "locus":
             return True
-        if title.endswith(" - locus") or title.endswith(" | locus") or title.endswith(" • locus"):
+        if (
+            title.endswith(" - locus")
+            or title.endswith(" | locus")
+            or title.endswith(" • locus")
+        ):
             return True
 
         return False
@@ -1524,7 +1549,9 @@ class SnapshotService:
 
         try:
             title = str(payload.get("title") or "").strip()
-            app_class = str(payload.get("class") or payload.get("instance") or "").strip()
+            app_class = str(
+                payload.get("class") or payload.get("instance") or ""
+            ).strip()
 
             if title:
                 return title
