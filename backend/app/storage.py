@@ -41,7 +41,8 @@ CHUNK_SIZE_BYTES = 4 * 1024 * 1024
 CHUNKED_MIN_SIZE_BYTES = 16 * 1024 * 1024
 MANIFEST_EXT = ".manifest.json"
 HASH_CHUNK_SIZE_BYTES = 64 * 1024
-DEFAULT_MAX_BACKUP_FILE_SIZE_BYTES = 512 * 1024 * 1024
+HARD_MAX_BACKUP_FILE_SIZE_BYTES = 10 * 1024 * 1024
+DEFAULT_MAX_BACKUP_FILE_SIZE_BYTES = HARD_MAX_BACKUP_FILE_SIZE_BYTES
 
 # Default directories to exclude from tracking/snapshots.
 DEFAULT_EXCLUDED_DIRS = {
@@ -271,6 +272,33 @@ def ensure_snapshot_dir(subdir_name: str) -> Path:
     return target
 
 
+def purge_snapshot_dir(subdir_name: str) -> dict[str, int | str]:
+    target = STORAGE_ROOT / subdir_name
+    if not target.exists():
+        return {
+            "path": str(target),
+            "deleted_files": 0,
+            "deleted_dirs": 0,
+        }
+
+    deleted_files = 0
+    deleted_dirs = 0
+    for _root, dirs, files in os.walk(target):
+        deleted_files += len(files)
+        deleted_dirs += len(dirs)
+
+    shutil.rmtree(target, ignore_errors=True)
+    return {
+        "path": str(target),
+        "deleted_files": deleted_files,
+        "deleted_dirs": deleted_dirs,
+    }
+
+
+def purge_snapshot_dir_for_watched_path(watched_path: str) -> dict[str, int | str]:
+    return purge_snapshot_dir(storage_subdir_name(watched_path))
+
+
 def mirror_copy_file(src_path: str, watched_root: str, subdir_name: str) -> Path:
     rel = os.path.relpath(src_path, watched_root)
     dest_path = STORAGE_ROOT / subdir_name / rel
@@ -315,12 +343,12 @@ def _stream_hash_and_compress(src_path: str, temp_path: Path) -> str:
 
 
 def _max_backup_file_size_bytes() -> int:
-    raw = os.getenv("LOCUS_MAX_BACKUP_FILE_SIZE_MB", "512").strip()
+    raw = os.getenv("LOCUS_MAX_BACKUP_FILE_SIZE_MB", "10").strip()
     try:
         parsed_mb = int(raw)
         if parsed_mb <= 0:
             raise ValueError("must be positive")
-        return parsed_mb * 1024 * 1024
+        return min(parsed_mb * 1024 * 1024, HARD_MAX_BACKUP_FILE_SIZE_BYTES)
     except Exception:
         return DEFAULT_MAX_BACKUP_FILE_SIZE_BYTES
 

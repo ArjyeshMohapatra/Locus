@@ -4,7 +4,7 @@
 
 from sqlalchemy.orm import Session
 from . import models
-from datetime import datetime
+from datetime import datetime, timedelta
 import os
 from sqlalchemy import or_
 from typing import Any, cast
@@ -395,6 +395,36 @@ def mark_backup_task_failed(db: Session, task: models.BackupTask, error: str):
     db.commit()
     db.refresh(task)
     return task
+
+
+def fail_stale_processing_backup_tasks(
+    db: Session, stale_after_seconds: int = 120
+) -> int:
+    cutoff = datetime.now() - timedelta(seconds=stale_after_seconds)
+    stale_tasks = (
+        db.query(models.BackupTask)
+        .filter(
+            models.BackupTask.status == "processing",
+            models.BackupTask.updated_at.isnot(None),
+            models.BackupTask.updated_at < cutoff,
+        )
+        .all()
+    )
+
+    if not stale_tasks:
+        return 0
+
+    now = datetime.now()
+    for task in stale_tasks:
+        task.status = "failed"
+        if not task.last_error:
+            task.last_error = (
+                "Task interrupted during processing and marked failed on startup"
+            )
+        task.updated_at = now
+
+    db.commit()
+    return len(stale_tasks)
 
 
 # populates recent 50 file activities

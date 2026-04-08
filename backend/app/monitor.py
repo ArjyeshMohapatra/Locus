@@ -43,6 +43,8 @@ _last_debounce_purge_ts = 0.0
 EVENT_LOG_QUEUE_MAXSIZE = 10000
 EVENT_LOG_BATCH_SIZE = 128
 EVENT_LOG_FLUSH_SECONDS = 0.15
+RESCAN_QUEUE_MAXSIZE = 512
+MONITOR_WARNING_COOLDOWN_SECONDS = 8.0
 
 
 def _purge_debounce_state(now: float | None = None) -> None:
@@ -353,12 +355,39 @@ class FileMonitorService:
         self._event_queue: "queue.Queue[dict[str, str | None]]" = queue.Queue(
             maxsize=EVENT_LOG_QUEUE_MAXSIZE
         )
-        self._rescan_queue: "queue.Queue[str]" = queue.Queue()
+        self._rescan_queue: "queue.Queue[str]" = queue.Queue(
+            maxsize=RESCAN_QUEUE_MAXSIZE
+        )
+        self._pending_rescans: set[str] = set()
+        self._warning_last_emitted: dict[str, float] = {}
         self._monitor_thread: threading.Thread | None = None
         self._queue_thread: threading.Thread | None = None
         self._event_thread: threading.Thread | None = None
         self._running = False
         self._state_lock = threading.RLock()
+
+    def _publish_monitor_warning(
+        self,
+        code: str,
+        message: str,
+        cooldown_seconds: float = MONITOR_WARNING_COOLDOWN_SECONDS,
+    ) -> None:
+        now = time.time()
+        with self._state_lock:
+            last_emitted = self._warning_last_emitted.get(code, 0.0)
+            if (now - last_emitted) < cooldown_seconds:
+                return
+            self._warning_last_emitted[code] = now
+
+        logger.warning("[Monitor] %s", message)
+        event_stream.publish(
+            {
+                "type": "monitor_warning",
+                "code": code,
+                "message": message,
+                "timestamp": now,
+            }
+        )
 
     def _enqueue_command(self, cmd: str, payload: object | None = None):
         """Queue a command for the monitor thread, starting it if needed."""
@@ -438,13 +467,32 @@ class FileMonitorService:
                 self._event_queue.put_nowait(event_data)
             except queue.Full:
                 pass
+            self._publish_monitor_warning(
+                "event_queue_overflow",
+                "File-event queue overflowed; oldest events were dropped.",
+            )
 
     def enqueue_directory_rescan(self, directory_path: str) -> None:
         if not directory_path:
             return
         if not self._running:
             self.start()
-        self._rescan_queue.put(directory_path)
+
+        normalized_path = _norm_path(directory_path)
+        with self._state_lock:
+            if normalized_path in self._pending_rescans:
+                return
+            self._pending_rescans.add(normalized_path)
+
+        try:
+            self._rescan_queue.put_nowait(normalized_path)
+        except queue.Full:
+            with self._state_lock:
+                self._pending_rescans.discard(normalized_path)
+            self._publish_monitor_warning(
+                "rescan_queue_overflow",
+                "Directory rescan queue is full; additional rescan requests were dropped.",
+            )
 
     def _collect_event_batch(self) -> list[dict[str, str | None]]:
         pending: list[dict[str, str | None]] = []
@@ -501,6 +549,8 @@ class FileMonitorService:
                         continue
                     if src_path.endswith(IGNORED_SUFFIXES):
                         continue
+                    if not storage.should_backup_file(src_path):
+                        continue
                     if not crud.has_pending_backup_task(db, src_path):
                         crud.enqueue_backup_task(db, src_path)
         finally:
@@ -511,7 +561,11 @@ class FileMonitorService:
             try:
                 try:
                     rescan_path = self._rescan_queue.get_nowait()
-                    self._enqueue_directory_tree_for_backup(rescan_path)
+                    try:
+                        self._enqueue_directory_tree_for_backup(rescan_path)
+                    finally:
+                        with self._state_lock:
+                            self._pending_rescans.discard(rescan_path)
                 except queue.Empty:
                     pass
 

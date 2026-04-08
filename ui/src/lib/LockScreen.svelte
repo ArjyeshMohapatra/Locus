@@ -2,7 +2,7 @@
 <script>
   import { onDestroy, onMount, tick } from 'svelte';
   import { createEventDispatcher } from 'svelte';
-  import { setupAuth, unlockAuth, resetAuth } from '../api.js';
+  import { setupAuth, unlockAuth, requestAuthReset, resetAuth } from '../api.js';
   import { askForText, askQuestion } from '../dialogStore.js';
   import Fa from 'svelte-fa';
   import { faCheck, faCopy, faEye, faEyeSlash } from '@fortawesome/free-solid-svg-icons';
@@ -33,6 +33,16 @@
   let showUnlockPassword = false;
   let showRecoveryPassword = false;
   let lastFocusMode = '';
+  const RESET_CONFIRMATION_PHRASE = 'DELETE MY LOCUS DATA COMPLETELY';
+  const RESET_COUNTDOWN_RADIUS = 32;
+  const RESET_COUNTDOWN_CIRCUMFERENCE = 2 * Math.PI * RESET_COUNTDOWN_RADIUS;
+
+  let isResetCountdownActive = false;
+  let resetCountdownTotalSeconds = 0;
+  let resetCountdownRemainingSeconds = 0;
+  let resetCountdownInterval = null;
+  let resetCountdownResolver = null;
+  let resetCountdownOffset = RESET_COUNTDOWN_CIRCUMFERENCE;
 
   const resolveFocusMode = () => {
     if (showRecovery) return 'recovery';
@@ -97,6 +107,62 @@
     }
   };
 
+  $: {
+    const ratio = resetCountdownTotalSeconds > 0
+      ? Math.max(0, Math.min(1, resetCountdownRemainingSeconds / resetCountdownTotalSeconds))
+      : 0;
+    resetCountdownOffset = RESET_COUNTDOWN_CIRCUMFERENCE * (1 - ratio);
+  }
+
+  const clearResetCountdownInterval = () => {
+    if (resetCountdownInterval) {
+      clearInterval(resetCountdownInterval);
+      resetCountdownInterval = null;
+    }
+  };
+
+  const completeResetCountdown = (didComplete) => {
+    clearResetCountdownInterval();
+    isResetCountdownActive = false;
+
+    const resolve = resetCountdownResolver;
+    resetCountdownResolver = null;
+    if (resolve) {
+      resolve(didComplete);
+    }
+  };
+
+  const runResetCountdown = (seconds) => {
+    const total = Math.max(0, Math.ceil(Number(seconds) || 0));
+    if (total <= 0) {
+      return Promise.resolve(true);
+    }
+
+    clearResetCountdownInterval();
+    isResetCountdownActive = true;
+    resetCountdownTotalSeconds = total;
+    resetCountdownRemainingSeconds = total;
+
+    return new Promise((resolve) => {
+      resetCountdownResolver = resolve;
+
+      resetCountdownInterval = setInterval(() => {
+        resetCountdownRemainingSeconds = Math.max(0, resetCountdownRemainingSeconds - 1);
+        if (resetCountdownRemainingSeconds <= 0) {
+          completeResetCountdown(true);
+        }
+      }, 1000);
+    });
+  };
+
+  const cancelResetCountdown = () => {
+    if (!isResetCountdownActive) {
+      return;
+    }
+    errorMsg = 'Reset cancelled during safety delay.';
+    completeResetCountdown(false);
+  };
+
   onMount(() => {
     // Keep the auth view spatially stable regardless of saved runtime zoom values.
     previousDocumentZoom = document.documentElement.style.zoom || '';
@@ -122,6 +188,12 @@
     if (recoveryCopyTimer) {
       clearTimeout(recoveryCopyTimer);
       recoveryCopyTimer = null;
+    }
+
+    if (resetCountdownResolver) {
+      completeResetCountdown(false);
+    } else {
+      clearResetCountdownInterval();
     }
   });
 
@@ -212,6 +284,12 @@
   };
   
   const handleReset = async () => {
+    if (isResetCountdownActive) {
+      return;
+    }
+
+    errorMsg = '';
+
     const ok = await askQuestion(
       'Are you absolutely sure? This will permanently delete ALL your tracked data and snapshots.',
       'Factory Reset Locus',
@@ -221,15 +299,48 @@
       return;
     }
 
+    let resetNonce = '';
+    let cooldownSeconds = 0;
+    try {
+      const challenge = await requestAuthReset();
+      resetNonce = String(challenge?.reset_nonce || '').trim();
+      cooldownSeconds = Math.max(0, Number(challenge?.cooldown_seconds || 0));
+    } catch (e) {
+      errorMsg = e?.message || 'Failed to start reset confirmation.';
+      return;
+    }
+
+    if (!resetNonce) {
+      errorMsg = 'Reset challenge was invalid. Please try again.';
+      return;
+    }
+
+    if (cooldownSeconds > 0) {
+      const ready = await askQuestion(
+        `A ${cooldownSeconds}-second safety delay is required before final wipe confirmation. Continue?`,
+        'Safety Delay',
+        { type: 'danger', okLabel: 'Start Delay', cancelLabel: 'Cancel' }
+      );
+      if (!ready) {
+        return;
+      }
+
+      const countdownCompleted = await runResetCountdown(cooldownSeconds);
+      if (!countdownCompleted) {
+        return;
+      }
+      errorMsg = '';
+    }
+
     const typedConfirmation = await askForText(
-      'Type RESET LOCUS DATA to confirm permanent wipe.',
+      `Type ${RESET_CONFIRMATION_PHRASE} to confirm permanent wipe.`,
       'Confirm Factory Reset',
       {
         type: 'danger',
         okLabel: 'Confirm Wipe',
         cancelLabel: 'Cancel',
-        placeholder: 'RESET LOCUS DATA',
-        maxLength: 64,
+        placeholder: RESET_CONFIRMATION_PHRASE,
+        maxLength: 128,
         initialValue: ''
       }
     );
@@ -238,14 +349,18 @@
       return;
     }
 
-    if (String(typedConfirmation).trim() !== 'RESET LOCUS DATA') {
+    if (String(typedConfirmation).trim() !== RESET_CONFIRMATION_PHRASE) {
       errorMsg = 'Reset cancelled: confirmation phrase did not match.';
       return;
     }
 
     isLoading = true;
     try {
-      await resetAuth('', typedConfirmation);
+      await resetAuth({
+        confirmation: RESET_CONFIRMATION_PHRASE,
+        resetNonce,
+        finalConfirmed: true
+      });
       window.location.reload();
     } catch (e) {
       errorMsg = e.message;
@@ -348,7 +463,7 @@
             bind:value={password}
             placeholder="Enter Recovery Key"
             on:keydown={(e) => e.key === 'Enter' && handleUnlock()}
-            disabled={isLoading}
+            disabled={isLoading || isResetCountdownActive}
           />
           <button
             type="button"
@@ -357,17 +472,41 @@
             title={showRecoveryPassword ? 'Hide recovery key' : 'Show recovery key'}
             on:mousedown|preventDefault
             on:click={() => togglePasswordVisibility('recovery')}
-            disabled={isLoading}
+            disabled={isLoading || isResetCountdownActive}
           >
             <Fa icon={showRecoveryPassword ? faEye : faEyeSlash} />
           </button>
         </div>
         {#if errorMsg}<div class="text-danger small mb-3">{errorMsg}</div>{/if}
-        <button class="btn btn-primary w-100 mb-2" on:click={handleUnlock} disabled={isLoading}>{isLoading ? 'Unlocking...' : 'Unlock with Recovery Key'}</button>
-        <button class="btn btn-outline-secondary w-100 mb-4" on:click={() => isForgotMode = false} disabled={isLoading}>Back to Login</button>
+        {#if isResetCountdownActive}
+          <div class="reset-countdown-panel mb-3">
+            <div
+              class="reset-countdown-ring"
+              role="img"
+              aria-label={`Reset safety delay: ${resetCountdownRemainingSeconds} seconds remaining`}
+            >
+              <svg viewBox="0 0 80 80" aria-hidden="true" focusable="false">
+                <circle class="reset-countdown-track" cx="40" cy="40" r={RESET_COUNTDOWN_RADIUS} />
+                <circle
+                  class="reset-countdown-progress"
+                  cx="40"
+                  cy="40"
+                  r={RESET_COUNTDOWN_RADIUS}
+                  stroke-dasharray={`${RESET_COUNTDOWN_CIRCUMFERENCE} ${RESET_COUNTDOWN_CIRCUMFERENCE}`}
+                  stroke-dashoffset={resetCountdownOffset}
+                />
+              </svg>
+              <span>{resetCountdownRemainingSeconds}</span>
+            </div>
+            <p class="text-muted small mb-2">Safety delay before final wipe confirmation.</p>
+            <button class="btn btn-outline-danger w-100" on:click={cancelResetCountdown}>Cancel Reset</button>
+          </div>
+        {/if}
+        <button class="btn btn-primary w-100 mb-2" on:click={handleUnlock} disabled={isLoading || isResetCountdownActive}>{isLoading ? 'Unlocking...' : 'Unlock with Recovery Key'}</button>
+        <button class="btn btn-outline-secondary w-100 mb-4" on:click={() => isForgotMode = false} disabled={isLoading || isResetCountdownActive}>Back to Login</button>
         <hr />
         <p class="text-muted small text-center mt-3">If you lost both, you must wipe all data.</p>
-        <button class="btn btn-outline-danger w-100" on:click={handleReset} disabled={isLoading}>Factory Reset Locus</button>
+        <button class="btn btn-outline-danger w-100" on:click={handleReset} disabled={isLoading || isResetCountdownActive}>{isResetCountdownActive ? 'Safety Delay Running...' : 'Factory Reset Locus'}</button>
       
       {:else}
         <div class="password-input-group mb-3">
@@ -560,5 +699,50 @@
   :global(.theme-dark) .recovery-box {
     background: var(--surface-soft);
     color: var(--accent-strong);
+  }
+
+  .reset-countdown-panel {
+    border: 1px solid color-mix(in srgb, var(--bs-danger, #dc3545) 40%, var(--border-subtle));
+    border-radius: 12px;
+    padding: 12px;
+    background: color-mix(in srgb, var(--bs-danger, #dc3545) 12%, var(--surface-elevated));
+  }
+
+  .reset-countdown-ring {
+    position: relative;
+    width: 96px;
+    height: 96px;
+    margin: 0 auto 8px;
+  }
+
+  .reset-countdown-ring svg {
+    width: 96px;
+    height: 96px;
+    transform: rotate(-90deg);
+  }
+
+  .reset-countdown-track {
+    fill: none;
+    stroke: color-mix(in srgb, var(--text-secondary) 35%, transparent);
+    stroke-width: 8;
+  }
+
+  .reset-countdown-progress {
+    fill: none;
+    stroke: var(--bs-danger, #dc3545);
+    stroke-width: 8;
+    stroke-linecap: round;
+    transition: stroke-dashoffset 0.95s linear;
+  }
+
+  .reset-countdown-ring span {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-primary);
+    font-weight: 700;
+    font-size: 1.35rem;
   }
 </style>

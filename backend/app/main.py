@@ -29,7 +29,8 @@ import difflib
 import traceback
 import urllib.parse
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+import secrets
 
 
 import logging
@@ -188,6 +189,9 @@ MIN_SNAPSHOT_UNLOCK_COMPAT_LENGTH = 4
 MIN_SNAPSHOT_PASSPHRASE_LENGTH = 12
 FILE_PREVIEW_SNIFF_BYTES = 8192
 FILE_PREVIEW_MAX_BYTES = 1024 * 1024
+MAX_TRACKED_FILE_SIZE_BYTES = 10 * 1024 * 1024
+MAX_TRACKED_FILE_SIZE_MB = 10
+MAX_OVERSIZED_FILE_EXAMPLES = 20
 BINARY_PREVIEW_TEXT = "[Binary file - preview not available]"
 DEFAULT_API_PORT = 8000
 API_PORT_SEARCH_LIMIT = 20
@@ -196,12 +200,16 @@ CHECKPOINT_SCOPE_SELECTED_FILES = "selected_files"
 CHECKPOINT_SCOPE_FULL_FOLDER = "full_folder"
 CHECKPOINT_NAME_MAX_LENGTH = 80
 CHECKPOINT_SESSION_NOT_FOUND_DETAIL = "Checkpoint session not found"
+WATCHED_PATH_NOT_FOUND_DETAIL = "Watched path not found"
 CHECKPOINT_DIFF_MAX_BYTES = 1024 * 1024
 CHECKPOINT_DIFF_PREVIEW_LINES = 6
 CHECKPOINT_DIFF_MAX_HUNKS = 8
 MIN_UI_ZOOM_SCALE = 0.5
 MAX_UI_ZOOM_SCALE = 3.0
 DEFAULT_UI_ZOOM_SCALE = 1.0
+MIN_FONT_ZOOM_SCALE = 0.8
+MAX_FONT_ZOOM_SCALE = 1.5
+DEFAULT_FONT_ZOOM_SCALE = 1.0
 TELEMETRY_MESSAGE_MAX_LENGTH = 4000
 TELEMETRY_STACK_MAX_LENGTH = 32000
 TELEMETRY_CONTEXT_VALUE_MAX_LENGTH = 800
@@ -215,7 +223,12 @@ AUTH_ATTEMPT_WINDOW_SECONDS = 5 * 60
 AUTH_LOCKOUT_SECONDS = 60
 AUTH_FAILURE_DELAY_SECONDS = 0.25
 RESET_INTENT_HEADER = "X-Locus-Reset-Intent"
-FACTORY_RESET_CONFIRMATION_PHRASE = "RESET LOCUS DATA"
+AUTH_SESSION_HEADER = "X-Locus-Session"
+AUTH_SESSION_QUERY_PARAM = "session_token"
+AUTH_SESSION_COOKIE_NAME = "locus_session"
+FACTORY_RESET_CONFIRMATION_PHRASE = "DELETE MY LOCUS DATA COMPLETELY"
+RESET_COOLDOWN_SECONDS = 60
+RESET_NONCE_TTL_SECONDS = 10 * 60
 WATCHED_TREE_MAX_DEPTH_DEFAULT = 8
 WATCHED_TREE_MAX_CHILDREN_DEFAULT = 2000
 
@@ -223,6 +236,14 @@ _diagnostics_log_lock = threading.Lock()
 _auth_attempt_lock = threading.Lock()
 _auth_attempt_history: dict[str, list[float]] = {}
 _auth_lockout_deadline: dict[str, float] = {}
+_auth_session_lock = threading.Lock()
+_auth_sessions: dict[str, float] = {}
+_reset_challenge_lock = threading.Lock()
+_reset_challenges: dict[str, float] = {}
+_setup_required_state_lock = threading.Lock()
+_setup_required_state = True
+_snapshot_stop_lock = threading.Lock()
+_snapshot_stop_events: dict[str, threading.Event] = {}
 
 
 def _is_truthy_env(name: str, default: str = "false") -> bool:
@@ -283,17 +304,29 @@ def _build_cors_origins() -> list[str]:
 
 
 def _is_skip_auth_enabled() -> bool:
-    enabled = _is_truthy_env("LOCUS_SKIP_AUTH")
-    if not enabled:
-        return False
-
-    runtime_env = os.getenv("LOCUS_ENV", "development").strip().lower()
-    if runtime_env in {"prod", "production"}:
+    if _is_truthy_env("LOCUS_SKIP_AUTH"):
         logger.error(
-            "[Security] LOCUS_SKIP_AUTH is ignored when LOCUS_ENV is production"
+            "[Security] LOCUS_SKIP_AUTH is disabled permanently for this build"
         )
-        return False
     return True
+
+
+def _set_setup_required_state(value: bool) -> None:
+    global _setup_required_state
+    with _setup_required_state_lock:
+        _setup_required_state = bool(value)
+
+
+def _is_setup_required_state() -> bool:
+    with _setup_required_state_lock:
+        return bool(_setup_required_state)
+
+
+def _refresh_setup_required_state(db: Session) -> bool:
+    verifier = crud.get_setting(db, "snapshot_key_verifier", None)
+    setup_required = not bool((verifier or "").strip())
+    _set_setup_required_state(setup_required)
+    return setup_required
 
 
 def _auth_client_key(request: Request) -> str:
@@ -345,6 +378,156 @@ def _reset_auth_failures(client_key: str) -> None:
     with _auth_attempt_lock:
         _auth_attempt_history.pop(client_key, None)
         _auth_lockout_deadline.pop(client_key, None)
+
+
+def _issue_auth_session_token() -> str:
+    token = secrets.token_urlsafe(32)
+    with _auth_session_lock:
+        _auth_sessions[token] = time.time()
+    return token
+
+
+def _is_valid_auth_session_token(token: str | None) -> bool:
+    if not token:
+        return False
+    normalized = str(token).strip()
+    if not normalized:
+        return False
+    with _auth_session_lock:
+        exists = normalized in _auth_sessions
+        if exists:
+            _auth_sessions[normalized] = time.time()
+        return exists
+
+
+def _extract_auth_session_token(request: Request) -> str:
+    token = str(request.headers.get(AUTH_SESSION_HEADER, "") or "").strip()
+    if token:
+        return token
+
+    cookie_token = str(request.cookies.get(AUTH_SESSION_COOKIE_NAME, "") or "").strip()
+    if cookie_token:
+        return cookie_token
+
+    query_token = str(request.query_params.get(AUTH_SESSION_QUERY_PARAM, "") or "").strip()
+    return query_token
+
+
+def _clear_auth_sessions() -> None:
+    with _auth_session_lock:
+        _auth_sessions.clear()
+
+
+def _set_auth_session_cookie(response: Response, token: str) -> None:
+    response.set_cookie(
+        key=AUTH_SESSION_COOKIE_NAME,
+        value=token,
+        httponly=True,
+        secure=False,
+        samesite="strict",
+        path="/",
+    )
+
+
+def _clear_auth_session_cookie(response: Response) -> None:
+    response.delete_cookie(
+        key=AUTH_SESSION_COOKIE_NAME,
+        path="/",
+    )
+
+
+def _prune_reset_challenges(now: float) -> None:
+    for nonce, ready_at in tuple(_reset_challenges.items()):
+        if now > (ready_at + RESET_NONCE_TTL_SECONDS):
+            _reset_challenges.pop(nonce, None)
+
+
+def _create_reset_challenge() -> str:
+    nonce = secrets.token_urlsafe(24)
+    ready_at = time.time() + RESET_COOLDOWN_SECONDS
+    with _reset_challenge_lock:
+        _prune_reset_challenges(time.time())
+        _reset_challenges[nonce] = ready_at
+    return nonce
+
+
+def _validate_reset_challenge(nonce: str) -> tuple[bool, str]:
+    normalized = str(nonce or "").strip()
+    if not normalized:
+        return False, "Reset challenge is missing"
+
+    now = time.time()
+    with _reset_challenge_lock:
+        _prune_reset_challenges(now)
+        ready_at = _reset_challenges.get(normalized)
+        if ready_at is None:
+            return False, "Reset challenge is invalid or expired"
+        if now < ready_at:
+            remaining = int(ready_at - now)
+            if remaining <= 0:
+                remaining = 1
+            return False, (
+                "Reset cooldown is still active. "
+                f"Please wait {remaining} seconds and try again."
+            )
+    return True, "ok"
+
+
+def _consume_reset_challenge(nonce: str) -> None:
+    normalized = str(nonce or "").strip()
+    if not normalized:
+        return
+    with _reset_challenge_lock:
+        _reset_challenges.pop(normalized, None)
+
+
+def _clear_reset_challenges() -> None:
+    with _reset_challenge_lock:
+        _reset_challenges.clear()
+
+
+def _register_snapshot_run(path: str) -> threading.Event:
+    normalized = os.path.normpath(os.path.abspath(path))
+    stop_event = threading.Event()
+    with _snapshot_stop_lock:
+        _snapshot_stop_events[normalized] = stop_event
+    return stop_event
+
+
+def _request_snapshot_stop(path: str) -> bool:
+    normalized = os.path.normpath(os.path.abspath(path))
+    with _snapshot_stop_lock:
+        stop_event = _snapshot_stop_events.get(normalized)
+        if stop_event is None:
+            return False
+        stop_event.set()
+        return True
+
+
+def _request_snapshot_cancel(path: str) -> bool:
+    # Backward-compatible alias used by existing tests.
+    return _request_snapshot_stop(path)
+
+
+def _clear_snapshot_run(path: str) -> None:
+    normalized = os.path.normpath(os.path.abspath(path))
+    with _snapshot_stop_lock:
+        _snapshot_stop_events.pop(normalized, None)
+
+
+def _wait_for_snapshot_stop(path: str, timeout_seconds: float = 8.0) -> bool:
+    normalized = os.path.normpath(os.path.abspath(path))
+    deadline = time.time() + max(0.1, timeout_seconds)
+
+    while time.time() < deadline:
+        with _snapshot_stop_lock:
+            is_active = normalized in _snapshot_stop_events
+        if not is_active:
+            return True
+        time.sleep(0.05)
+
+    with _snapshot_stop_lock:
+        return normalized not in _snapshot_stop_events
 
 
 def _is_port_available(host: str, port: int) -> bool:
@@ -650,6 +833,11 @@ class RuntimeSettingsUpdate(BaseModel):
         ge=MIN_UI_ZOOM_SCALE,
         le=MAX_UI_ZOOM_SCALE,
     )
+    font_zoom_scale: float | None = Field(
+        default=None,
+        ge=MIN_FONT_ZOOM_SCALE,
+        le=MAX_FONT_ZOOM_SCALE,
+    )
     share_crash_diagnostics: bool | None = None
 
 
@@ -711,6 +899,19 @@ class SnapshotActionPayload(BaseModel):
     value: str = Field(min_length=1, max_length=4096)
 
 
+class SnapshotScanStopPayload(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    watched_path: str = Field(min_length=1, max_length=4096)
+    remove_watched_path: bool = True
+    purge_storage: bool = True
+
+    @field_validator("watched_path")
+    @classmethod
+    def validate_watched_path(cls, value: str) -> str:
+        return _validate_text_input(value, "watched_path")
+
+
 class SnapshotBulkDeletePayload(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
     passphrase: str = Field(
@@ -729,11 +930,11 @@ def _normalize_path(path: str) -> str:
     """Normalize a filesystem path for consistent comparisons and DB lookups.
     This involves following symlinks and making the path absolute."""
     try:
-        return os.path.abspath(os.path.realpath(path))
+        return os.path.normcase(os.path.abspath(os.path.realpath(path)))
     except Exception as e:
         # Fallback to just abspath if realpath fails (e.g. permission error)
         logger.warning(f"realpath failed for {path}: {e}. Falling back to abspath.")
-        return os.path.abspath(path)
+        return os.path.normcase(os.path.abspath(path))
 
 
 def _is_within_watched_paths(target_path: str, watched_paths: list[str]) -> bool:
@@ -756,6 +957,10 @@ def _clamp_ui_zoom_scale(value: float) -> float:
     return max(MIN_UI_ZOOM_SCALE, min(MAX_UI_ZOOM_SCALE, float(value)))
 
 
+def _clamp_font_zoom_scale(value: float) -> float:
+    return max(MIN_FONT_ZOOM_SCALE, min(MAX_FONT_ZOOM_SCALE, float(value)))
+
+
 def _read_ui_zoom_scale(db: Session) -> float:
     raw_value = crud.get_setting(db, "ui_zoom_scale", str(DEFAULT_UI_ZOOM_SCALE))
     try:
@@ -763,6 +968,15 @@ def _read_ui_zoom_scale(db: Session) -> float:
     except (TypeError, ValueError):
         return DEFAULT_UI_ZOOM_SCALE
     return _clamp_ui_zoom_scale(parsed)
+
+
+def _read_font_zoom_scale(db: Session) -> float:
+    raw_value = crud.get_setting(db, "font_zoom_scale", str(DEFAULT_FONT_ZOOM_SCALE))
+    try:
+        parsed = float(str(raw_value))
+    except (TypeError, ValueError):
+        return DEFAULT_FONT_ZOOM_SCALE
+    return _clamp_font_zoom_scale(parsed)
 
 
 def _read_bool_setting(db: Session, key: str, default: bool) -> bool:
@@ -787,11 +1001,6 @@ def _normalize_telemetry_endpoint(raw_value: str | None) -> str:
     scheme = str(parsed.scheme).lower()
     if scheme == "https":
         return endpoint
-
-    if scheme == "http":
-        host = str(parsed.hostname or "").strip().lower()
-        if host in {"localhost", "127.0.0.1", "::1"} or _allow_insecure_telemetry():
-            return endpoint
 
     return ""
 
@@ -1046,6 +1255,7 @@ def _ensure_snapshot_defaults(db: Session) -> None:
         "snapshot_allow_delete": "false",
         "run_in_background_service": "true",
         "ui_zoom_scale": str(DEFAULT_UI_ZOOM_SCALE),
+        "font_zoom_scale": str(DEFAULT_FONT_ZOOM_SCALE),
         "share_crash_diagnostics": "false",
         "crash_reporting_endpoint": "",
     }
@@ -1073,6 +1283,17 @@ async def lifespan(app: FastAPI):
             "[Startup] snapshot defaults ensured in %.2fs",
             time.perf_counter() - t0,
         )
+
+        setup_required = _refresh_setup_required_state(db)
+        if setup_required:
+            _clear_auth_sessions()
+
+        stale_failed = crud.fail_stale_processing_backup_tasks(db)
+        if stale_failed > 0:
+            logger.warning(
+                "[Startup] Marked %s stale backup task(s) as failed after previous interruption",
+                stale_failed,
+            )
 
         enabled = crud.get_setting(db, "admin_protection_enabled", "false")
         if enabled == "true":
@@ -1168,24 +1389,20 @@ async def add_security_headers(
         "/auth/setup",
         "/auth/unlock",
         "/auth/lock",
+        "/auth/reset/request",
         "/auth/reset",
     }
 
     if request.url.path not in exempt_paths and not _is_skip_auth_enabled():
-        try:
-            from app.database.models import SessionLocal
+        if _is_setup_required_state():
+            return Response(status_code=401, content="Setup required")
 
-            with SessionLocal() as db:
-                verifier = crud.get_setting(db, "snapshot_key_verifier", None)
-                if not verifier:
-                    return Response(status_code=401, content="Setup required")
-                if not snapshot_service.is_unlocked():
-                    return Response(status_code=401, content="Locked")
-        except Exception as e:
-            logger.error(f"[Middleware] Auth check failed: {e}", exc_info=True)
-            # If the DB fails, we should return a 500 or 503, not necessarily "Setup required"
-            # though 401 is safer to avoid leaking info. We'll keep 401 but log the error.
+        if not snapshot_service.is_unlocked():
             return Response(status_code=401, content="Locked")
+
+        token = _extract_auth_session_token(request)
+        if not _is_valid_auth_session_token(token):
+            return Response(status_code=401, content="Session expired")
 
     response = await call_next(request)
 
@@ -1217,7 +1434,12 @@ app.add_middleware(
     allow_origins=_build_cors_origins(),
     allow_credentials=True,
     allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Content-Type", "Authorization"],
+    allow_headers=[
+        "Content-Type",
+        "Authorization",
+        RESET_INTENT_HEADER,
+        AUTH_SESSION_HEADER,
+    ],
 )
 
 
@@ -2034,6 +2256,31 @@ def get_watched_tree(db: DbSession):
     return roots
 
 
+def _collect_oversized_files_under_root(
+    root_path: str,
+    limit: int = MAX_OVERSIZED_FILE_EXAMPLES,
+) -> tuple[int, list[str]]:
+    oversized_count = 0
+    oversized_examples: list[str] = []
+    excluded_dirs = storage.get_all_excluded_dirs()
+
+    for current_root, dirs, filenames in os.walk(root_path):
+        dirs[:] = [d for d in dirs if d not in excluded_dirs]
+        for filename in filenames:
+            file_path = os.path.join(current_root, filename)
+            if storage.is_excluded_path(file_path):
+                continue
+            try:
+                if os.path.getsize(file_path) > MAX_TRACKED_FILE_SIZE_BYTES:
+                    oversized_count += 1
+                    if len(oversized_examples) < limit:
+                        oversized_examples.append(file_path)
+            except OSError:
+                continue
+
+    return oversized_count, oversized_examples
+
+
 @app.post(
     "/files/watched",
     responses={
@@ -2044,6 +2291,23 @@ def get_watched_tree(db: DbSession):
 def add_watched_path(path_data: PathCreate, db: DbSession):
     try:
         normalized_path = os.path.normpath(os.path.abspath(path_data.path))
+
+        if not os.path.isdir(normalized_path):
+            raise HTTPException(status_code=400, detail="Watched path must be an existing directory")
+
+        oversized_count, oversized_examples = _collect_oversized_files_under_root(
+            normalized_path
+        )
+        if oversized_count > 0:
+            sample_text = "\n".join(oversized_examples)
+            detail = (
+                f"Folder contains {oversized_count} file(s) larger than "
+                f"{MAX_TRACKED_FILE_SIZE_MB} MB. Add exclusions for large files/folders "
+                "and retry."
+            )
+            if sample_text:
+                detail = f"{detail}\nExamples:\n{sample_text}"
+            raise HTTPException(status_code=400, detail=detail)
 
         existing_active = (
             db.query(models.WatchedPath)
@@ -2070,6 +2334,8 @@ def add_watched_path(path_data: PathCreate, db: DbSession):
                     daemon=True,
                 ).start()
         return path
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"[API] add_watched_path failed: {e}", exc_info=True)
         raise HTTPException(status_code=400, detail="Invalid watched path")
@@ -2331,7 +2597,7 @@ def restore_checkpoint_session(
 @app.delete(
     "/files/watched/{path_id}",
     responses={
-        404: {"description": "Watched path not found"},
+        404: {"description": WATCHED_PATH_NOT_FOUND_DETAIL},
         500: {"description": "Internal server error"},
     },
 )
@@ -2342,7 +2608,7 @@ def remove_watched_path(path_id: int, db: DbSession):
         .first()
     )
     if not watched:
-        raise HTTPException(status_code=404, detail="Watched path not found")
+        raise HTTPException(status_code=404, detail=WATCHED_PATH_NOT_FOUND_DETAIL)
 
     watched_path = str(watched.path)
 
@@ -2352,7 +2618,7 @@ def remove_watched_path(path_id: int, db: DbSession):
             db, path_id
         )
         if not result:
-            raise HTTPException(status_code=404, detail="Watched path not found")
+            raise HTTPException(status_code=404, detail=WATCHED_PATH_NOT_FOUND_DETAIL)
         monitor_service.sync_watches()
         return result
     except HTTPException:
@@ -2364,6 +2630,98 @@ def remove_watched_path(path_id: int, db: DbSession):
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+@app.post(
+    "/snapshots/scan/stop",
+    responses={
+        400: {"description": "Invalid stop request"},
+        409: {"description": "Snapshot scan is still shutting down"},
+        404: {"description": WATCHED_PATH_NOT_FOUND_DETAIL},
+        500: {"description": "Failed to stop snapshot scan"},
+    },
+)
+def stop_snapshot_scan(payload: SnapshotScanStopPayload, db: DbSession):
+    if not payload.remove_watched_path:
+        raise HTTPException(
+            status_code=400,
+            detail="Stopping scan without removing watched path is not supported",
+        )
+
+    watched_path = os.path.normpath(os.path.abspath(payload.watched_path))
+    watched = (
+        db.query(models.WatchedPath)
+        .filter(
+            models.WatchedPath.path == watched_path,
+            models.WatchedPath.is_active,
+        )
+        .first()
+    )
+    if not watched:
+        raise HTTPException(status_code=404, detail=WATCHED_PATH_NOT_FOUND_DETAIL)
+
+    stop_requested = _request_snapshot_stop(watched_path)
+    if stop_requested and not _wait_for_snapshot_stop(watched_path):
+        raise HTTPException(
+            status_code=409,
+            detail="Snapshot scan is still shutting down. Retry in a few seconds.",
+        )
+
+    monitor_service.handle_root_deletion(watched_path)
+
+    try:
+        removal_result = crud.remove_watched_path_and_tracked_data(db, int(watched.id))
+        if not removal_result:
+            raise HTTPException(status_code=404, detail=WATCHED_PATH_NOT_FOUND_DETAIL)
+
+        storage_cleanup: dict[str, Any] = {
+            "snapshot_dir": {
+                "path": str(storage.STORAGE_ROOT / storage.storage_subdir_name(watched_path)),
+                "deleted_files": 0,
+                "deleted_dirs": 0,
+            },
+            "orphan_gc": "skipped",
+        }
+        if payload.purge_storage:
+            storage_cleanup["snapshot_dir"] = storage.purge_snapshot_dir_for_watched_path(
+                watched_path
+            )
+            storage.run_garbage_collection(
+                lambda filename: crud.storage_filename_exists(db, filename),
+                respect_grace_period=False,
+            )
+            storage_cleanup["orphan_gc"] = "completed"
+
+        monitor_service.sync_watches()
+        event_stream.publish(
+            {
+                "type": "snapshot_scan_stopped",
+                "watched_path": watched_path,
+                "remove_watched_path": True,
+                "purge_storage": bool(payload.purge_storage),
+            }
+        )
+
+        return {
+            "ok": True,
+            "watched_path": watched_path,
+            "remove_watched_path": True,
+            "purge_storage": bool(payload.purge_storage),
+            "result": removal_result,
+            "storage_cleanup": storage_cleanup,
+        }
+    except HTTPException:
+        monitor_service.sync_watches()
+        raise
+    except Exception as exc:
+        monitor_service.sync_watches()
+        logger.error(
+            "[API] stop_snapshot_scan failed for %s: %s",
+            watched_path,
+            exc,
+            exc_info=True,
+        )
+        raise HTTPException(status_code=500, detail="Failed to stop snapshot scan")
+
+
 def _check_snapshot_file(file_path: str) -> tuple[bool, list[str]]:
     errors: list[str] = []
     try:
@@ -2371,6 +2729,15 @@ def _check_snapshot_file(file_path: str) -> tuple[bool, list[str]]:
             return False, []
         if INITIAL_SNAPSHOT_SKIP_SYMLINKS and os.path.islink(file_path):
             errors.append(f"Skipped symlink: {file_path}")
+            return False, errors
+        file_size = os.path.getsize(file_path)
+        if file_size > MAX_TRACKED_FILE_SIZE_BYTES:
+            errors.append(
+                f"Skipped oversized file (>{MAX_TRACKED_FILE_SIZE_MB} MB): {file_path}"
+            )
+            return False, errors
+        if not storage.should_backup_file(file_path):
+            errors.append(f"Skipped unsupported file for backup policy: {file_path}")
             return False, errors
         if not os.access(file_path, os.R_OK):
             errors.append(f"Unreadable file: {file_path}")
@@ -2381,15 +2748,27 @@ def _check_snapshot_file(file_path: str) -> tuple[bool, list[str]]:
         return (not INITIAL_SNAPSHOT_FAIL_ON_UNREADABLE), errors
 
 
-def _scan_snapshot_targets(root_path: str) -> tuple[list[str], list[str]]:
+def _scan_snapshot_targets(
+    root_path: str,
+    stop_event: threading.Event | None = None,
+) -> tuple[list[str], list[str]]:
     files: list[str] = []
     errors: list[str] = []
 
     excluded_dirs = storage.get_all_excluded_dirs()
 
+    interrupted = False
+
     for current_root, dirs, filenames in os.walk(root_path):
+        if stop_event is not None and stop_event.is_set():
+            interrupted = True
+            break
+
         dirs[:] = [d for d in dirs if d not in excluded_dirs]
         for name in filenames:
+            if stop_event is not None and stop_event.is_set():
+                interrupted = True
+                break
             full_path = os.path.join(current_root, name)
             if storage.is_excluded_path(full_path):
                 continue
@@ -2398,6 +2777,13 @@ def _scan_snapshot_targets(root_path: str) -> tuple[list[str], list[str]]:
                 errors.extend(errs)
             if include:
                 files.append(full_path)
+
+        if interrupted:
+            break
+
+    if interrupted:
+        errors.append("Snapshot scan stopped before completion")
+
     return files, errors
 
 
@@ -2457,14 +2843,21 @@ def _process_snapshot_files(
     storage_subdir: str,
     files: list[str],
     initial_errors: list[str],
-) -> tuple[int, int, int, str | None]:
+    stop_event: threading.Event | None = None,
+) -> tuple[int, int, int, str | None, bool]:
     start = time.time()
     processed = 0
     skipped = 0
     error_count = len(initial_errors)
     last_error = initial_errors[-1] if initial_errors else None
+    cancelled = False
 
     for idx, file_path in enumerate(files, start=1):
+        if stop_event is not None and stop_event.is_set():
+            cancelled = True
+            last_error = "Snapshot cancelled by user"
+            break
+
         try:
             _process_snapshot_file(file_path, root_path, storage_subdir)
             processed += 1
@@ -2499,7 +2892,7 @@ def _process_snapshot_files(
                 eta_seconds=eta,
             )
 
-    return processed, skipped, error_count, last_error
+    return processed, skipped, error_count, last_error, cancelled
 
 
 def _run_initial_snapshot(root_path: str) -> None:
@@ -2509,6 +2902,7 @@ def _run_initial_snapshot(root_path: str) -> None:
         )
         raise HTTPException(status_code=400, detail="Watched path does not exist")
 
+    stop_event = _register_snapshot_run(root_path)
     _publish_snapshot_start(root_path)
     storage_subdir = storage.storage_subdir_name(root_path)
     storage.ensure_snapshot_dir(storage_subdir)
@@ -2519,42 +2913,73 @@ def _run_initial_snapshot(root_path: str) -> None:
         if not job:
             job = crud.create_snapshot_job(db, root_path, storage_subdir)
 
-        files, errors = _scan_snapshot_targets(root_path)
+        files, errors = _scan_snapshot_targets(root_path, stop_event=stop_event)
         crud.mark_snapshot_job_started(db, job, total_files=len(files))
 
         for err in errors:
             _publish_snapshot_error(root_path, err)
             logger.warning(f"Snapshot pre-scan error for {root_path}: {err}")
 
-        processed, skipped, error_count, _last_error = _process_snapshot_files(
+        processed, skipped, error_count, _last_error, cancelled = _process_snapshot_files(
             db,
             job,
             root_path,
             storage_subdir,
             files,
             errors,
+            stop_event=stop_event,
         )
 
-        crud.mark_snapshot_job_done(db, job)
-        event_stream.publish(
-            {
+        if cancelled:
+            crud.mark_snapshot_job_failed(db, job, "Snapshot cancelled by user")
+            completion_payload = {
                 "type": "snapshot_complete",
                 "watched_path": root_path,
                 "total": len(files),
                 "processed": processed,
                 "skipped": skipped,
                 "error_count": error_count,
+                "cancelled": True,
             }
-        )
-        logger.info(
-            f"Initial snapshot for {root_path} completed. Processed: {processed}, Skipped: {skipped}, Errors: {error_count}"
-        )
+            event_stream.publish(completion_payload)
+            event_stream.publish(
+                {
+                    "type": "snapshot_cancelled",
+                    "watched_path": root_path,
+                    "total": len(files),
+                    "processed": processed,
+                    "skipped": skipped,
+                    "error_count": error_count,
+                }
+            )
+            logger.info(
+                "Initial snapshot for %s cancelled after processing %s/%s files",
+                root_path,
+                processed,
+                len(files),
+            )
+        else:
+            crud.mark_snapshot_job_done(db, job)
+            event_stream.publish(
+                {
+                    "type": "snapshot_complete",
+                    "watched_path": root_path,
+                    "total": len(files),
+                    "processed": processed,
+                    "skipped": skipped,
+                    "error_count": error_count,
+                }
+            )
+            logger.info(
+                f"Initial snapshot for {root_path} completed. Processed: {processed}, Skipped: {skipped}, Errors: {error_count}"
+            )
     except Exception as e:
         logger.error(
             f"Error during initial snapshot for {root_path}: {e}", exc_info=True
         )
         _publish_snapshot_error(root_path, f"Internal error during snapshot: {e}")
     finally:
+        _clear_snapshot_run(root_path)
         db.close()
 
 
@@ -2937,25 +3362,30 @@ def get_version_content(version_id: int, db: DbSession):
         }
 
     try:
-        # Check if file is GZIP compressed (our new storage format)
+        max_bytes = MAX_TRACKED_FILE_SIZE_BYTES
         if storage_path.endswith(".gz"):
-            # Decompress and read as text
-            with gzip.open(storage_path, "rt", encoding="utf-8") as f:
-                content = f.read()
+            with gzip.open(storage_path, "rb") as f:
+                raw_bytes = f.read(max_bytes + 1)
         else:
-            # Legacy format: read directly as text
-            with open(storage_path, "r", encoding="utf-8") as f:
-                content = f.read()
+            with open(storage_path, "rb") as f:
+                raw_bytes = f.read(max_bytes + 1)
+
+        if len(raw_bytes) > max_bytes:
+            return {
+                "content": (
+                    f"[Version content exceeds {MAX_TRACKED_FILE_SIZE_MB} MB policy "
+                    "and cannot be previewed]"
+                ),
+                "type": "oversized",
+                "max_bytes": max_bytes,
+            }
+
+        content = raw_bytes.decode("utf-8")
         return {"content": content, "type": "text"}
     except UnicodeDecodeError:
-        # If it fails, it's likely binary
         return {"content": BINARY_PREVIEW_TEXT, "type": "binary"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to read file: {str(e)}")
-
-
-def _normalize_path(path: str) -> str:
-    return os.path.normcase(os.path.abspath(os.path.realpath(path)))
 
 
 def _get_active_watched_paths(db: Session) -> list[str]:
@@ -2972,23 +3402,6 @@ def _assert_path_allowed(target_path: str, db: Session) -> None:
             status_code=403,
             detail="Path must be within a watched folder",
         )
-
-
-def _is_within_watched_paths(target_path: str, watched_paths: list[str]) -> bool:
-    target_norm = _normalize_path(target_path)
-    for watched in watched_paths:
-        if not watched:
-            continue
-        watched_norm = _normalize_path(watched)
-        try:
-            common = os.path.commonpath([target_norm, watched_norm])
-        except ValueError:
-            # Different drive letters on Windows
-            continue
-        if common == watched_norm:
-            return True
-    return False
-
 
 @app.post(
     "/files/restore",
@@ -3127,6 +3540,7 @@ def get_runtime_settings(db: DbSession):
     return {
         "run_in_background_service": run_in_background_service,
         "ui_zoom_scale": _read_ui_zoom_scale(db),
+        "font_zoom_scale": _read_font_zoom_scale(db),
         "share_crash_diagnostics": _read_bool_setting(
             db,
             "share_crash_diagnostics",
@@ -3145,6 +3559,7 @@ def update_runtime_settings(payload: RuntimeSettingsUpdate, db: DbSession):
     if (
         payload.run_in_background_service is None
         and payload.ui_zoom_scale is None
+        and payload.font_zoom_scale is None
         and payload.share_crash_diagnostics is None
     ):
         raise HTTPException(status_code=400, detail="No settings provided")
@@ -3159,6 +3574,10 @@ def update_runtime_settings(payload: RuntimeSettingsUpdate, db: DbSession):
     if payload.ui_zoom_scale is not None:
         clamped_zoom = _clamp_ui_zoom_scale(payload.ui_zoom_scale)
         crud.set_setting(db, "ui_zoom_scale", str(clamped_zoom))
+
+    if payload.font_zoom_scale is not None:
+        clamped_font_zoom = _clamp_font_zoom_scale(payload.font_zoom_scale)
+        crud.set_setting(db, "font_zoom_scale", str(clamped_font_zoom))
 
     if payload.share_crash_diagnostics is not None:
         crud.set_setting(
@@ -3191,20 +3610,29 @@ def ingest_telemetry_event(payload: TelemetryEventPayload, request: Request):
 
 
 @app.get("/auth/status")
-def get_auth_status(db: DbSession):
+def get_auth_status(db: DbSession, request: Request):
     try:
-        verifier = crud.get_setting(db, "snapshot_key_verifier", None)
+        setup_required = _refresh_setup_required_state(db)
     except Exception as e:
         logger.error(f"[Auth Status] Exception: {e}")
         # Tables might not exist yet (fresh DB or after manual wipe)
-        return {"setup_required": True, "locked": False}
-    setup_required = not bool(verifier)
+        _set_setup_required_state(True)
+        return {"setup_required": True, "locked": False, "session_active": False}
 
     locked = False
     if not setup_required:
         locked = not snapshot_service.is_unlocked()
 
-    return {"setup_required": setup_required, "locked": locked}
+    session_active = False
+    if not setup_required and not locked:
+        token = _extract_auth_session_token(request)
+        session_active = _is_valid_auth_session_token(token)
+
+    return {
+        "setup_required": setup_required,
+        "locked": locked,
+        "session_active": session_active,
+    }
 
 
 class SetupPayload(BaseModel):
@@ -3226,7 +3654,7 @@ class SetupPayload(BaseModel):
         400: {"description": "Already setup or invalid master password"},
     },
 )
-def auth_setup(payload: SetupPayload, db: DbSession):
+def auth_setup(payload: SetupPayload, db: DbSession, response: Response):
     verifier = crud.get_setting(db, "snapshot_key_verifier", None)
     if verifier:
         raise HTTPException(status_code=400, detail="Already setup")
@@ -3235,7 +3663,14 @@ def auth_setup(payload: SetupPayload, db: DbSession):
         recovery_key = snapshot_service.setup_master_password(
             payload.master_password, db
         )
-        return {"success": True, "recovery_key": recovery_key}
+        _set_setup_required_state(False)
+        session_token = _issue_auth_session_token()
+        _set_auth_session_cookie(response, session_token)
+        return {
+            "success": True,
+            "recovery_key": recovery_key,
+            "session_token": session_token,
+        }
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -3260,7 +3695,7 @@ class UnlockPayload(BaseModel):
         429: {"description": "Too many unlock attempts"},
     },
 )
-def auth_unlock(payload: UnlockPayload, db: DbSession, request: Request):
+def auth_unlock(payload: UnlockPayload, db: DbSession, request: Request, response: Response):
     client_key = _auth_client_key(request)
     remaining_lockout = _auth_lockout_remaining_seconds(client_key)
     if remaining_lockout > 0:
@@ -3279,12 +3714,21 @@ def auth_unlock(payload: UnlockPayload, db: DbSession, request: Request):
         raise HTTPException(status_code=401, detail="Invalid password or recovery key")
 
     _reset_auth_failures(client_key)
-    return {"unlocked": True}
+    _set_setup_required_state(False)
+    session_token = _issue_auth_session_token()
+    _set_auth_session_cookie(response, session_token)
+    return {
+        "unlocked": True,
+        "session_token": session_token,
+    }
 
 
 @app.post("/auth/lock")
-def auth_lock(db: DbSession):
+def auth_lock(response: Response):
     snapshot_service.lock()
+    _clear_auth_sessions()
+    _clear_reset_challenges()
+    _clear_auth_session_cookie(response)
     return {"locked": True}
 
 
@@ -3404,30 +3848,55 @@ def get_dashboard_summary(db: DbSession):
 
 class AuthResetPayload(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
-    confirmation: Literal["RESET LOCUS DATA"]
-    passphrase: str | None = Field(
-        default=None,
-        min_length=MIN_SNAPSHOT_UNLOCK_COMPAT_LENGTH,
-        max_length=256,
-    )
+    confirmation: str = Field(min_length=1, max_length=128)
+    reset_nonce: str = Field(min_length=16, max_length=256)
+    final_confirmed: bool = False
 
-    @field_validator("passphrase")
+    @field_validator("confirmation")
     @classmethod
-    def validate_optional_passphrase(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        return _validate_text_input(value, "passphrase")
+    def validate_confirmation(cls, value: str) -> str:
+        return _validate_text_input(value, "confirmation")
+
+
+@app.post(
+    "/auth/reset/request",
+    responses={
+        400: {"description": "Reset intent not confirmed"},
+        409: {"description": "Vault must be locked before reset"},
+    },
+)
+def auth_reset_begin(request: Request):
+    header_value = str(request.headers.get(RESET_INTENT_HEADER, "")).strip().lower()
+    if header_value != "confirm":
+        raise HTTPException(status_code=400, detail="Reset intent header missing")
+
+    if snapshot_service.is_unlocked():
+        raise HTTPException(
+            status_code=409,
+            detail="Vault must be locked before reset",
+        )
+
+    reset_nonce = _create_reset_challenge()
+    return {
+        "reset_nonce": reset_nonce,
+        "cooldown_seconds": RESET_COOLDOWN_SECONDS,
+    }
 
 
 @app.post(
     "/auth/reset",
     responses={
-        400: {"description": "Reset intent not confirmed"},
-        401: {"description": "Passphrase required for reset"},
+        400: {"description": "Reset validation failed"},
+        409: {"description": "Vault must be locked before reset"},
         500: {"description": "Factory reset failed"},
     },
 )
-def auth_reset_factory(payload: AuthResetPayload, request: Request, db: DbSession):
+def auth_reset_factory(
+    payload: AuthResetPayload,
+    request: Request,
+    response: Response,
+    db: DbSession,
+):
     """Factory reset: wipe all data and return to first-run setup."""
     import shutil
     from app.database.models import Base
@@ -3438,16 +3907,21 @@ def auth_reset_factory(payload: AuthResetPayload, request: Request, db: DbSessio
     if header_value != "confirm":
         raise HTTPException(status_code=400, detail="Reset intent header missing")
 
+    if snapshot_service.is_unlocked():
+        raise HTTPException(
+            status_code=409,
+            detail="Vault must be locked before reset",
+        )
+
     if payload.confirmation != FACTORY_RESET_CONFIRMATION_PHRASE:
         raise HTTPException(status_code=400, detail="Invalid reset confirmation phrase")
 
-    verifier = crud.get_setting(db, "snapshot_key_verifier", None)
-    if verifier and not snapshot_service.is_unlocked():
-        if not payload.passphrase:
-            raise HTTPException(status_code=401, detail="Passphrase is required for reset")
-        if not snapshot_service.unlock(payload.passphrase, db):
-            time.sleep(AUTH_FAILURE_DELAY_SECONDS)
-            raise HTTPException(status_code=401, detail="Invalid passphrase")
+    if not payload.final_confirmed:
+        raise HTTPException(status_code=400, detail="Final confirmation is required")
+
+    challenge_valid, challenge_message = _validate_reset_challenge(payload.reset_nonce)
+    if not challenge_valid:
+        raise HTTPException(status_code=400, detail=challenge_message)
 
     try:
         # 1. Close the injected session so it releases its SQLite lock.
@@ -3466,6 +3940,10 @@ def auth_reset_factory(payload: AuthResetPayload, request: Request, db: DbSessio
 
         # 3. Only lock AFTER the DB wipe succeeds, so we never strand the user.
         snapshot_service.lock()
+        _set_setup_required_state(True)
+        _clear_auth_sessions()
+        _clear_reset_challenges()
+        _clear_auth_session_cookie(response)
 
         # 4. Wipe file storage directories
         for dirpath in [str(STORAGE_ROOT), str(SNAPSHOT_IMAGE_ROOT)]:
@@ -3518,6 +3996,47 @@ def snapshot_history(payload: SnapshotHistoryQueryPayload, db: DbSession):
         end_time=end_dt,
         limit=payload.limit,
     )
+
+
+@app.get(
+    "/snapshots/apps",
+    responses={
+        423: {"description": "Snapshot vault is locked"},
+    },
+)
+def list_snapshot_apps(db: DbSession):
+    if not snapshot_service.is_unlocked():
+        raise HTTPException(
+            status_code=423,
+            detail=SNAPSHOT_VAULT_LOCKED_DETAIL,
+        )
+
+    history_payload = snapshot_service.history(db, limit=1000)
+    app_facets = history_payload.get("facets", {}).get("apps", [])
+    snapshot_apps = [
+        str(entry[0]).strip()
+        for entry in app_facets
+        if isinstance(entry, (list, tuple)) and len(entry) > 0 and str(entry[0]).strip()
+    ]
+
+    activity_apps = [
+        str(value).strip()
+        for (value,) in db.query(models.ActivityLog.app_name)
+        .filter(models.ActivityLog.app_name.isnot(None))
+        .distinct()
+        .all()
+        if str(value).strip()
+    ]
+
+    apps = sorted(
+        {*snapshot_apps, *activity_apps},
+        key=lambda value: value.lower(),
+    )
+
+    return {
+        "apps": apps,
+        "count": len(apps),
+    }
 
 
 @app.post(

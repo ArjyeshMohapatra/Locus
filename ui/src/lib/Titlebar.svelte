@@ -5,6 +5,7 @@
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import { exit as tauriExit } from '@tauri-apps/plugin-process';
   import { stopWatchedSnapshotScan, subscribeFileEvents } from '../api.js';
+  import { askQuestion, showMessage } from '../dialogStore.js';
   import Fa from 'svelte-fa';
   import { faMinus, faSquare, faXmark, faCloud } from '@fortawesome/free-solid-svg-icons';
 
@@ -230,17 +231,54 @@
       return;
     }
 
+    const confirmed = await askQuestion(
+      'This will stop the active snapshot scan, remove the watched folder from LOCUS, and delete related backup/storage data. This action cannot be undone.',
+      'Stop Scan And Delete Data',
+      {
+        type: 'danger',
+        okLabel: 'Stop And Delete',
+        cancelLabel: 'Cancel'
+      }
+    );
+    if (!confirmed) {
+      return;
+    }
+
     stoppingSnapshot = true;
     showStopRequestToast('Stop requested');
     try {
-      await stopWatchedSnapshotScan(watchedPath, {
+      const response = await stopWatchedSnapshotScan(watchedPath, {
         removeWatchedPath: true,
         purgeStorage: true
       });
       showStopRequestToast('Stopping and removing folder');
+
+      const result = response?.result || {};
+      const storageCleanup = response?.storage_cleanup || {};
+      const snapshotDirCleanup = storageCleanup?.snapshot_dir || {};
+      const summaryLines = [
+        `Watched path: ${watchedPath}`,
+        `File versions removed: ${Number(result?.file_versions_deleted || 0)}`,
+        `File events removed: ${Number(result?.file_events_deleted || 0)}`,
+        `Backup tasks removed: ${Number(result?.backup_tasks_deleted || 0)}`,
+        `Snapshot jobs removed: ${Number(result?.snapshot_jobs_deleted || 0)}`,
+        `Storage files removed: ${Number(snapshotDirCleanup?.deleted_files || 0)}`
+      ];
+
+      await showMessage(
+        summaryLines.join('\n'),
+        'Scan Stopped: Data Removed',
+        'danger'
+      );
     } catch (error) {
       console.error('Failed to stop snapshot scan:', error);
       showStopRequestToast('Could not request stop');
+      await showMessage(
+        error?.message || 'Failed to stop and remove snapshot data.',
+        'Stop Failed',
+        'error'
+      );
+    } finally {
       stoppingSnapshot = false;
     }
   };

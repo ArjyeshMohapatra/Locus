@@ -30,7 +30,11 @@ def test_auth_unlock_rate_limited_after_repeated_failures(client, monkeypatch):
 def test_auth_reset_requires_intent_header(client):
     resp = client.post(
         "/auth/reset",
-        json={"confirmation": "RESET LOCUS DATA", "passphrase": None},
+        json={
+            "confirmation": "DELETE MY LOCUS DATA COMPLETELY",
+            "reset_nonce": "nonce-placeholder",
+            "final_confirmed": True,
+        },
     )
     assert resp.status_code == 400
 
@@ -40,28 +44,43 @@ def test_auth_reset_allows_without_passphrase_when_vault_locked(
     client, monkeypatch, tmp_path
 ):
     monkeypatch.setattr(main_app.snapshot_service, "is_unlocked", lambda: False)
-    monkeypatch.setattr(main_app.snapshot_service, "unlock", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(snapshot_module, "SNAPSHOT_IMAGE_ROOT", tmp_path / ".snapshot_images")
+    monkeypatch.setattr(main_app, "_validate_reset_challenge", lambda _nonce: (True, "ok"))
+
+    request_resp = client.post(
+        "/auth/reset/request",
+        headers={"X-Locus-Reset-Intent": "confirm"},
+    )
+    assert request_resp.status_code == 200
+    reset_nonce = request_resp.json().get("reset_nonce")
+    assert isinstance(reset_nonce, str) and reset_nonce
 
     resp = client.post(
         "/auth/reset",
         headers={"X-Locus-Reset-Intent": "confirm"},
-        json={"confirmation": "RESET LOCUS DATA", "passphrase": None},
+        json={
+            "confirmation": "DELETE MY LOCUS DATA COMPLETELY",
+            "reset_nonce": reset_nonce,
+            "final_confirmed": True,
+        },
     )
     assert resp.status_code == 200
     assert resp.json().get("success") is True
 
 
-def test_auth_reset_rejects_invalid_passphrase_when_provided(client, monkeypatch):
+def test_auth_reset_rejects_invalid_or_expired_challenge(client, monkeypatch):
     monkeypatch.setattr(main_app.snapshot_service, "is_unlocked", lambda: False)
-    monkeypatch.setattr(main_app.snapshot_service, "unlock", lambda *_args, **_kwargs: False)
 
     resp = client.post(
         "/auth/reset",
         headers={"X-Locus-Reset-Intent": "confirm"},
-        json={"confirmation": "RESET LOCUS DATA", "passphrase": "wrong-passphrase"},
+        json={
+            "confirmation": "DELETE MY LOCUS DATA COMPLETELY",
+            "reset_nonce": "invalid-challenge",
+            "final_confirmed": True,
+        },
     )
-    assert resp.status_code == 401
+    assert resp.status_code == 400
 
 
 def test_auth_reset_cors_preflight_allows_reset_intent_header(client):

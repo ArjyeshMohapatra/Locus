@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Locus",
-  "version": "1.5.5",
+  "version": "1.6.0",
   "identifier": "com.locus.app",
   "build": {
     "beforeDevCommand": null,
@@ -22,7 +22,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self' data: blob: tauri: https://tauri.localhost; img-src 'self' asset: data: blob:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; connect-src 'self' http://127.0.0.1:* http://localhost:* tauri: https://tauri.localhost; script-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'self'"
+      "csp": "default-src 'self' tauri: https://tauri.localhost; img-src 'self' asset: data: blob:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; connect-src 'self' http://127.0.0.1:* ws://127.0.0.1:* http://localhost:* ws://localhost:* tauri: https://tauri.localhost; script-src 'self'; worker-src 'self' blob:; object-src 'none'; frame-src 'none'; form-action 'none'; frame-ancestors 'none'; base-uri 'self'"
     }
   },
   "bundle": {

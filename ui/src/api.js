@@ -1,6 +1,73 @@
 // api.js - Dedicated service for backend communication
 const DEFAULT_BASE_URL = 'http://127.0.0.1:8000';
 const DEFAULT_REQUEST_TIMEOUT_MS = 15000;
+const SESSION_TOKEN_STORAGE_KEY = 'locus-session-token';
+const SESSION_HEADER_NAME = 'X-Locus-Session';
+const RESET_INTENT_HEADER_NAME = 'X-Locus-Reset-Intent';
+const RESET_CONFIRMATION_PHRASE = 'DELETE MY LOCUS DATA COMPLETELY';
+
+let sessionToken = '';
+
+function readStoredSessionToken() {
+  if (typeof window === 'undefined') {
+    return '';
+  }
+
+  try {
+    return String(window.sessionStorage.getItem(SESSION_TOKEN_STORAGE_KEY) || '').trim();
+  } catch {
+    return '';
+  }
+}
+
+function persistSessionToken(token) {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  try {
+    if (token) {
+      window.sessionStorage.setItem(SESSION_TOKEN_STORAGE_KEY, token);
+    } else {
+      window.sessionStorage.removeItem(SESSION_TOKEN_STORAGE_KEY);
+    }
+  } catch {
+    // Ignore sessionStorage failures in restricted runtime contexts.
+  }
+}
+
+function setSessionToken(token) {
+  sessionToken = String(token || '').trim();
+  persistSessionToken(sessionToken);
+}
+
+export function clearSessionToken() {
+  setSessionToken('');
+}
+
+function buildRequestOptions(options = {}) {
+  const headers = new Headers(options?.headers || {});
+  if (sessionToken) {
+    headers.set(SESSION_HEADER_NAME, sessionToken);
+  }
+
+  return {
+    ...options,
+    headers,
+    credentials: options?.credentials || 'include'
+  };
+}
+
+function apiFetch(url, options = {}) {
+  if (typeof globalThis.fetch !== 'function') {
+    throw new Error('Fetch API is not available in this runtime');
+  }
+  return globalThis.fetch(url, buildRequestOptions(options));
+}
+
+if (typeof window !== 'undefined') {
+  sessionToken = readStoredSessionToken();
+}
 
 function isTauriRuntime() {
   return (
@@ -60,7 +127,7 @@ async function fetchWithRetry(url, options = {}, { attempts = 1, retryDelayMs = 
   let lastError = null;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     try {
-      return await fetch(url, options);
+      return await apiFetch(url, options);
     } catch (error) {
       lastError = error;
       if (!isTransientNetworkError(error) || attempt >= attempts) {
@@ -134,7 +201,7 @@ async function resolveAuthBaseUrl() {
 
 export async function checkHealth() {
   const requestHealth = async (baseUrl) => {
-    const res = await fetch(`${baseUrl}/health`);
+    const res = await apiFetch(`${baseUrl}/health`);
     if (!res.ok) throw new Error('Network response was not ok');
     return await res.json();
   };
@@ -172,18 +239,18 @@ export async function checkHealth() {
 }
 
 export async function getWatchedPaths() {
-  const res = await fetch(`${BASE_URL}/files/watched`);
+  const res = await apiFetch(`${BASE_URL}/files/watched`);
   return await res.json();
 }
 
 export async function getWatchedTree() {
-  const res = await fetch(`${BASE_URL}/files/watched/tree`);
+  const res = await apiFetch(`${BASE_URL}/files/watched/tree`);
   if (!res.ok) throw new Error('Failed to fetch watched tree');
   return await res.json();
 }
 
 export async function addWatchedPath(path) {
-  const res = await fetch(`${BASE_URL}/files/watched`, {
+  const res = await apiFetch(`${BASE_URL}/files/watched`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ path })
@@ -196,7 +263,7 @@ export async function addWatchedPath(path) {
 }
 
 export async function removeWatchedPath(pathId) {
-  const res = await fetch(`${BASE_URL}/files/watched/${pathId}`, {
+  const res = await apiFetch(`${BASE_URL}/files/watched/${pathId}`, {
     method: 'DELETE'
   });
   if (!res.ok) {
@@ -213,7 +280,7 @@ export async function relinkWatchedPath(oldPath, newPath, moveFiles = false) {
     move_files: !!moveFiles
   };
   
-  const res = await fetch(`${BASE_URL}/files/watched/relink`, {
+  const res = await apiFetch(`${BASE_URL}/files/watched/relink`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload)
@@ -226,7 +293,7 @@ export async function relinkWatchedPath(oldPath, newPath, moveFiles = false) {
 }
 
 export async function createCheckpointSession(payload = {}) {
-  const res = await fetch(`${BASE_URL}/checkpoints/sessions`, {
+  const res = await apiFetch(`${BASE_URL}/checkpoints/sessions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload || {})
@@ -245,7 +312,7 @@ export async function listCheckpointSessions({ watchedPath = null, limit = 100 }
     url.searchParams.append('watched_path', watchedPath);
   }
 
-  const res = await fetch(url);
+  const res = await apiFetch(url);
   if (!res.ok) {
     const errorData = await res.json().catch(() => ({}));
     throw new Error(errorData.detail || 'Failed to list checkpoint sessions');
@@ -254,7 +321,7 @@ export async function listCheckpointSessions({ watchedPath = null, limit = 100 }
 }
 
 export async function getCheckpointSessionDetail(sessionId) {
-  const res = await fetch(`${BASE_URL}/checkpoints/sessions/${sessionId}`);
+  const res = await apiFetch(`${BASE_URL}/checkpoints/sessions/${sessionId}`);
   if (!res.ok) {
     const errorData = await res.json().catch(() => ({}));
     throw new Error(errorData.detail || 'Failed to fetch checkpoint session detail');
@@ -263,7 +330,7 @@ export async function getCheckpointSessionDetail(sessionId) {
 }
 
 export async function renameCheckpointSession(sessionId, name) {
-  const res = await fetch(`${BASE_URL}/checkpoints/sessions/${sessionId}`, {
+  const res = await apiFetch(`${BASE_URL}/checkpoints/sessions/${sessionId}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name })
@@ -276,7 +343,7 @@ export async function renameCheckpointSession(sessionId, name) {
 }
 
 export async function diffCheckpointSessions(fromSessionId, toSessionId, includeUnchanged = false) {
-  const res = await fetch(`${BASE_URL}/checkpoints/sessions/diff`, {
+  const res = await apiFetch(`${BASE_URL}/checkpoints/sessions/diff`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -293,7 +360,7 @@ export async function diffCheckpointSessions(fromSessionId, toSessionId, include
 }
 
 export async function restoreCheckpointSession(sessionId, payload = {}) {
-  const res = await fetch(`${BASE_URL}/checkpoints/sessions/${sessionId}/restore`, {
+  const res = await apiFetch(`${BASE_URL}/checkpoints/sessions/${sessionId}/restore`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload || {})
@@ -306,7 +373,7 @@ export async function restoreCheckpointSession(sessionId, payload = {}) {
 }
 
 export async function getActivityTimeline(limit = 50) {
-  const res = await fetch(`${BASE_URL}/activity/timeline?limit=${limit}`);
+  const res = await apiFetch(`${BASE_URL}/activity/timeline?limit=${limit}`);
   return await res.json();
 }
 
@@ -316,12 +383,16 @@ export async function getRecentFileEvents(limit = 50, path = null) {
   if (path) {
     url.searchParams.append('path', path);
   }
-  const res = await fetch(url);
+  const res = await apiFetch(url);
   return await res.json();
 }
 
 export function subscribeFileEvents(onEvent) {
-  const source = new EventSource(`${BASE_URL}/files/events/stream`);
+  const streamUrl = new URL(`${BASE_URL}/files/events/stream`);
+  if (sessionToken) {
+    streamUrl.searchParams.set('session_token', sessionToken);
+  }
+  const source = new EventSource(streamUrl.toString());
   source.onmessage = (event) => {
     try {
       const data = JSON.parse(event.data);
@@ -339,7 +410,7 @@ export function subscribeFileEvents(onEvent) {
 export async function getFileVersions(path) {
   const url = new URL(`${BASE_URL}/files/versions`);
   url.searchParams.append('path', path);
-  const res = await fetch(url);
+  const res = await apiFetch(url);
   if (!res.ok) throw new Error('Failed to fetch versions');
   return await res.json();
 }
@@ -347,7 +418,7 @@ export async function getFileVersions(path) {
 export async function getCurrentFileVersion(path) {
   const url = new URL(`${BASE_URL}/files/current-version`);
   url.searchParams.append('path', path);
-  const res = await fetch(url);
+  const res = await apiFetch(url);
   if (!res.ok) throw new Error('Failed to fetch current version');
   return await res.json();
 }
@@ -355,7 +426,7 @@ export async function getCurrentFileVersion(path) {
 export async function getCurrentFileContent(path) {
   const url = new URL(`${BASE_URL}/files/current-content`);
   url.searchParams.append('path', path);
-  const res = await fetch(url);
+  const res = await apiFetch(url);
   if (!res.ok) {
     const errorData = await res.json().catch(() => ({}));
     throw new Error(errorData.detail || 'Failed to fetch current file content');
@@ -364,7 +435,7 @@ export async function getCurrentFileContent(path) {
 }
 
 export async function getFileVersionContent(versionId) {
-  const res = await fetch(`${BASE_URL}/files/versions/${versionId}/content`);
+  const res = await apiFetch(`${BASE_URL}/files/versions/${versionId}/content`);
   if (!res.ok) {
     const errorData = await res.json().catch(() => ({}));
     throw new Error(errorData.detail || 'Failed to fetch version content');
@@ -373,7 +444,7 @@ export async function getFileVersionContent(versionId) {
 }
 
 export async function restoreFileVersion(versionId) {
-  const res = await fetch(`${BASE_URL}/files/restore`, {
+  const res = await apiFetch(`${BASE_URL}/files/restore`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ version_id: versionId })
@@ -383,7 +454,7 @@ export async function restoreFileVersion(versionId) {
 }
 
 export async function getSecuritySettings() {
-  const res = await fetch(`${BASE_URL}/settings/security`);
+  const res = await apiFetch(`${BASE_URL}/settings/security`);
   if (!res.ok) throw new Error('Failed to fetch security settings');
   return await res.json();
 }
@@ -484,7 +555,11 @@ export async function getAuthStatus() {
   try {
     const res = await fetchWithRetry(`${baseUrl}/auth/status`, {}, { attempts: 12, retryDelayMs: 500 });
     if (!res.ok) throw new Error('Failed to fetch auth status');
-    return await res.json();
+    const payload = await res.json();
+    if (!payload?.session_active) {
+      clearSessionToken();
+    }
+    return payload;
   } catch (error) {
     throw toStartupHint(error, 'Failed to fetch auth status');
   }
@@ -512,7 +587,11 @@ export async function setupAuth(master_password) {
     throw new Error(errorData.detail || 'Failed to setup auth');
   }
 
-  return await res.json();
+  const payload = await res.json();
+  if (payload?.session_token) {
+    setSessionToken(payload.session_token);
+  }
+  return payload;
 }
 
 export async function unlockAuth(passphrase) {
@@ -537,33 +616,66 @@ export async function unlockAuth(passphrase) {
     throw new Error(errorData.detail || 'Failed to unlock');
   }
 
-  return await res.json();
+  const payload = await res.json();
+  if (payload?.session_token) {
+    setSessionToken(payload.session_token);
+  }
+  return payload;
 }
 
 export async function lockAuth() {
-  const res = await fetch(`${BASE_URL}/auth/lock`, { method: 'POST' });
+  const res = await apiFetch(`${BASE_URL}/auth/lock`, { method: 'POST' });
   if (!res.ok) throw new Error('Failed to lock app');
+  clearSessionToken();
   return await res.json();
 }
 
 export async function getDashboardSummary() {
-  const res = await fetch(`${BASE_URL}/dashboard/summary`);
+  const res = await apiFetch(`${BASE_URL}/dashboard/summary`);
   if (!res.ok) throw new Error('Failed to fetch dashboard summary');
   return await res.json();
 }
 
-export async function resetAuth(passphrase = '', confirmation = 'RESET LOCUS DATA') {
+export async function requestAuthReset() {
+  const res = await fetchWithTimeout(
+    `${BASE_URL}/auth/reset/request`,
+    {
+      method: 'POST',
+      headers: {
+        [RESET_INTENT_HEADER_NAME]: 'confirm'
+      }
+    },
+    {
+      timeoutMs: 5000,
+      attempts: 1
+    }
+  );
+
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => ({}));
+    throw new Error(errorData.detail || 'Failed to start reset confirmation');
+  }
+
+  return await res.json();
+}
+
+export async function resetAuth({
+  confirmation = RESET_CONFIRMATION_PHRASE,
+  resetNonce,
+  finalConfirmed = false
+} = {}) {
   const res = await fetchWithTimeout(
     `${BASE_URL}/auth/reset`,
     {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'X-Locus-Reset-Intent': 'confirm'
+        [RESET_INTENT_HEADER_NAME]: 'confirm'
       },
       body: JSON.stringify({
         confirmation,
-        passphrase: String(passphrase || '').trim() || null
+        reset_nonce: String(resetNonce || '').trim(),
+        final_confirmed: !!finalConfirmed
       })
     },
     {
@@ -575,11 +687,12 @@ export async function resetAuth(passphrase = '', confirmation = 'RESET LOCUS DAT
     const errorData = await res.json().catch(() => ({}));
     throw new Error(errorData.detail || 'Failed to reset app data');
   }
+  clearSessionToken();
   return await res.json();
 }
 
 export async function getSnapshotHistory(payload = {}) {
-  const res = await fetch(`${BASE_URL}/snapshots/history`, {
+  const res = await apiFetch(`${BASE_URL}/snapshots/history`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload || {})
@@ -593,8 +706,12 @@ export async function getSnapshotHistory(payload = {}) {
 
 
 export async function getSnapshotApps() {
-  const payload = await getSnapshotHistory({ limit: 1000 });
+  const res = await apiFetch(`${BASE_URL}/snapshots/apps`);
+  if (res.ok) {
+    return await res.json();
+  }
 
+  const payload = await getSnapshotHistory({ limit: 1000 });
   const facetApps = Array.isArray(payload?.facets?.apps) ? payload.facets.apps : [];
   const fromFacets = facetApps
     .map((entry) => {
@@ -634,26 +751,26 @@ export async function stopWatchedSnapshotScan(watchedPath, options = {}) {
     throw new Error('Stopping a scan without removing the watched path is not supported by this backend');
   }
 
-  const watchedPaths = await getWatchedPaths();
-  const watchedEntry = (Array.isArray(watchedPaths) ? watchedPaths : [])
-    .find((entry) => String(entry?.path || '').trim() === normalizedPath);
+  const res = await apiFetch(`${BASE_URL}/snapshots/scan/stop`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      watched_path: normalizedPath,
+      remove_watched_path: shouldRemoveWatchedPath,
+      purge_storage: options?.purgeStorage !== false
+    })
+  });
 
-  if (!watchedEntry?.id) {
-    throw new Error('Watched path not found');
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => ({}));
+    throw new Error(errorData.detail || 'Failed to stop snapshot scan');
   }
 
-  const removeResult = await removeWatchedPath(Number(watchedEntry.id));
-  return {
-    ok: true,
-    watched_path: normalizedPath,
-    remove_watched_path: shouldRemoveWatchedPath,
-    purge_storage: options?.purgeStorage !== false,
-    result: removeResult
-  };
+  return await res.json();
 }
 
 export async function executeSnapshotAction(actionType, value) {
-  const res = await fetch(`${BASE_URL}/snapshots/execute-action`, {
+  const res = await apiFetch(`${BASE_URL}/snapshots/execute-action`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ action_type: actionType, value })
@@ -666,7 +783,7 @@ export async function executeSnapshotAction(actionType, value) {
 }
 
 export async function deleteSnapshot(snapshotId) {
-  const res = await fetch(`${BASE_URL}/snapshots/${snapshotId}`, {
+  const res = await apiFetch(`${BASE_URL}/snapshots/${snapshotId}`, {
     method: 'DELETE'
   });
   if (!res.ok) {
@@ -677,7 +794,7 @@ export async function deleteSnapshot(snapshotId) {
 }
 
 export async function deleteAllSnapshots(passphrase) {
-  const res = await fetch(`${BASE_URL}/snapshots/delete-all`, {
+  const res = await apiFetch(`${BASE_URL}/snapshots/delete-all`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ passphrase })
