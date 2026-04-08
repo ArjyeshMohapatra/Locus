@@ -2256,6 +2256,15 @@ def get_watched_tree(db: DbSession):
     return roots
 
 
+def _is_oversized_trackable_file(file_path: str) -> bool:
+    if storage.is_excluded_path(file_path):
+        return False
+    try:
+        return os.path.getsize(file_path) > MAX_TRACKED_FILE_SIZE_BYTES
+    except OSError:
+        return False
+
+
 def _collect_oversized_files_under_root(
     root_path: str,
     limit: int = MAX_OVERSIZED_FILE_EXAMPLES,
@@ -2268,15 +2277,11 @@ def _collect_oversized_files_under_root(
         dirs[:] = [d for d in dirs if d not in excluded_dirs]
         for filename in filenames:
             file_path = os.path.join(current_root, filename)
-            if storage.is_excluded_path(file_path):
+            if not _is_oversized_trackable_file(file_path):
                 continue
-            try:
-                if os.path.getsize(file_path) > MAX_TRACKED_FILE_SIZE_BYTES:
-                    oversized_count += 1
-                    if len(oversized_examples) < limit:
-                        oversized_examples.append(file_path)
-            except OSError:
-                continue
+            oversized_count += 1
+            if len(oversized_examples) < limit:
+                oversized_examples.append(file_path)
 
     return oversized_count, oversized_examples
 
@@ -2748,6 +2753,34 @@ def _check_snapshot_file(file_path: str) -> tuple[bool, list[str]]:
         return (not INITIAL_SNAPSHOT_FAIL_ON_UNREADABLE), errors
 
 
+def _snapshot_stop_requested(stop_event: threading.Event | None) -> bool:
+    return stop_event is not None and stop_event.is_set()
+
+
+def _scan_snapshot_files_in_directory(
+    current_root: str,
+    filenames: list[str],
+    files: list[str],
+    errors: list[str],
+    stop_event: threading.Event | None,
+) -> bool:
+    for name in filenames:
+        if _snapshot_stop_requested(stop_event):
+            return True
+
+        full_path = os.path.join(current_root, name)
+        if storage.is_excluded_path(full_path):
+            continue
+
+        include, errs = _check_snapshot_file(full_path)
+        if errs:
+            errors.extend(errs)
+        if include:
+            files.append(full_path)
+
+    return False
+
+
 def _scan_snapshot_targets(
     root_path: str,
     stop_event: threading.Event | None = None,
@@ -2760,25 +2793,19 @@ def _scan_snapshot_targets(
     interrupted = False
 
     for current_root, dirs, filenames in os.walk(root_path):
-        if stop_event is not None and stop_event.is_set():
+        if _snapshot_stop_requested(stop_event):
             interrupted = True
             break
 
         dirs[:] = [d for d in dirs if d not in excluded_dirs]
-        for name in filenames:
-            if stop_event is not None and stop_event.is_set():
-                interrupted = True
-                break
-            full_path = os.path.join(current_root, name)
-            if storage.is_excluded_path(full_path):
-                continue
-            include, errs = _check_snapshot_file(full_path)
-            if errs:
-                errors.extend(errs)
-            if include:
-                files.append(full_path)
-
-        if interrupted:
+        if _scan_snapshot_files_in_directory(
+            current_root,
+            filenames,
+            files,
+            errors,
+            stop_event,
+        ):
+            interrupted = True
             break
 
     if interrupted:
@@ -2836,6 +2863,35 @@ def _process_snapshot_file(
     process_backup(file_path)
 
 
+def _record_snapshot_processing_failure(
+    root_path: str,
+    file_path: str,
+    exc: Exception,
+) -> str:
+    message = str(exc)
+    _publish_snapshot_error(root_path, f"Failed {file_path}: {message}")
+    logger.error(
+        f"Snapshot file processing failed for {file_path}: {message}",
+        exc_info=True,
+    )
+    return message
+
+
+def _is_snapshot_progress_tick(index: int, total_files: int) -> bool:
+    return index % SNAPSHOT_BATCH_SIZE == 0 or index == total_files
+
+
+def _estimate_snapshot_eta_seconds(
+    processed: int,
+    start_time: float,
+    total_files: int,
+) -> int | None:
+    elapsed = max(time.time() - start_time, 0.001)
+    rate = processed / elapsed if processed else 0
+    remaining = total_files - processed
+    return int(remaining / rate) if rate > 0 else None
+
+
 def _process_snapshot_files(
     db: Session,
     job: models.SnapshotJob,
@@ -2851,9 +2907,10 @@ def _process_snapshot_files(
     error_count = len(initial_errors)
     last_error = initial_errors[-1] if initial_errors else None
     cancelled = False
+    total_files = len(files)
 
     for idx, file_path in enumerate(files, start=1):
-        if stop_event is not None and stop_event.is_set():
+        if _snapshot_stop_requested(stop_event):
             cancelled = True
             last_error = "Snapshot cancelled by user"
             break
@@ -2861,20 +2918,17 @@ def _process_snapshot_files(
         try:
             _process_snapshot_file(file_path, root_path, storage_subdir)
             processed += 1
-        except Exception as e:
+        except Exception as exc:
             skipped += 1
             error_count += 1
-            last_error = str(e)
-            _publish_snapshot_error(root_path, f"Failed {file_path}: {e}")
-            logger.error(
-                f"Snapshot file processing failed for {file_path}: {e}", exc_info=True
+            last_error = _record_snapshot_processing_failure(
+                root_path,
+                file_path,
+                exc,
             )
 
-        if idx % SNAPSHOT_BATCH_SIZE == 0 or idx == len(files):
-            elapsed = max(time.time() - start, 0.001)
-            rate = processed / elapsed if processed else 0
-            remaining = len(files) - processed
-            eta = int(remaining / rate) if rate > 0 else None
+        if _is_snapshot_progress_tick(idx, total_files):
+            eta = _estimate_snapshot_eta_seconds(processed, start, total_files)
             crud.update_snapshot_job_progress(
                 db,
                 job,
@@ -2885,7 +2939,7 @@ def _process_snapshot_files(
             )
             _publish_snapshot_progress(
                 root_path,
-                total=len(files),
+                total=total_files,
                 processed=processed,
                 skipped=skipped,
                 error_count=error_count,

@@ -20,8 +20,7 @@
   let recoveryCopied = false;
   let recoveryCopyTimer;
   let isForgotMode = false;
-  let previousDocumentZoom = '';
-  let previousFontZoomScale = '';
+  let isResetMode = false;
 
   let setupPasswordInput;
   let setupConfirmPasswordInput;
@@ -47,12 +46,13 @@
   const resolveFocusMode = () => {
     if (showRecovery) return 'recovery';
     if (isSetupRequired) return 'setup';
+    if (isResetMode) return 'reset';
     if (isForgotMode) return 'forgot';
     return 'unlock';
   };
 
   const focusPrimaryInput = () => {
-    if (showRecovery) return;
+    if (showRecovery || isResetMode) return;
 
     const target = isSetupRequired
       ? setupPasswordInput
@@ -163,28 +163,44 @@
     completeResetCountdown(false);
   };
 
+  const clearResetCountdownSilently = () => {
+    if (resetCountdownResolver) {
+      completeResetCountdown(false);
+    } else {
+      clearResetCountdownInterval();
+      isResetCountdownActive = false;
+    }
+  };
+
+  const goToUnlockMode = () => {
+    clearResetCountdownSilently();
+    errorMsg = '';
+    password = '';
+    isForgotMode = false;
+    isResetMode = false;
+  };
+
+  const goToRecoveryMode = () => {
+    clearResetCountdownSilently();
+    errorMsg = '';
+    password = '';
+    isForgotMode = true;
+    isResetMode = false;
+  };
+
+  const goToResetMode = () => {
+    clearResetCountdownSilently();
+    errorMsg = '';
+    password = '';
+    isForgotMode = false;
+    isResetMode = true;
+  };
+
   onMount(() => {
-    // Keep the auth view spatially stable regardless of saved runtime zoom values.
-    previousDocumentZoom = document.documentElement.style.zoom || '';
-    previousFontZoomScale = document.documentElement.style.getPropertyValue('--locus-font-zoom-scale') || '';
-    document.documentElement.style.zoom = '1';
-    document.documentElement.style.setProperty('--locus-font-zoom-scale', '1');
     void focusForCurrentMode();
   });
 
   onDestroy(() => {
-    if (previousDocumentZoom) {
-      document.documentElement.style.zoom = previousDocumentZoom;
-    } else {
-      document.documentElement.style.removeProperty('zoom');
-    }
-
-    if (previousFontZoomScale) {
-      document.documentElement.style.setProperty('--locus-font-zoom-scale', previousFontZoomScale);
-    } else {
-      document.documentElement.style.removeProperty('--locus-font-zoom-scale');
-    }
-
     if (recoveryCopyTimer) {
       clearTimeout(recoveryCopyTimer);
       recoveryCopyTimer = null;
@@ -379,8 +395,10 @@
           Save your Recovery Key!
         {:else if isSetupRequired}
           Create a Master Password to encrypt your data.
+        {:else if isResetMode}
+          Factory reset permanently deletes all tracked data and snapshots.
         {:else if isForgotMode}
-          Forgot Password? Enter your Recovery Key or Factory Reset.
+          Enter your Recovery Key to unlock your data.
         {:else}
           Enter your Master Password to unlock your data.
         {/if}
@@ -396,7 +414,7 @@
           <div class="recovery-box">
             <code>{recoveryKey}</code>
           </div>
-          <button class="btn btn-outline-primary recovery-copy-btn" on:click={copyRecoveryKey}>
+          <button class="btn recovery-copy-btn" on:click={copyRecoveryKey}>
             <Fa icon={recoveryCopied ? faCheck : faCopy} />
             <span>{recoveryCopied ? 'Copied' : 'Copy'}</span>
           </button>
@@ -463,7 +481,7 @@
             bind:value={password}
             placeholder="Enter Recovery Key"
             on:keydown={(e) => e.key === 'Enter' && handleUnlock()}
-            disabled={isLoading || isResetCountdownActive}
+            disabled={isLoading}
           />
           <button
             type="button"
@@ -472,10 +490,19 @@
             title={showRecoveryPassword ? 'Hide recovery key' : 'Show recovery key'}
             on:mousedown|preventDefault
             on:click={() => togglePasswordVisibility('recovery')}
-            disabled={isLoading || isResetCountdownActive}
+            disabled={isLoading}
           >
             <Fa icon={showRecoveryPassword ? faEye : faEyeSlash} />
           </button>
+        </div>
+        {#if errorMsg}<div class="text-danger small mb-3">{errorMsg}</div>{/if}
+        <button class="btn btn-primary w-100 mb-2" on:click={handleUnlock} disabled={isLoading}>{isLoading ? 'Unlocking...' : 'Unlock with Recovery Key'}</button>
+        <button class="btn btn-outline-danger w-100 mb-2" on:click={goToResetMode} disabled={isLoading}>Go to Factory Reset</button>
+        <button class="btn btn-outline-secondary w-100" on:click={goToUnlockMode} disabled={isLoading}>Back to Login</button>
+
+      {:else if isResetMode}
+        <div class="alert alert-danger mb-3" style="font-size: 0.9rem;">
+          <strong>Warning:</strong> This will permanently delete all watched paths, snapshots, versions, and backups.
         </div>
         {#if errorMsg}<div class="text-danger small mb-3">{errorMsg}</div>{/if}
         {#if isResetCountdownActive}
@@ -502,11 +529,9 @@
             <button class="btn btn-outline-danger w-100" on:click={cancelResetCountdown}>Cancel Reset</button>
           </div>
         {/if}
-        <button class="btn btn-primary w-100 mb-2" on:click={handleUnlock} disabled={isLoading || isResetCountdownActive}>{isLoading ? 'Unlocking...' : 'Unlock with Recovery Key'}</button>
-        <button class="btn btn-outline-secondary w-100 mb-4" on:click={() => isForgotMode = false} disabled={isLoading || isResetCountdownActive}>Back to Login</button>
-        <hr />
-        <p class="text-muted small text-center mt-3">If you lost both, you must wipe all data.</p>
         <button class="btn btn-outline-danger w-100" on:click={handleReset} disabled={isLoading || isResetCountdownActive}>{isResetCountdownActive ? 'Safety Delay Running...' : 'Factory Reset Locus'}</button>
+        <button class="btn btn-outline-secondary w-100 mt-2" on:click={goToRecoveryMode} disabled={isLoading}>Back to Recovery</button>
+        <button class="btn btn-outline-secondary w-100 mt-2" on:click={goToUnlockMode} disabled={isLoading}>Back to Login</button>
       
       {:else}
         <div class="password-input-group mb-3">
@@ -533,7 +558,7 @@
         </div>
         {#if errorMsg}<div class="text-danger small mb-3">{errorMsg}</div>{/if}
         <button class="btn btn-primary w-100 mb-3" on:click={handleUnlock} disabled={isLoading}>{isLoading ? 'Unlocking...' : 'Unlock'}</button>
-        <button class="btn btn-link w-100 text-muted" on:click={() => { isForgotMode = true; errorMsg = ''; password = ''; }} disabled={isLoading} style="font-size: 0.9rem;">Forgot password?</button>
+        <button class="btn btn-link w-100 text-muted" on:click={goToRecoveryMode} disabled={isLoading} style="font-size: 0.9rem;">Forgot password?</button>
       {/if}
     </div>
   </div>
@@ -541,26 +566,31 @@
 
 <style>
   .lock-screen-wrapper {
+    --lock-top-offset: 0px;
     position: fixed;
-    top: 0;
+    top: var(--lock-top-offset);
     left: 0;
     right: 0;
     bottom: 0;
     background: var(--app-bg);
     display: flex;
     align-items: center;
+    align-items: safe center;
     justify-content: center;
     z-index: 980;
     padding: 18px;
+    overflow-y: auto;
   }
 
   :global(body.has-custom-titlebar) .lock-screen-wrapper {
-    top: 40px;
+    --lock-top-offset: 40px;
+    top: var(--lock-top-offset);
     padding-top: 18px;
   }
 
   :global(body:not(.has-custom-titlebar)) .lock-screen-wrapper {
-    top: 0;
+    --lock-top-offset: 0px;
+    top: var(--lock-top-offset);
     padding-top: 18px;
   }
 
@@ -572,6 +602,10 @@
     width: 100%;
     max-width: 440px;
     border: 1px solid var(--border-subtle);
+    display: flex;
+    flex-direction: column;
+    max-height: calc(100dvh - var(--lock-top-offset) - 36px);
+    overflow: hidden;
   }
 
   :global(.theme-dark) .lock-card {
@@ -597,6 +631,11 @@
   .lock-header {
     text-align: center;
     margin-bottom: 24px;
+  }
+
+  .lock-body {
+    overflow-y: auto;
+    padding-right: 2px;
   }
 
   .lock-header h2 {
@@ -657,7 +696,7 @@
 
   .recovery-wrap {
     display: flex;
-    align-items: stretch;
+    align-items: center;
     gap: 10px;
   }
 
@@ -666,13 +705,28 @@
   }
 
   .recovery-copy-btn {
-    min-width: 92px;
-    border-radius: 10px;
+    min-width: 0;
+    height: 40px;
+    padding: 0 14px;
+    border-radius: 9px;
+    border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border-subtle));
+    background: color-mix(in srgb, var(--accent) 16%, var(--surface-elevated));
+    color: var(--accent-strong);
     display: inline-flex;
     align-items: center;
     justify-content: center;
     gap: 6px;
     font-weight: 600;
+    white-space: nowrap;
+  }
+
+  .recovery-copy-btn:hover {
+    background: color-mix(in srgb, var(--accent) 24%, var(--surface-elevated));
+    color: var(--accent-strong);
+  }
+
+  .recovery-copy-btn:focus-visible {
+    box-shadow: 0 0 0 0.2rem color-mix(in srgb, var(--accent) 30%, transparent);
   }
 
   .recovery-copy-toast {
@@ -696,8 +750,25 @@
     }
   }
 
+  @media (max-height: 760px) {
+    .lock-card {
+      padding: 22px;
+      max-height: calc(100dvh - var(--lock-top-offset) - 24px);
+    }
+
+    .lock-header {
+      margin-bottom: 16px;
+    }
+  }
+
   :global(.theme-dark) .recovery-box {
     background: var(--surface-soft);
+    color: var(--accent-strong);
+  }
+
+  :global(.theme-dark) .recovery-copy-btn {
+    background: color-mix(in srgb, var(--accent) 22%, var(--surface-elevated));
+    border-color: color-mix(in srgb, var(--accent) 50%, var(--border-subtle));
     color: var(--accent-strong);
   }
 

@@ -536,6 +536,15 @@ class FileMonitorService:
                 continue
             self._persist_event_batch(pending)
 
+    def _should_enqueue_rescan_path(self, db: Session, src_path: str) -> bool:
+        if storage.is_excluded_path(src_path):
+            return False
+        if src_path.endswith(IGNORED_SUFFIXES):
+            return False
+        if not storage.should_backup_file(src_path):
+            return False
+        return not crud.has_pending_backup_task(db, src_path)
+
     def _enqueue_directory_tree_for_backup(self, directory_path: str) -> None:
         if not os.path.isdir(directory_path):
             return
@@ -545,14 +554,9 @@ class FileMonitorService:
             for root, _dirs, files in os.walk(directory_path):
                 for filename in files:
                     src_path = os.path.join(root, filename)
-                    if storage.is_excluded_path(src_path):
+                    if not self._should_enqueue_rescan_path(db, src_path):
                         continue
-                    if src_path.endswith(IGNORED_SUFFIXES):
-                        continue
-                    if not storage.should_backup_file(src_path):
-                        continue
-                    if not crud.has_pending_backup_task(db, src_path):
-                        crud.enqueue_backup_task(db, src_path)
+                    crud.enqueue_backup_task(db, src_path)
         finally:
             db.close()
 

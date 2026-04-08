@@ -66,6 +66,7 @@ src-tauri/binaries/
 src-tauri/build/
 src-tauri/*.lock
 !src-tauri/Cargo.lock
+src-tauri/gen
 
 # PyInstaller / Build
 dist/
@@ -86,7 +87,6 @@ build/
 *.sublime-workspace
 *.sublime-project
 .agent.*
-microsoft.gpg
 
 # OS Files
 .DS_Store
@@ -113,3 +113,6 @@ src-tauri/pkgconfig-compat/
 tools/window-probe/target/
 ui/playwright.config.mjs
 ui/tests/e2e/
+
+# Markdown files
+Fixes.md
