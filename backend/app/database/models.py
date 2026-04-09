@@ -1,6 +1,8 @@
 import os as _os
+import sqlite3 as _sqlite3
 import sys as _sys
 from pathlib import Path as _Path
+from typing import Any
 
 from sqlalchemy import (
     BigInteger,
@@ -69,10 +71,13 @@ engine = create_engine(
 
 
 @event.listens_for(engine, "connect")
-def _set_sqlite_pragmas(dbapi_connection, connection_record):
+def set_sqlite_pragmas(
+    dbapi_connection: _sqlite3.Connection,
+    connection_record: Any,
+) -> None:
     """Apply per-connection SQLite PRAGMAs for safer concurrency and integrity."""
     del connection_record
-    cursor = dbapi_connection.cursor()
+    cursor: _sqlite3.Cursor = dbapi_connection.cursor()
     try:
         cursor.execute("PRAGMA journal_mode=WAL")
         cursor.execute("PRAGMA synchronous=NORMAL")

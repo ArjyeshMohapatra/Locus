@@ -116,3 +116,7 @@ ui/tests/e2e/
 
 # Markdown files
 Fixes.md
+
+
+#Ignore vscode AI rules
+.github/instructions/codacy.instructions.md

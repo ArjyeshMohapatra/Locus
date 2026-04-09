@@ -16,7 +16,7 @@ def _reset_unlock_throttle_state() -> None:
 
 
 def test_auth_setup_rejects_short_password(client: TestClient) -> None:
-    password_field = "master_" + "password"
+    password_field = "master_" + "password"  # pragma: allowlist secret
     resp = client.post("/auth/setup", json={password_field: "short"})
     assert resp.status_code == 422
 
