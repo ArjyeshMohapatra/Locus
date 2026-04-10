@@ -1,6 +1,7 @@
 <svelte:options runes={false} />
 <script>
   import { onMount, onDestroy } from 'svelte';
+  import { fade } from 'svelte/transition';
   import {
     checkHealth,
     getAuthStatus,
@@ -711,119 +712,122 @@
 
   <main class="app-container">
     <div class="view-wrapper {(currentView === 'dashboard' || currentView === 'snapshots') ? 'view-wrapper-no-scrollbar' : ''}">
-      {#if currentView === 'settings'}
-        <SettingsPage />
-      {:else if currentView === 'watched'}
-          <header class="view-header">
-          <div>
-              <h1>Watched Folders</h1>
-              <p class="view-subtitle">Manage tracked folders and relink locations.</p>
-          </div>
-        </header>
-        <WatchedFolders />
-      {:else if currentView === 'activity'}
-          <header class="view-header">
-          <div>
-              <h1>Live Activity</h1>
-              <p class="view-subtitle">View recent file events and restore from history.</p>
-          </div>
-        </header>
-        <ActivityTimeline />
-      {:else if currentView === 'checkpoints'}
-        <CheckpointSessionsPage />
-      {:else if currentView === 'snapshots'}
-        <SnapshotHistoryPage />
-      {:else}
-          <header class="view-header dashboard-header">
-          <div>
-              <h1>Command Center</h1>
-              <p class="view-subtitle">Operational overview across monitoring, storage, and snapshots.</p>
-          </div>
-            <div class="dashboard-actions">
-              <div class="status-pill">
-              <span class="status-indicator {status === 'active' ? 'status-healthy' : 'status-error'}"></span>
-                <span class="status-label {status === 'active' ? 'status-label-ok' : 'status-label-bad'}">
-                  {status}
-              </span>
-            </div>
-              <button class="btn btn-danger btn-sm d-flex align-items-center lock-btn" on:click={executeLockApp} title="Lock Application">
-                <Fa icon={faLock} class="me-2" />
-                <span>Lock Vault</span>
-            </button>
-          </div>
-        </header>
-
-          <section class="dashboard-section">
-            <div class="dashboard-section-head">
-              <h2>Core Metrics</h2>
-            </div>
-            <div class="metric-grid">
-              <article class="metric-tile metric-files">
-                <div class="metric-kicker">Tracked Files</div>
-                <div class="metric-value">{dashboardSummary.total_files.toLocaleString()}</div>
-                <div class="metric-icon"><Fa icon={faFolderOpen} /></div>
-              </article>
-
-              <article class="metric-tile metric-versions">
-                <div class="metric-kicker">Versions Preserved</div>
-                <div class="metric-value">{dashboardSummary.total_versions.toLocaleString()}</div>
-                <div class="metric-icon"><Fa icon={faClock} /></div>
-              </article>
-
-              <article class="metric-tile metric-storage">
-                <div class="metric-kicker">Storage Utilized</div>
-                <div class="metric-value">
-                  {(dashboardSummary.storage_bytes / (1024 * 1024)).toFixed(1)}
-                  <span class="metric-value-unit">MB</span>
+      {#key currentView}
+        <div class="view-pane" in:fade={{ duration: 150 }} out:fade={{ duration: 150 }}>
+          {#if currentView === 'settings'}
+            <SettingsPage />
+          {:else if currentView === 'watched'}
+            <header class="view-header">
+              <div>
+                <h1>Watched Folders</h1>
+                <p class="view-subtitle">Manage tracked folders and relink locations.</p>
+              </div>
+            </header>
+            <WatchedFolders />
+          {:else if currentView === 'activity'}
+            <header class="view-header">
+              <div>
+                <h1>Live Activity</h1>
+                <p class="view-subtitle">View recent file events and restore from history.</p>
+              </div>
+            </header>
+            <ActivityTimeline />
+          {:else if currentView === 'checkpoints'}
+            <CheckpointSessionsPage />
+          {:else if currentView === 'snapshots'}
+            <SnapshotHistoryPage />
+          {:else}
+            <header class="view-header dashboard-header">
+              <div>
+                <h1>Command Center</h1>
+                <p class="view-subtitle">Operational overview across monitoring, storage, and snapshots.</p>
+              </div>
+              <div class="dashboard-actions">
+                <div class="status-pill">
+                  <span class="status-indicator {status === 'active' ? 'status-healthy' : 'status-error'}"></span>
+                  <span class="status-label {status === 'active' ? 'status-label-ok' : 'status-label-bad'}">
+                    {status}
+                  </span>
                 </div>
-                <div class="metric-icon"><Fa icon={faGear} /></div>
-              </article>
-            </div>
-          </section>
+                <button class="btn btn-danger btn-sm d-flex align-items-center lock-btn" on:click={executeLockApp} title="Lock Application">
+                  <Fa icon={faLock} class="me-2" />
+                  <span>Lock Vault</span>
+                </button>
+              </div>
+            </header>
 
-          <section class="dashboard-section">
-            <div class="dashboard-section-head">
-              <h2 class="d-flex align-items-center gap-2">
-                <Fa icon={faServer} /> Runtime Health
-              </h2>
-              <span class="section-note">Live resource usage from active processes.</span>
-            </div>
-            <div class="metric-grid">
-              <article class="metric-tile metric-ram">
-                <div class="metric-kicker">Combined RAM Usage</div>
-                <div class="metric-value">
-                  {(dashboardSummary.ram_usage_bytes / (1024 * 1024)).toFixed(1)}
-                  <span class="metric-value-unit">MB</span>
-                </div>
-                <div class="metric-icon"><Fa icon={faMemory} /></div>
-              </article>
+            <section class="dashboard-section">
+              <div class="dashboard-section-head">
+                <h2>Core Metrics</h2>
+              </div>
+              <div class="metric-grid">
+                <article class="metric-tile metric-files">
+                  <div class="metric-kicker">Tracked Files</div>
+                  <div class="metric-value">{dashboardSummary.total_files.toLocaleString()}</div>
+                  <div class="metric-icon"><Fa icon={faFolderOpen} /></div>
+                </article>
 
-              <article class="metric-tile metric-db">
-                <div class="metric-kicker">Database Size</div>
-                <div class="metric-value">
-                  {(dashboardSummary.db_size_bytes / 1024).toFixed(1)}
-                  <span class="metric-value-unit">KB</span>
-                </div>
-                <div class="metric-icon"><Fa icon={faDatabase} /></div>
-              </article>
+                <article class="metric-tile metric-versions">
+                  <div class="metric-kicker">Versions Preserved</div>
+                  <div class="metric-value">{dashboardSummary.total_versions.toLocaleString()}</div>
+                  <div class="metric-icon"><Fa icon={faClock} /></div>
+                </article>
 
-              <article class="metric-tile metric-snapshots">
-                <div class="metric-kicker">Snapshot Activity</div>
-                <div class="metric-value">{dashboardSummary.total_snapshots.toLocaleString()}</div>
-                <div class="metric-meta">
-                  <span class="metric-meta-label">Last captured</span>
-                  {#if dashboardSummary.last_snapshot_time}
-                    <span>{formatTimestamp(dashboardSummary.last_snapshot_time)}</span>
-                  {:else}
-                    <span class="text-muted">Awaiting activity...</span>
-                  {/if}
-                </div>
-                <div class="metric-icon"><Fa icon={faHeartPulse} /></div>
-              </article>
-            </div>
-          </section>
+                <article class="metric-tile metric-storage">
+                  <div class="metric-kicker">Storage Utilized</div>
+                  <div class="metric-value">
+                    {(dashboardSummary.storage_bytes / (1024 * 1024)).toFixed(1)}
+                    <span class="metric-value-unit">MB</span>
+                  </div>
+                  <div class="metric-icon"><Fa icon={faGear} /></div>
+                </article>
+              </div>
+            </section>
 
-      {/if}
+            <section class="dashboard-section">
+              <div class="dashboard-section-head">
+                <h2 class="d-flex align-items-center gap-2">
+                  <Fa icon={faServer} /> Runtime Health
+                </h2>
+                <span class="section-note">Live resource usage from active processes.</span>
+              </div>
+              <div class="metric-grid">
+                <article class="metric-tile metric-ram">
+                  <div class="metric-kicker">Combined RAM Usage</div>
+                  <div class="metric-value">
+                    {(dashboardSummary.ram_usage_bytes / (1024 * 1024)).toFixed(1)}
+                    <span class="metric-value-unit">MB</span>
+                  </div>
+                  <div class="metric-icon"><Fa icon={faMemory} /></div>
+                </article>
+
+                <article class="metric-tile metric-db">
+                  <div class="metric-kicker">Database Size</div>
+                  <div class="metric-value">
+                    {(dashboardSummary.db_size_bytes / 1024).toFixed(1)}
+                    <span class="metric-value-unit">KB</span>
+                  </div>
+                  <div class="metric-icon"><Fa icon={faDatabase} /></div>
+                </article>
+
+                <article class="metric-tile metric-snapshots">
+                  <div class="metric-kicker">Snapshot Activity</div>
+                  <div class="metric-value">{dashboardSummary.total_snapshots.toLocaleString()}</div>
+                  <div class="metric-meta">
+                    <span class="metric-meta-label">Last captured</span>
+                    {#if dashboardSummary.last_snapshot_time}
+                      <span>{formatTimestamp(dashboardSummary.last_snapshot_time)}</span>
+                    {:else}
+                      <span class="text-muted">Awaiting activity...</span>
+                    {/if}
+                  </div>
+                  <div class="metric-icon"><Fa icon={faHeartPulse} /></div>
+                </article>
+              </div>
+            </section>
+          {/if}
+        </div>
+      {/key}
     </div>
   </main>
 </div>
@@ -909,6 +913,27 @@
       opacity: 0;
       display: none;
     }
+  }
+
+  .view-wrapper {
+    flex: 1;
+    display: grid;
+    grid-template-columns: 100%;
+    grid-template-rows: 1fr;
+    min-width: 0;
+    min-height: 0;
+    position: relative;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 24px 30px 40px;
+  }
+
+  .view-pane {
+    grid-column: 1;
+    grid-row: 1;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
   }
 
   .view-header {

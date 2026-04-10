@@ -1,12 +1,10 @@
-import json
 from pathlib import Path
-
+import json
 import pytest
 
-from app import event_stream
-from app import main as main_app
-from app import storage
+from app import storage, event_stream
 from app.database import crud
+from app import main as main_app
 
 pytestmark = pytest.mark.slow
 
@@ -41,6 +39,31 @@ def test_rejects_control_chars_in_user_input(client):
     }
     resp2 = client.post("/activity/log", json=bad_activity)
     assert resp2.status_code == 422
+
+
+def test_tracking_exclusions_preserve_order_and_negation(client):
+    original = client.get("/settings/exclusions")
+    assert original.status_code == 200
+    previous = original.json().get("custom_exclusions", [])
+
+    exclusions = [
+        "logs/*",
+        "!logs/keep.log",
+        "logs/private/*",
+        "!logs/private/allowed.log",
+        "@project=/tmp/demo::node_modules/",
+    ]
+
+    try:
+        updated = client.post("/settings/exclusions", json={"exclusions": exclusions})
+        assert updated.status_code == 200
+        assert updated.json()["custom_exclusions"] == exclusions
+
+        fetched = client.get("/settings/exclusions")
+        assert fetched.status_code == 200
+        assert fetched.json()["custom_exclusions"] == exclusions
+    finally:
+        client.post("/settings/exclusions", json={"exclusions": previous})
 
 
 def test_watched_paths_roundtrip(client, tmp_path: Path):
@@ -175,6 +198,38 @@ def test_remove_watched_path_purges_tracked_data(client, db_session, tmp_path: P
 
     watched_after = client.get("/files/watched").json()
     assert all(item["id"] != watched_id for item in watched_after)
+
+
+def test_remove_watched_path_prunes_project_exclusions(client, tmp_path: Path):
+    watched = tmp_path / "watched"
+    watched.mkdir()
+    other = tmp_path / "other"
+    other.mkdir()
+
+    add_resp = client.post("/files/watched", json={"path": str(watched)})
+    assert add_resp.status_code == 200
+    watched_id = add_resp.json()["id"]
+
+    scoped_for_watched = f"@project={watched.as_posix()}::node_modules/"
+    scoped_for_other = f"@project={other.as_posix()}::dist/"
+    unscoped = "build/"
+
+    set_resp = client.post(
+        "/settings/exclusions",
+        json={"exclusions": [scoped_for_watched, scoped_for_other, unscoped]},
+    )
+    assert set_resp.status_code == 200
+
+    remove_resp = client.delete(f"/files/watched/{watched_id}")
+    assert remove_resp.status_code == 200
+
+    exclusions_after = client.get("/settings/exclusions")
+    assert exclusions_after.status_code == 200
+    custom_exclusions = exclusions_after.json().get("custom_exclusions", [])
+
+    assert scoped_for_watched not in custom_exclusions
+    assert scoped_for_other in custom_exclusions
+    assert unscoped in custom_exclusions
 
 
 def test_stop_snapshot_scan_returns_zero_when_no_scan_running(client):

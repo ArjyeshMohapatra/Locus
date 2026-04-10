@@ -111,3 +111,75 @@ def test_is_excluded_path_for_binary_suffixes():
     assert storage.is_excluded_path(r"C:\\work\\program.exe") is True
     assert storage.is_excluded_path(r"C:\\work\\module.obj") is True
     assert storage.is_excluded_path(r"C:\\work\\notes.txt") is False
+
+
+def test_custom_exclusions_support_path_and_wildcard_entries():
+    previous = storage.get_custom_exclusions()
+    try:
+        storage.set_custom_exclusions(
+            [
+                "build/",
+                "logs/*.log",
+                "backend/locus.db-wal",
+            ]
+        )
+
+        assert storage.is_excluded_path("/tmp/project/build/output.bin") is True
+        assert storage.is_excluded_path("/tmp/project/logs/error.log") is True
+        assert storage.is_excluded_path("/tmp/project/backend/locus.db-wal") is True
+        assert storage.is_excluded_path("/tmp/project/src/main.py") is False
+    finally:
+        storage.set_custom_exclusions(previous)
+
+
+def test_custom_exclusions_support_negation_and_last_match_wins():
+    previous = storage.get_custom_exclusions()
+    try:
+        storage.set_custom_exclusions(
+            [
+                "logs/*",
+                "!logs/keep.log",
+                "logs/private/*",
+                "!logs/private/allowed.log",
+                "!target/release/app",
+            ]
+        )
+
+        assert storage.is_excluded_path("/tmp/project/logs/error.log") is True
+        assert storage.is_excluded_path("/tmp/project/logs/keep.log") is False
+        assert storage.is_excluded_path("/tmp/project/logs/private/secret.log") is True
+        assert (
+            storage.is_excluded_path("/tmp/project/logs/private/allowed.log") is False
+        )
+        assert storage.is_excluded_path("/tmp/project/target/release/app") is False
+    finally:
+        storage.set_custom_exclusions(previous)
+
+
+def test_custom_exclusions_support_project_scoped_rules():
+    previous = storage.get_custom_exclusions()
+    try:
+        storage.set_custom_exclusions(
+            [
+                "@project=/tmp/project-a::scoped-cache/",
+                "@project=/tmp/project-b::scoped-build/",
+                "!@project=/tmp/project-a::scoped-cache/keep/",
+            ]
+        )
+
+        assert (
+            storage.is_excluded_path("/tmp/project-a/scoped-cache/pkg/index.js") is True
+        )
+        assert (
+            storage.is_excluded_path("/tmp/project-a/scoped-cache/keep/file.txt")
+            is False
+        )
+        assert (
+            storage.is_excluded_path("/tmp/project-b/scoped-cache/pkg/index.js")
+            is False
+        )
+        assert (
+            storage.is_excluded_path("/tmp/project-b/scoped-build/output.log") is True
+        )
+    finally:
+        storage.set_custom_exclusions(previous)

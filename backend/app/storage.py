@@ -1,6 +1,7 @@
 # pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false
 
 import ctypes
+import fnmatch
 import gzip
 import hashlib
 import json
@@ -91,6 +92,8 @@ DEFAULT_EXCLUDED_DIRS = {
 }
 
 CUSTOM_EXCLUDED_DIRS: set[str] = set()
+CUSTOM_EXCLUSIONS_ORDERED: list[str] = []
+CUSTOM_EXCLUSION_RULES: list[tuple[str, bool, Optional[str]]] = []
 
 # Default file suffixes to exclude from tracking/snapshots.
 # Includes Java bytecode and common C/C++ compiled binaries/artifacts.
@@ -112,19 +115,172 @@ DEFAULT_EXCLUDED_FILE_SUFFIXES = {
 
 def set_custom_exclusions(exclusions: list[str]) -> None:
     cleaned: set[str] = set()
+    ordered: list[str] = []
+    rules: list[tuple[str, bool, Optional[str]]] = []
+
     for item in exclusions:
         if not item:
             continue
         value = str(item).strip()
         if not value:
             continue
+
+        ordered.append(value)
         cleaned.add(value)
+
+        parsed_rule = _parse_custom_exclusion_rule(value)
+        if parsed_rule is not None:
+            rules.append(parsed_rule)
+
+    CUSTOM_EXCLUSIONS_ORDERED.clear()
+    CUSTOM_EXCLUSIONS_ORDERED.extend(ordered)
+
     CUSTOM_EXCLUDED_DIRS.clear()
     CUSTOM_EXCLUDED_DIRS.update(cleaned)
+
+    CUSTOM_EXCLUSION_RULES.clear()
+    CUSTOM_EXCLUSION_RULES.extend(rules)
+
+
+def get_custom_exclusions() -> list[str]:
+    return list(CUSTOM_EXCLUSIONS_ORDERED)
+
+
+def remove_custom_exclusions_for_project(project_path: str) -> list[str]:
+    normalized_scope = _normalize_custom_exclusion_scope(project_path)
+    if not normalized_scope:
+        return get_custom_exclusions()
+
+    normalized_scope = os.path.normcase(normalized_scope)
+    remaining: list[str] = []
+
+    for entry in CUSTOM_EXCLUSIONS_ORDERED:
+        parsed_rule = _parse_custom_exclusion_rule(entry)
+        if parsed_rule is None:
+            remaining.append(entry)
+            continue
+
+        _, _, project_scope = parsed_rule
+        if project_scope and project_scope == normalized_scope:
+            continue
+        remaining.append(entry)
+
+    set_custom_exclusions(remaining)
+    return get_custom_exclusions()
 
 
 def get_all_excluded_dirs() -> set[str]:
     return set(DEFAULT_EXCLUDED_DIRS).union(CUSTOM_EXCLUDED_DIRS)
+
+
+def _normalize_custom_exclusion_scope(raw_scope: str) -> str:
+    normalized_scope = str(raw_scope or "").strip().replace("\\", "/")
+    if normalized_scope.startswith("./"):
+        normalized_scope = normalized_scope[2:]
+    return normalized_scope.rstrip("/")
+
+
+def _strip_custom_rule_control_prefix(candidate: str) -> tuple[str, bool] | None:
+    if not candidate:
+        return None
+
+    if candidate.startswith("\\#") or candidate.startswith("\\!"):
+        return candidate[1:], True
+
+    if candidate.startswith("#"):
+        return None
+
+    if candidate.startswith("!"):
+        return candidate[1:].strip(), False
+
+    return candidate, True
+
+
+def _extract_project_scoped_candidate(
+    normalized_candidate: str,
+) -> tuple[str, Optional[str]]:
+    scoped_prefix = "@project="
+    scoped_separator = "::"
+
+    if not normalized_candidate.startswith(scoped_prefix):
+        return normalized_candidate, None
+
+    scoped_payload = normalized_candidate[len(scoped_prefix) :]
+    separator_index = scoped_payload.find(scoped_separator)
+    if separator_index <= 0:
+        return normalized_candidate, None
+
+    raw_scope = scoped_payload[:separator_index]
+    scoped_rule = scoped_payload[separator_index + len(scoped_separator) :]
+    parsed_scope = _normalize_custom_exclusion_scope(raw_scope)
+    project_scope = os.path.normcase(parsed_scope) if parsed_scope else None
+    return scoped_rule.strip(), project_scope
+
+
+def _normalize_custom_rule_candidate(candidate: str) -> str:
+    normalized_candidate = candidate.replace("\\", "/").strip()
+    if normalized_candidate.startswith("./"):
+        normalized_candidate = normalized_candidate[2:]
+    return normalized_candidate.rstrip("/")
+
+
+def _parse_custom_exclusion_rule(
+    raw_rule: str,
+) -> tuple[str, bool, Optional[str]] | None:
+    candidate = str(raw_rule or "").strip()
+    if not candidate:
+        return None
+
+    control_prefix = _strip_custom_rule_control_prefix(candidate)
+    if control_prefix is None:
+        return None
+
+    candidate, is_exclusion = control_prefix
+
+    normalized_candidate = _normalize_custom_rule_candidate(candidate)
+    normalized_candidate, project_scope = _extract_project_scoped_candidate(
+        normalized_candidate
+    )
+    normalized_candidate = _normalize_custom_rule_candidate(normalized_candidate)
+
+    if not normalized_candidate:
+        return None
+
+    return normalized_candidate, is_exclusion, project_scope
+
+
+def _is_path_in_project_scope(normalized_path: str, project_scope: str) -> bool:
+    if normalized_path == project_scope:
+        return True
+    return normalized_path.startswith(f"{project_scope}/")
+
+
+def _project_relative_path(normalized_path: str, project_scope: str) -> Path:
+    if normalized_path == project_scope:
+        return Path(".")
+    relative = normalized_path[len(project_scope) :].lstrip("/")
+    return Path(relative or ".")
+
+
+def _evaluate_custom_exclusion_rules(path_obj: Path) -> Optional[bool]:
+    path_as_posix = path_obj.as_posix().strip().replace("\\", "/")
+    normalized_path = os.path.normcase(path_as_posix)
+
+    decision: Optional[bool] = None
+    for rule, is_exclusion, project_scope in CUSTOM_EXCLUSION_RULES:
+        if project_scope:
+            if not _is_path_in_project_scope(normalized_path, project_scope):
+                continue
+            relative_path_obj = _project_relative_path(normalized_path, project_scope)
+            if _matches_custom_exclusion(
+                relative_path_obj, rule
+            ) or _matches_custom_exclusion(path_obj, rule):
+                decision = is_exclusion
+            continue
+
+        if _matches_custom_exclusion(path_obj, rule):
+            decision = is_exclusion
+    return decision
 
 
 def is_excluded_path(path: str) -> bool:
@@ -135,15 +291,58 @@ def is_excluded_path(path: str) -> bool:
     except Exception:
         return False
 
+    excluded_by_default = False
+
     suffix = path_obj.suffix.lower()
     if suffix and suffix in DEFAULT_EXCLUDED_FILE_SUFFIXES:
+        excluded_by_default = True
+
+    for part in parts:
+        if part in DEFAULT_EXCLUDED_DIRS:
+            excluded_by_default = True
+            break
+
+    custom_decision = _evaluate_custom_exclusion_rules(path_obj)
+    if custom_decision is not None:
+        return custom_decision
+
+    return excluded_by_default
+
+
+def _matches_custom_exclusion(path_obj: Path, exclusion: str) -> bool:
+    candidate = str(exclusion or "").strip()
+    if not candidate:
+        return False
+
+    normalized_candidate = candidate.replace("\\", "/").strip()
+    normalized_candidate = normalized_candidate.rstrip("/")
+    if not normalized_candidate:
+        return False
+
+    path_as_posix = path_obj.as_posix().strip()
+    path_as_posix = path_as_posix.replace("\\", "/")
+    normalized_path = os.path.normcase(path_as_posix)
+    basename = os.path.normcase(path_obj.name)
+    normalized_rule = os.path.normcase(normalized_candidate)
+
+    # Match filename-level exclusions such as '*.log' or 'Thumbs.db'.
+    if fnmatch.fnmatch(basename, normalized_rule):
         return True
 
-    excluded = get_all_excluded_dirs()
-    for part in parts:
-        if part in excluded:
-            return True
-    return False
+    has_path_sep = "/" in normalized_candidate
+    has_wildcards = any(token in normalized_candidate for token in "*?[")
+
+    if not has_path_sep and not has_wildcards:
+        return any(os.path.normcase(part) == normalized_rule for part in path_obj.parts)
+
+    if fnmatch.fnmatch(normalized_path, normalized_rule):
+        return True
+
+    if fnmatch.fnmatch(normalized_path, f"*/{normalized_rule}"):
+        return True
+
+    enclosed = f"/{normalized_rule}/"
+    return enclosed in f"/{normalized_path}/"
 
 
 def init_storage():

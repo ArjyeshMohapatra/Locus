@@ -18,40 +18,174 @@
   let paths = [];
   let newPathInput = "";
   let isTauriAvailable = false;
+  let ignorePromptInput = null;
+  let ignorePromptVisible = false;
+  let ignorePromptProjectPath = '';
+  let ignorePromptProjectName = '';
+  let ignorePromptFileName = '';
+  let ignorePromptEntries = [];
+  let ignorePromptError = '';
+  let ignorePromptResolver = null;
+
+  const PROJECT_SCOPE_PREFIX = '@project=';
+  const PROJECT_SCOPE_SEPARATOR = '::';
 
   const detectTauriRuntime = () => (
     typeof window !== 'undefined' && !!(window.__TAURI__ || window.__TAURI_INTERNALS__ || window.__TAURI_IPC__)
   );
 
-  const parseExclusionInput = (value) => Array.from(
-    new Set(
-      String(value || '')
-        .split(/[\n,;\t]+/)
-        .map((entry) => entry.trim())
-        .filter(Boolean)
-    )
-  );
+  const parseIgnoreFileContent = (value) => {
+    const entries = [];
 
-  async function promptTrackingExclusionsBeforeAdd(pathToAdd) {
-    const entered = await askForText(
-      `Before tracking starts, you can add exclusions for this folder.\n\nPath: "${pathToAdd}"\n\nEnter folder/file names to ignore (comma or new-line separated), or leave empty to continue.`,
-      'Optional Tracking Exclusions',
-      {
-        type: 'question',
-        okLabel: 'Continue',
-        cancelLabel: 'Cancel',
-        inputLabel: 'Exclude names (optional)',
-        placeholder: '.gitignore, node_modules, dist',
-        maxLength: 1200
+    for (const rawLine of String(value || '').split(/\r?\n/)) {
+      let line = rawLine.trim();
+      if (!line) continue;
+
+      if (line.startsWith('\\#') || line.startsWith('\\!')) {
+        line = line.slice(1);
+      } else if (line.startsWith('#')) {
+        continue;
       }
-    );
 
-    if (entered === null) {
-      return false;
+      line = line.replace(/[\\/]+$/, '').trim();
+      if (!line) continue;
+
+      for (const token of line.split(/[\t,;]+/)) {
+        const cleaned = token.trim();
+        if (cleaned) {
+          entries.push(cleaned);
+        }
+      }
     }
 
-    const requestedExclusions = parseExclusionInput(entered);
-    if (requestedExclusions.length === 0) {
+    return Array.from(new Set(entries));
+  };
+
+  const normalizeProjectScope = (value) =>
+    String(value || '')
+      .trim()
+      .replace(/\\/g, '/')
+      .replace(/\/+$/, '');
+
+  const getProjectNameFromPath = (value) => {
+    const normalized = normalizeProjectScope(value);
+    if (!normalized) return 'project';
+    const segments = normalized.split('/').filter(Boolean);
+    return segments.at(-1) || normalized;
+  };
+
+  const buildScopedProjectRule = (projectPath, rawRule) => {
+    const scope = normalizeProjectScope(projectPath);
+    const value = String(rawRule || '').trim();
+    if (!scope || !value) {
+      return value;
+    }
+
+    if (value.startsWith('!')) {
+      const rule = value.slice(1).trim();
+      if (!rule) return '';
+      return `!${PROJECT_SCOPE_PREFIX}${scope}${PROJECT_SCOPE_SEPARATOR}${rule}`;
+    }
+
+    return `${PROJECT_SCOPE_PREFIX}${scope}${PROJECT_SCOPE_SEPARATOR}${value}`;
+  };
+
+  async function handleIgnorePromptFileChange(event) {
+    ignorePromptError = '';
+    ignorePromptEntries = [];
+    ignorePromptFileName = '';
+
+    const file = event?.target?.files?.[0];
+    if (!file) {
+      return;
+    }
+
+    ignorePromptFileName = String(file.name || '').trim() || 'ignore file';
+
+    try {
+      const text = await file.text();
+      ignorePromptEntries = parseIgnoreFileContent(text);
+      if (ignorePromptEntries.length === 0) {
+        ignorePromptError = 'The selected file has no usable rules.';
+      }
+    } catch (error) {
+      ignorePromptEntries = [];
+      ignorePromptError = `Failed to read ignore file: ${error?.message || error}`;
+    }
+  }
+
+  function resetIgnorePromptState() {
+    ignorePromptVisible = false;
+    ignorePromptProjectPath = '';
+    ignorePromptProjectName = '';
+    ignorePromptFileName = '';
+    ignorePromptEntries = [];
+    ignorePromptError = '';
+    if (ignorePromptInput) {
+      ignorePromptInput.value = '';
+    }
+  }
+
+  function resolveIgnorePrompt(result) {
+    const resolver = ignorePromptResolver;
+    ignorePromptResolver = null;
+    resetIgnorePromptState();
+    if (resolver) {
+      resolver(result);
+    }
+  }
+
+  function requestIgnorePromptForProject(projectPath) {
+    return new Promise((resolve) => {
+      ignorePromptResolver = resolve;
+      ignorePromptVisible = true;
+      ignorePromptProjectPath = String(projectPath || '').trim();
+      ignorePromptProjectName = getProjectNameFromPath(ignorePromptProjectPath);
+      ignorePromptFileName = '';
+      ignorePromptEntries = [];
+      ignorePromptError = '';
+      if (ignorePromptInput) {
+        ignorePromptInput.value = '';
+      }
+    });
+  }
+
+  function handleIgnorePromptSkip() {
+    resolveIgnorePrompt({ action: 'skip' });
+  }
+
+  function handleIgnorePromptCancel() {
+    resolveIgnorePrompt({ action: 'cancel' });
+  }
+
+  function handleIgnorePromptApply() {
+    if (!ignorePromptFileName) {
+      ignorePromptError = 'Please upload a .gitignore, .gignore, or .txt file first.';
+      return;
+    }
+
+    if (ignorePromptEntries.length === 0) {
+      ignorePromptError = 'The selected file has no usable rules.';
+      return;
+    }
+
+    resolveIgnorePrompt({
+      action: 'apply',
+      entries: [...ignorePromptEntries],
+      fileName: ignorePromptFileName
+    });
+  }
+
+  async function applyUploadedIgnoreEntries(projectPath, rawEntries, fileName) {
+    if (!Array.isArray(rawEntries) || rawEntries.length === 0) {
+      return true;
+    }
+
+    const scopedEntries = rawEntries
+      .map((entry) => buildScopedProjectRule(projectPath, entry))
+      .filter(Boolean);
+
+    if (scopedEntries.length === 0) {
       return true;
     }
 
@@ -63,18 +197,20 @@
             .filter(Boolean)
         : [];
 
-      const merged = Array.from(new Set([...existing, ...requestedExclusions]));
+      const merged = Array.from(new Set([...existing, ...scopedEntries]));
       await setTrackingExclusions(merged);
+
+      const projectName = getProjectNameFromPath(projectPath);
       await showMessage(
-        `Saved ${requestedExclusions.length} new exclusion${requestedExclusions.length === 1 ? '' : 's'}.`,
-        'Exclusions Updated',
+        `Loaded ${scopedEntries.length} rule${scopedEntries.length === 1 ? '' : 's'} for project "${projectName}" from "${fileName}".`,
+        'Ignore File Applied',
         'info'
       );
       return true;
     } catch (e) {
       const proceed = await askQuestion(
-        `Could not save exclusions: ${e?.message || e}\n\nProceed with folder tracking anyway?`,
-        'Exclusions Not Saved',
+        `Could not apply ignore-file exclusions: ${e?.message || e}\n\nProceed with folder tracking anyway?`,
+        'Ignore File Error',
         {
           type: 'warning',
           okLabel: 'Proceed Anyway',
@@ -91,9 +227,20 @@
       return false;
     }
 
-    const shouldContinue = await promptTrackingExclusionsBeforeAdd(normalizedPath);
-    if (!shouldContinue) {
+    const promptResult = await requestIgnorePromptForProject(normalizedPath);
+    if (!promptResult || promptResult.action === 'cancel') {
       return false;
+    }
+
+    if (promptResult.action === 'apply') {
+      const applied = await applyUploadedIgnoreEntries(
+        normalizedPath,
+        promptResult.entries,
+        promptResult.fileName
+      );
+      if (!applied) {
+        return false;
+      }
     }
 
     try {
@@ -286,6 +433,7 @@
           <Fa icon={faFolderPlus} class="me-1" aria-hidden="true"/>Choose Folder
         </button>
       {/if}
+
       <div class="input-group">
         <input
           type="text"
@@ -298,6 +446,49 @@
           Add
         </button>
       </div>
+
+      {#if ignorePromptVisible}
+        <div class="settings-note border rounded-3 p-3">
+          <div class="fw-semibold mb-1">Project Ignore File</div>
+          <div class="small text-muted mb-2">
+            Upload a .gitignore, .gignore, or .txt file for <strong>{ignorePromptProjectName}</strong> before adding this watched folder.
+          </div>
+          <div class="input-group mb-2">
+            <input
+              type="file"
+              class="form-control"
+              accept=".gitignore,.gignore,.txt,text/plain"
+              bind:this={ignorePromptInput}
+              on:change={handleIgnorePromptFileChange}
+            />
+          </div>
+
+          {#if ignorePromptFileName}
+            <div class="form-text mb-2">
+              Selected: {ignorePromptFileName}
+              {#if ignorePromptEntries.length > 0}
+                ({ignorePromptEntries.length} rule{ignorePromptEntries.length === 1 ? '' : 's'} parsed)
+              {/if}
+            </div>
+          {/if}
+
+          {#if ignorePromptError}
+            <div class="small text-danger mb-2">{ignorePromptError}</div>
+          {/if}
+
+          <div class="d-flex gap-2 justify-content-end">
+            <button class="btn btn-outline-secondary" type="button" on:click={handleIgnorePromptSkip}>
+              Skip File
+            </button>
+            <button class="btn btn-outline-danger" type="button" on:click={handleIgnorePromptCancel}>
+              Cancel Add
+            </button>
+            <button class="btn btn-primary" type="button" on:click={handleIgnorePromptApply}>
+              Apply File And Continue
+            </button>
+          </div>
+        </div>
+      {/if}
     </div>
   </div>
 </div>

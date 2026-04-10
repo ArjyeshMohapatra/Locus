@@ -36,7 +36,7 @@ locus.db
 locus_test.db
 backend/locus.db
 backend/locus.db-shm
-backend/locus.db-wal
+
 
 # Locus Data & Snapshots
 .locus_storage/

@@ -95,6 +95,53 @@ def test_auth_reset_allows_without_passphrase_when_vault_locked(
     assert response_payload.get("success") is True
 
 
+def test_auth_reset_clears_runtime_tracking_exclusions(
+    client: TestClient,
+    monkeypatch: MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    def _valid_reset_challenge(_nonce: str) -> tuple[bool, str]:
+        return True, "ok"
+
+    monkeypatch.setattr(main_app.snapshot_service, "is_unlocked", lambda: False)
+    monkeypatch.setattr(
+        snapshot_module, "SNAPSHOT_IMAGE_ROOT", tmp_path / ".snapshot_images"
+    )
+    monkeypatch.setattr(main_app, "_validate_reset_challenge", _valid_reset_challenge)
+
+    seed_exclusions = ["@project=/home/armo/LOCUS::node_modules/"]
+    main_app.storage.set_custom_exclusions(seed_exclusions)
+    seeded = client.get("/settings/exclusions")
+    assert seeded.status_code == 200
+    assert seeded.json().get("custom_exclusions") == seed_exclusions
+
+    request_resp = client.post(
+        "/auth/reset/request",
+        headers={"X-Locus-Reset-Intent": "confirm"},
+    )
+    assert request_resp.status_code == 200
+    request_payload_raw = request_resp.json()
+    assert isinstance(request_payload_raw, dict)
+    request_payload = cast(dict[str, object], request_payload_raw)
+    reset_nonce_obj = request_payload.get("reset_nonce")
+    assert isinstance(reset_nonce_obj, str) and reset_nonce_obj
+
+    reset_resp = client.post(
+        "/auth/reset",
+        headers={"X-Locus-Reset-Intent": "confirm"},
+        json={
+            "confirmation": "DELETE MY LOCUS DATA COMPLETELY",
+            "reset_nonce": reset_nonce_obj,
+            "final_confirmed": True,
+        },
+    )
+    assert reset_resp.status_code == 200
+
+    cleared = client.get("/settings/exclusions")
+    assert cleared.status_code == 200
+    assert cleared.json().get("custom_exclusions") == []
+
+
 def test_auth_reset_rejects_invalid_or_expired_challenge(
     client: TestClient,
     monkeypatch: MonkeyPatch,

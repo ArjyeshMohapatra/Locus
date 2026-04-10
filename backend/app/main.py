@@ -2643,6 +2643,12 @@ def remove_watched_path(path_id: int, db: DbSession):
         )
         if not result:
             raise HTTPException(status_code=404, detail=WATCHED_PATH_NOT_FOUND_DETAIL)
+
+        remaining_exclusions = storage.remove_custom_exclusions_for_project(
+            watched_path
+        )
+        crud.set_setting(db, "tracking_exclusions", json.dumps(remaining_exclusions))
+
         monitor_service.sync_watches()
         return result
     except HTTPException:
@@ -3569,7 +3575,7 @@ def set_security_settings(payload: AdminProtectionToggle, db: DbSession):
 def get_tracking_exclusions():
     return {
         "excluded_directories": sorted(storage.DEFAULT_EXCLUDED_DIRS),
-        "custom_exclusions": sorted(storage.CUSTOM_EXCLUDED_DIRS),
+        "custom_exclusions": storage.get_custom_exclusions(),
     }
 
 
@@ -3578,7 +3584,7 @@ def set_tracking_exclusions(payload: TrackingExclusions, db: DbSession):
     storage.set_custom_exclusions(payload.exclusions)
     crud.set_setting(db, "tracking_exclusions", json.dumps(payload.exclusions))
     return {
-        "custom_exclusions": sorted(storage.CUSTOM_EXCLUDED_DIRS),
+        "custom_exclusions": storage.get_custom_exclusions(),
     }
 
 
@@ -4020,6 +4026,7 @@ def auth_reset_factory(
 
         # 3. Only lock AFTER the DB wipe succeeds, so we never strand the user.
         snapshot_service.lock()
+        storage.set_custom_exclusions([])
         _set_setup_required_state(True)
         _clear_auth_sessions()
         _clear_reset_challenges()

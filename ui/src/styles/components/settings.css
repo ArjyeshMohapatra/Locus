@@ -145,6 +145,7 @@
 .filter-input {
   display: flex;
   gap: 12px;
+  align-items: stretch;
 }
 
 .filter-input input {
@@ -154,6 +155,11 @@
   border: 1px solid var(--border-subtle);
   background: var(--app-bg);
   color: var(--text-primary);
+}
+
+.exclusion-project-select {
+  min-width: 200px;
+  max-width: 280px;
 }
 
 .chip-list {
@@ -320,6 +326,106 @@
   border-radius: 10px;
   background: var(--sidebar-hover);
   color: var(--text-primary);
+}
+
+.default-exclusion-details {
+  padding: 0;
+}
+
+.default-exclusion-summary {
+  list-style: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px;
+  user-select: none;
+}
+
+.default-exclusion-summary::-webkit-details-marker {
+  display: none;
+}
+
+.default-exclusion-chevron {
+  transition: transform 0.2s ease;
+  color: var(--text-muted);
+}
+
+.default-exclusion-details[open] .default-exclusion-chevron {
+  transform: rotate(180deg);
+}
+
+.default-exclusion-details .chip-list {
+  padding: 0 12px 12px;
+}
+
+.custom-exclusion-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.custom-exclusion-group {
+  list-style: none;
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  padding: 0;
+  background: color-mix(in srgb, var(--surface-soft) 82%, transparent);
+}
+
+.custom-exclusion-group-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  cursor: pointer;
+  padding: 10px;
+  list-style: none;
+}
+
+.custom-exclusion-group-header::-webkit-details-marker {
+  display: none;
+}
+
+.custom-exclusion-group-title {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.custom-exclusion-group-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.custom-exclusion-group-chevron {
+  transition: transform 0.2s ease;
+  color: var(--text-muted);
+}
+
+.custom-exclusion-group[open] .custom-exclusion-group-chevron {
+  transform: rotate(180deg);
+}
+
+.custom-exclusion-project-name {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.custom-exclusion-project-path {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  text-align: left;
+  word-break: break-all;
+}
+
+.custom-exclusion-group-chips {
+  padding: 0 10px 10px;
 }
 
 .chip-remove:hover {

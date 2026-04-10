@@ -5,6 +5,7 @@
   import {
     getSecuritySettings,
     setSecuritySettings,
+    getWatchedPaths,
     getTrackingExclusions,
     setTrackingExclusions,
     getSnapshotSettings,
@@ -27,10 +28,18 @@
 
   let excludedFolders = [];
   let customExclusions = [];
+  let watchedProjects = [];
+  let selectedProjectScope = '';
+  let canAddProjectExclusion = false;
   let newExclusion = '';
   let exclusionsLoading = false;
   let exclusionsSaving = false;
   let exclusionsError = '';
+  let exclusionsMigrationInFlight = false;
+  const exclusionsMigrationCompletedScopes = new Set();
+
+  const PROJECT_SCOPE_PREFIX = '@project=';
+  const PROJECT_SCOPE_SEPARATOR = '::';
 
   let gcEnabled = true;
   let gcGraceMinutes = 60;
@@ -242,6 +251,172 @@
     gcEnabled = !gcEnabled;
   };
 
+  const normalizeProjectScope = (value) =>
+    String(value || '')
+      .trim()
+      .replace(/\\/g, '/')
+      .replace(/\/+$/, '');
+
+  const getProjectNameFromPath = (value) => {
+    const normalized = normalizeProjectScope(value);
+    if (!normalized) return 'Project';
+    const parts = normalized.split('/').filter(Boolean);
+    return parts.at(-1) || normalized;
+  };
+
+  const isProjectScopedRule = (value) => {
+    const candidate = String(value || '').trim();
+    return (
+      candidate.startsWith(PROJECT_SCOPE_PREFIX)
+      || candidate.startsWith(`!${PROJECT_SCOPE_PREFIX}`)
+    );
+  };
+
+  const scopeRuleForProject = (rawRule, projectScope) => {
+    const candidate = String(rawRule || '').trim();
+    if (!candidate) return '';
+    if (isProjectScopedRule(candidate)) return candidate;
+
+    const normalizedScope = normalizeProjectScope(projectScope);
+    if (!normalizedScope) {
+      return candidate;
+    }
+
+    if (candidate.startsWith('!')) {
+      const rule = candidate.slice(1).trim();
+      if (!rule) return '';
+      return `!${PROJECT_SCOPE_PREFIX}${normalizedScope}${PROJECT_SCOPE_SEPARATOR}${rule}`;
+    }
+
+    return `${PROJECT_SCOPE_PREFIX}${normalizedScope}${PROJECT_SCOPE_SEPARATOR}${candidate}`;
+  };
+
+  const decodeScopedExclusion = (value) => {
+    const original = String(value || '').trim();
+    if (!original) {
+      return {
+        scopePath: '',
+        rule: '',
+        displayRule: ''
+      };
+    }
+
+    let body = original;
+    let isNegated = false;
+    if (body.startsWith('!')) {
+      isNegated = true;
+      body = body.slice(1).trim();
+    }
+
+    let scopePath = '';
+    let rule = body;
+
+    if (body.startsWith(PROJECT_SCOPE_PREFIX)) {
+      const scopedPayload = body.slice(PROJECT_SCOPE_PREFIX.length);
+      const separatorIndex = scopedPayload.indexOf(PROJECT_SCOPE_SEPARATOR);
+      if (separatorIndex > 0) {
+        scopePath = normalizeProjectScope(scopedPayload.slice(0, separatorIndex));
+        rule = scopedPayload
+          .slice(separatorIndex + PROJECT_SCOPE_SEPARATOR.length)
+          .trim();
+      }
+    }
+
+    const displayRule = isNegated ? `!${rule}` : rule;
+    return {
+      scopePath,
+      rule,
+      displayRule
+    };
+  };
+
+  const getKnownProjectScopes = () => {
+    const watchedScopes = watchedProjects
+      .map((project) => normalizeProjectScope(project?.path))
+      .filter(Boolean);
+
+    const scopedFromRules = customExclusions
+      .map((entry) => normalizeProjectScope(decodeScopedExclusion(entry).scopePath))
+      .filter(Boolean);
+
+    return Array.from(new Set([...watchedScopes, ...scopedFromRules]));
+  };
+
+  const getLegacyMigrationTargetScope = () => {
+    const normalizedSelectedScope = normalizeProjectScope(selectedProjectScope);
+    if (normalizedSelectedScope) {
+      return normalizedSelectedScope;
+    }
+
+    const knownScopes = getKnownProjectScopes();
+    if (knownScopes.length === 1) {
+      return knownScopes[0];
+    }
+
+    return '';
+  };
+
+  const resolveProjectGroupLabel = (scopePath) => {
+    if (!scopePath) return 'Project';
+    const normalizedScope = normalizeProjectScope(scopePath);
+    const match = watchedProjects.find(
+      (project) => normalizeProjectScope(project?.path) === normalizedScope
+    );
+    return getProjectNameFromPath(match?.path || normalizedScope);
+  };
+
+  $: groupedCustomExclusions = (() => {
+    const groups = new Map();
+    const knownScopes = getKnownProjectScopes();
+    const fallbackScope = knownScopes.length === 1 ? knownScopes[0] : '';
+
+    customExclusions.forEach((entry, index) => {
+      const decoded = decodeScopedExclusion(entry);
+      const rule = decoded.rule || String(entry || '').trim();
+      if (!rule) {
+        return;
+      }
+
+      const normalizedScope = normalizeProjectScope(decoded.scopePath);
+      const resolvedScope = normalizedScope || fallbackScope;
+      if (!resolvedScope) {
+        return;
+      }
+      const groupKey = resolvedScope;
+
+      if (!groups.has(groupKey)) {
+        groups.set(groupKey, {
+          groupKey,
+          scopePath: resolvedScope,
+          projectName: resolveProjectGroupLabel(resolvedScope),
+          items: []
+        });
+      }
+
+      groups.get(groupKey).items.push({
+        index,
+        value: entry,
+        displayValue: decoded.displayRule || rule
+      });
+    });
+
+    return Array.from(groups.values()).sort((left, right) => {
+      return left.projectName.localeCompare(right.projectName);
+    });
+  })();
+
+  $: {
+    const knownScopes = getKnownProjectScopes();
+    const normalizedSelectedScope = normalizeProjectScope(selectedProjectScope);
+    if (knownScopes.length === 0) {
+      if (normalizedSelectedScope) {
+        selectedProjectScope = '';
+      }
+    } else if (!knownScopes.includes(normalizedSelectedScope)) {
+      selectedProjectScope = knownScopes[0];
+    }
+  }
+
   const getSystemTheme = () =>
     window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
 
@@ -274,6 +449,7 @@
     resolvedTheme = resolveTheme(themeMode);
 
     loadSecuritySettings();
+    loadWatchedProjects();
     loadTrackingExclusions();
     loadSnapshotSettings();
     loadRuntimeSettings();
@@ -325,6 +501,32 @@
     }
   };
 
+  const loadWatchedProjects = async () => {
+    try {
+      const data = await getWatchedPaths();
+      watchedProjects = Array.isArray(data) ? data : [];
+      const normalizedScopes = watchedProjects
+        .map((project) => normalizeProjectScope(project?.path))
+        .filter(Boolean);
+
+      if (normalizedScopes.length > 0) {
+        if (!normalizedScopes.includes(normalizeProjectScope(selectedProjectScope))) {
+          selectedProjectScope = normalizedScopes[0];
+        }
+      } else {
+        const knownScopes = getKnownProjectScopes();
+        selectedProjectScope = knownScopes[0] || '';
+      }
+    } catch {
+      watchedProjects = [];
+      const knownScopes = getKnownProjectScopes();
+      selectedProjectScope = knownScopes[0] || '';
+    }
+  };
+
+  $: canAddProjectExclusion = watchedProjects.length > 0
+    && !!normalizeProjectScope(selectedProjectScope || watchedProjects[0]?.path);
+
   const persistExclusions = async (next) => {
     exclusionsSaving = true;
     exclusionsError = '';
@@ -339,16 +541,66 @@
   };
 
   const addCustomExclusion = async () => {
+    if (!canAddProjectExclusion) {
+      return;
+    }
     const trimmed = newExclusion.trim();
     if (!trimmed) return;
-    if (customExclusions.includes(trimmed)) {
+    const targetScope = normalizeProjectScope(selectedProjectScope)
+      || normalizeProjectScope(watchedProjects[0]?.path);
+    if (!targetScope) {
+      return;
+    }
+    const scopedRule = scopeRuleForProject(trimmed, targetScope);
+    if (!scopedRule) {
       newExclusion = '';
       return;
     }
-    const next = [...customExclusions, trimmed];
+    if (customExclusions.includes(scopedRule)) {
+      newExclusion = '';
+      return;
+    }
+    const next = [...customExclusions, scopedRule];
     newExclusion = '';
     await persistExclusions(next);
   };
+
+  $: {
+    const migrationTargetScope = getLegacyMigrationTargetScope();
+
+    if (
+      !migrationTargetScope
+      || exclusionsLoading
+      || exclusionsSaving
+      || exclusionsMigrationInFlight
+      || exclusionsMigrationCompletedScopes.has(migrationTargetScope)
+      || customExclusions.length === 0
+    ) {
+      // no-op
+    } else {
+      const hasUnscoped = customExclusions.some((entry) => !decodeScopedExclusion(entry).scopePath);
+      if (hasUnscoped) {
+        exclusionsMigrationInFlight = true;
+        const migrated = customExclusions
+          .map((entry) => {
+            const decoded = decodeScopedExclusion(entry);
+            if (decoded.scopePath) {
+              return entry;
+            }
+            return scopeRuleForProject(decoded.displayRule || decoded.rule || entry, migrationTargetScope);
+          })
+          .filter(Boolean);
+
+        const uniqueMigrated = Array.from(new Set(migrated));
+        void persistExclusions(uniqueMigrated).finally(() => {
+          exclusionsMigrationCompletedScopes.add(migrationTargetScope);
+          exclusionsMigrationInFlight = false;
+        });
+      } else {
+        exclusionsMigrationCompletedScopes.add(migrationTargetScope);
+      }
+    }
+  }
 
   const removeCustomExclusion = async (index) => {
     const next = customExclusions.filter((_, i) => i !== index);
@@ -627,9 +879,10 @@
       {:else if exclusionsError}
         <div class="settings-note text-danger">{exclusionsError}</div>
       {:else}
-        <details class="settings-note">
-          <summary>Default exclusion:
-            <Fa icon={faChevronDown} class="section-chevron" />
+        <details class="settings-note default-exclusion-details">
+          <summary class="default-exclusion-summary">
+            <span>Default exclusion:</span>
+            <Fa icon={faChevronDown} class="default-exclusion-chevron" />
           </summary>
           <div class="chip-list" style="margin-top:8px;">
             {#each excludedFolders as folder (folder)}
@@ -638,29 +891,76 @@
           </div>
         </details>
 
-        <div class="settings-note" style="margin-top: 12px;">Custom exclusions:</div>
-        <div class="filter-input">
+        <div class="filter-input" style="margin-top: 12px;">
+          <select
+            class="settings-input exclusion-project-select"
+            bind:value={selectedProjectScope}
+            disabled={exclusionsSaving || watchedProjects.length === 0}
+          >
+            {#if watchedProjects.length === 0}
+              <option value="">No watched projects</option>
+            {:else}
+              {#each watchedProjects as project (project.id ?? project.path)}
+                <option value={normalizeProjectScope(project.path)}>{getProjectNameFromPath(project.path)}</option>
+              {/each}
+            {/if}
+          </select>
           <input
             type="text"
-            placeholder="Add a folder name or file pattern (e.g., node_modules)"
+            placeholder="Add a pattern for selected project (e.g., node_modules)"
             bind:value={newExclusion}
             on:keydown={(e) => e.key === 'Enter' && addCustomExclusion()}
-            disabled={exclusionsSaving}
+            disabled={exclusionsSaving || !canAddProjectExclusion}
           />
-          <button class="btn btn-primary" on:click={addCustomExclusion} disabled={exclusionsSaving}>
+          <button class="btn btn-primary" on:click={addCustomExclusion} disabled={exclusionsSaving || !canAddProjectExclusion}>
             {exclusionsSaving ? 'Saving…' : 'Add'}
           </button>
         </div>
-        <div class="chip-list">
-          {#each customExclusions as folder, index (`${folder}-${index}`)}
-            <span class="chip">
-              {folder}
-              <button class="chip-remove" on:click={() => removeCustomExclusion(index)} disabled={exclusionsSaving}>
-                ×
-              </button>
-            </span>
-          {/each}
-        </div>
+
+        {#if !canAddProjectExclusion && groupedCustomExclusions.length === 0}
+          <div class="settings-note" style="margin-top: 12px;">Add a watched project first to create project exclusions.</div>
+        {/if}
+
+        <details class="settings-note default-exclusion-details" style="margin-top: 12px;">
+          <summary class="default-exclusion-summary">
+            <span>Custom exclusions:</span>
+            <Fa icon={faChevronDown} class="default-exclusion-chevron" />
+          </summary>
+          <div style="padding: 0 12px 12px; display: flex; flex-direction: column; gap: 12px;">
+            {#if groupedCustomExclusions.length === 0}
+              <div class="settings-note" style="margin: 0;">No custom exclusions yet.</div>
+            {:else}
+              <div class="custom-exclusion-groups">
+                {#each groupedCustomExclusions as group (group.groupKey)}
+                  <details class="custom-exclusion-group">
+                    <summary class="custom-exclusion-group-header">
+                      <div class="custom-exclusion-group-title">
+                        <span class="custom-exclusion-project-name">{group.projectName}</span>
+                        {#if group.scopePath}
+                          <span class="custom-exclusion-project-path">{group.scopePath}</span>
+                        {/if}
+                      </div>
+                      <div class="custom-exclusion-group-meta">
+                        <span class="badge-soft badge-soft-secondary">{group.items.length}</span>
+                        <Fa icon={faChevronDown} class="custom-exclusion-group-chevron" />
+                      </div>
+                    </summary>
+                    <div class="chip-list custom-exclusion-group-chips">
+                      {#each group.items as item (`${item.value}-${item.index}`)}
+                        <span class="chip">
+                          {item.displayValue}
+                          <button class="chip-remove" on:click={() => removeCustomExclusion(item.index)} disabled={exclusionsSaving}>
+                            ×
+                          </button>
+                        </span>
+                      {/each}
+                    </div>
+                  </details>
+                {/each}
+              </div>
+            {/if}
+          </div>
+        </details>
       {/if}
     </div>
   </details>

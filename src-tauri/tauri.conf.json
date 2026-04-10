@@ -1,7 +1,7 @@
 {
   "productName": "Locus",
-  "version": "1.6.0",
-  "identifier": "com.locus.app",
+  "version": "1.6.5",
+  "identifier": "com.locus.appl",
   "build": {
     "beforeDevCommand": null,
     "beforeBuildCommand": "npm --prefix ui run build",
