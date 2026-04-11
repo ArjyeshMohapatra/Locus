@@ -527,6 +527,13 @@ fn main() {
             }
 
             if let Some(window) = app.get_webview_window("main") {
+                if let Some(icon) = app.default_window_icon() {
+                    if let Err(err) = window.set_icon(icon.clone()) {
+                        eprintln!("[tauri] failed to set main window icon from default: {}", err);
+                    }
+                } else {
+                    eprintln!("[tauri] default_window_icon is None");
+                }
                 let _ = window.set_decorations(false);
                 let _ = window.maximize();
             }
