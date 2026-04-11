@@ -9,6 +9,7 @@
     getSnapshotHistory,
     getSnapshotSettings
   } from '../api.js';
+  import { DATE_TIME_FORMATS, formatDateTime, parseDateInput } from './dateTime.js';
 
   let loading = false;
   let busyActionId = null;
@@ -48,13 +49,7 @@
   };
 
   const parseSnapshotDate = (value) => {
-    if (!value) return null;
-    let normalized = value;
-    if (typeof value === 'string' && !value.endsWith('Z') && !value.includes('+') && !value.includes('-')) {
-      normalized = value.replace(' ', 'T') + 'Z';
-    }
-    const parsed = new Date(normalized);
-    return Number.isNaN(parsed.getTime()) ? null : parsed;
+    return parseDateInput(value);
   };
 
   const parseIsoWeekInput = (value) => {
@@ -110,20 +105,7 @@
   const IMAGE_OBJECT_URL_CACHE_LIMIT = 80;
 
   const formatTime = (value) => {
-    if (!value) return '';
-    // Ensure naive UTC strings are treated as UTC by the Date constructor
-    let normalized = value;
-    if (typeof value === 'string' && !value.endsWith('Z') && !value.includes('+') && !value.includes('-')) {
-      normalized = value.replace(' ', 'T') + 'Z';
-    }
-    const date = new Date(normalized);
-    return new Intl.DateTimeFormat(undefined, {
-      year: 'numeric',
-      month: 'short',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit'
-    }).format(date);
+    return formatDateTime(value, DATE_TIME_FORMATS.MEDIUM_DATE_TIME);
   };
 
   const timelineLabel = (item) => {
@@ -752,11 +734,14 @@
     margin: 0.45rem 0 0.7rem;
     align-items: end;
     overflow-x: auto;
+    padding-inline: calc(var(--locus-focus-ring-width) + 2px);
+    margin-inline: calc(-1 * (var(--locus-focus-ring-width) + 2px));
   }
 
   .timeline-filter-field {
     min-width: 0;
     flex: 0 0 190px;
+    padding: 2px 0;
   }
 
   .timeline-filter-field.timeline-filter-app {

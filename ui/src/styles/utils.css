@@ -383,7 +383,7 @@ body.theme-dark .btn:disabled {
 .form-control:focus,
 .form-select:focus {
   border-color: var(--accent);
-  box-shadow: 0 0 0 4px var(--accent-soft);
+  box-shadow: var(--locus-focus-ring-shadow);
 }
 
 

@@ -10,6 +10,7 @@
     renameCheckpointSession,
     restoreCheckpointSession
   } from '../api.js';
+  import { DATE_TIME_FORMATS, formatDateTime } from './dateTime.js';
   import { askForText, askQuestion, showMessage } from '../dialogStore.js';
 
   const TAB_CREATE = 'create';
@@ -62,6 +63,7 @@
   let beforeStatePaneEl;
   let afterStatePaneEl;
   let syncingStateScroll = false;
+  let isDiffFilesPaneCollapsed = false;
 
   let restoreSessionId = '';
   let restoreDestinationRoot = '';
@@ -77,19 +79,27 @@
   };
 
   const formatTime = (value) => {
-    if (!value) return '';
-    let normalized = value;
-    if (typeof value === 'string' && !value.endsWith('Z') && !value.includes('+') && !value.includes('-')) {
-      normalized = value.replace(' ', 'T') + 'Z';
+    return formatDateTime(value, DATE_TIME_FORMATS.MEDIUM_DATE_TIME);
+  };
+
+  const formatCheckpointName = (value) => {
+    const name = String(value || '').trim();
+    const match = name.match(/^Checkpoint\s+(\d{4}-\d{2}-\d{2})\s+(\d{2}):(\d{2}):(\d{2})(?:\s*([AaPp][Mm]))?$/);
+    if (!match) return name;
+
+    const [, datePart, hh, mm, ss, suffix] = match;
+    const hourRaw = Number(hh);
+
+    if (!Number.isFinite(hourRaw)) return name;
+
+    if (suffix) {
+      const normalizedHour = hourRaw === 0 ? 12 : hourRaw;
+      return `Checkpoint ${datePart} ${String(normalizedHour).padStart(2, '0')}:${mm}:${ss} ${suffix.toUpperCase()}`;
     }
-    const date = new Date(normalized);
-    return new Intl.DateTimeFormat(undefined, {
-      year: 'numeric',
-      month: 'short',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit'
-    }).format(date);
+
+    const period = hourRaw >= 12 ? 'PM' : 'AM';
+    const hour12 = hourRaw % 12 || 12;
+    return `Checkpoint ${datePart} ${String(hour12).padStart(2, '0')}:${mm}:${ss} ${period}`;
   };
 
   const toScopeLabel = (scope) => {
@@ -523,7 +533,7 @@
       }
 
       const created = await createCheckpointSession(payload);
-      await showMessage(`Checkpoint created: ${created.name}`, 'Checkpoint');
+      await showMessage(`Checkpoint created: ${formatCheckpointName(created.name)}`, 'Checkpoint');
       await loadSessions();
       activeTab = TAB_HISTORY;
 
@@ -744,8 +754,8 @@
             {/if}
           </div>
 
-          <div class="split-row">
-            <div>
+          <div class="split-row split-row-create">
+            <div class="scope-field">
               <label class="form-label fw-semibold" for="checkpoint-scope">Scope</label>
               <select id="checkpoint-scope" class="form-select" bind:value={createScope}>
                 <option value="full_folder">Full Folder</option>
@@ -753,9 +763,14 @@
                 <option value="selected_files">Selected Files</option>
               </select>
             </div>
-            <div>
+            <div class="label-field">
               <label class="form-label fw-semibold" for="checkpoint-name">Label</label>
               <input id="checkpoint-name" class="form-control" type="text" bind:value={createName} maxlength="80" placeholder="before-upgrade" />
+            </div>
+            <div class="create-action-cell">
+              <button class="btn btn-primary" on:click={createSession} disabled={creating || !selectedWatchedPath}>
+                {creating ? 'Creating...' : 'Create Checkpoint'}
+              </button>
             </div>
           </div>
 
@@ -778,11 +793,6 @@
           {/if}
         </div>
 
-        <div class="panel-actions">
-          <button class="btn btn-primary" on:click={createSession} disabled={creating || !selectedWatchedPath}>
-            {creating ? 'Creating...' : 'Create Checkpoint'}
-          </button>
-        </div>
       </div>
 
     {:else if activeTab === TAB_HISTORY}
@@ -811,7 +821,7 @@
               <tbody>
                 {#each sessions as session (session.id)}
                   <tr>
-                    <td class="fw-semibold">{session.name}</td>
+                    <td class="fw-semibold">{formatCheckpointName(session.name)}</td>
                     <td>{projectNameFromPath(session.watched_path)}</td>
                     <td>{toScopeLabel(session.scope)}</td>
                     <td class="col-items">{session.item_count}</td>
@@ -842,31 +852,34 @@
       </div>
       <div class="panel-body">
         <div class="diff-controls">
-          <div>
+          <div class="diff-control diff-control-from">
             <label class="form-label fw-semibold" for="checkpoint-diff-from">From</label>
             <select id="checkpoint-diff-from" class="form-select" bind:value={fromSessionId}>
               <option value="">Select base session</option>
               {#each sessions as session (session.id)}
-                <option value={String(session.id)}>{session.name} ({formatTime(session.created_at)})</option>
+                <option value={String(session.id)}>{formatCheckpointName(session.name)} ({formatTime(session.created_at)})</option>
               {/each}
             </select>
           </div>
 
-          <div>
+          <div class="diff-control diff-control-to">
             <label class="form-label fw-semibold" for="checkpoint-diff-to">To</label>
             <select id="checkpoint-diff-to" class="form-select" bind:value={toSessionId}>
               <option value="">Select target session</option>
               {#each sessions as session (session.id)}
-                <option value={String(session.id)}>{session.name} ({formatTime(session.created_at)})</option>
+                <option value={String(session.id)}>{formatCheckpointName(session.name)} ({formatTime(session.created_at)})</option>
               {/each}
             </select>
           </div>
 
-          <div class="diff-controls-inline">
+          <div class="diff-control diff-controls-inline">
             <div class="form-check">
               <input id="include-unchanged" class="form-check-input" type="checkbox" bind:checked={includeUnchanged} />
               <label class="form-check-label" for="include-unchanged">Include unchanged</label>
             </div>
+          </div>
+
+          <div class="diff-control diff-controls-action">
             <button class="btn btn-primary" on:click={compareSessions} disabled={diffLoading || loadingSessions || sessions.length < 2}>
               {diffLoading ? 'Comparing...' : 'Compare'}
             </button>
@@ -886,11 +899,22 @@
             {/if}
           </div>
 
-          <div class="diff-explorer">
+          <div class="diff-explorer {isDiffFilesPaneCollapsed ? 'is-files-collapsed' : ''}">
             <aside class="diff-files-pane">
               <div class="diff-pane-head">
-                <h3>Changed Files</h3>
-                <span class="small text-muted">{totalChangedFiles} total</span>
+                <div class="diff-pane-head-left">
+                  <button
+                    type="button"
+                    class="pane-collapse-btn {isDiffFilesPaneCollapsed ? 'is-collapsed' : ''}"
+                    on:click={() => (isDiffFilesPaneCollapsed = !isDiffFilesPaneCollapsed)}
+                    aria-label={isDiffFilesPaneCollapsed ? 'Expand changed files pane' : 'Collapse changed files pane'}
+                    title={isDiffFilesPaneCollapsed ? 'Expand changed files pane' : 'Collapse changed files pane'}
+                  >
+                    <span class="pane-collapse-caret" aria-hidden="true"></span>
+                  </button>
+                  <h3 class="diff-pane-title">Changed Files</h3>
+                </div>
+                <span class="small text-muted diff-pane-total">{totalChangedFiles} total</span>
               </div>
 
               <div class="diff-files-scroll">
@@ -907,7 +931,7 @@
                             on:click={() => toggleDiffFolder(row.key)}
                             style={`padding-left: ${row.depth * 14 + 10}px`}
                           >
-                            <span class="tree-caret">{row.expanded ? '▾' : '▸'}</span>
+                            <span class="tree-caret {row.expanded ? 'is-expanded' : ''}" aria-hidden="true"></span>
                             <span class="tree-name">{row.name}</span>
                             <span class="tree-meta">{row.childCount}</span>
                           </button>
@@ -1089,7 +1113,7 @@
               <select id="checkpoint-restore-session" class="form-select" bind:value={restoreSessionId}>
                 <option value="">Select session</option>
                 {#each sessions as session (session.id)}
-                  <option value={String(session.id)}>{session.name} ({formatTime(session.created_at)})</option>
+                  <option value={String(session.id)}>{formatCheckpointName(session.name)} ({formatTime(session.created_at)})</option>
                 {/each}
               </select>
             </div>
@@ -1272,6 +1296,7 @@
   .checkpoint-panel {
     flex: 1;
     min-height: 0;
+    min-width: 0;
     border: 1px solid var(--border-subtle);
     border-radius: 0.75rem;
     background: var(--surface-elevated);
@@ -1315,20 +1340,44 @@
     flex: 1;
     min-height: 0;
     overflow: auto;
-    padding: 0.95rem;
+    padding: 1rem;
   }
 
   .form-grid {
     display: flex;
     flex-direction: column;
     gap: 0.7rem;
-    max-width: 980px;
+    max-width: none;
+    width: 100%;
   }
 
   .split-row {
     display: grid;
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
     gap: 0.7rem;
+  }
+
+  .split-row-create {
+    grid-template-columns: minmax(150px, 220px) minmax(220px, 1fr) auto;
+    align-items: end;
+  }
+
+  .scope-field {
+    max-width: 220px;
+  }
+
+  .scope-field .form-select {
+    min-width: 0;
+  }
+
+  .create-action-cell {
+    display: flex;
+    justify-content: flex-end;
+    align-items: end;
+  }
+
+  .create-action-cell .btn {
+    min-width: 188px;
   }
 
   .panel-actions {
@@ -1402,20 +1451,39 @@
 
   .diff-controls {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-columns: minmax(220px, 1fr) minmax(220px, 1fr) auto auto;
     gap: 0.65rem;
     align-items: end;
     margin-bottom: 0.85rem;
   }
 
+  .diff-control {
+    min-width: 0;
+  }
+
   .diff-controls-inline {
-    display: flex;
-    grid-column: 1 / -1;
+    display: inline-flex;
     align-items: center;
-    justify-content: flex-start;
+    justify-content: flex-end;
     gap: 0.7rem;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     padding-bottom: 0.1rem;
+    min-height: 40px;
+  }
+
+  .diff-controls-inline .form-check {
+    margin: 0;
+    white-space: nowrap;
+  }
+
+  .diff-controls-action {
+    display: flex;
+    align-items: end;
+    justify-content: flex-end;
+  }
+
+  .diff-controls-action .btn {
+    min-width: 120px;
   }
 
   .summary-badges {
@@ -1425,11 +1493,17 @@
   }
 
   .diff-explorer {
+    --files-pane-width: clamp(180px, 24vw, 230px);
     display: grid;
-    grid-template-columns: minmax(180px, 230px) minmax(0, 1fr);
+    grid-template-columns: var(--files-pane-width) minmax(0, 1fr);
     gap: 0.75rem;
     min-height: min(72vh, calc(100vh - 280px));
     margin-bottom: 0.65rem;
+    transition: grid-template-columns 0.24s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  .diff-explorer.is-files-collapsed {
+    --files-pane-width: 44px;
   }
 
   .diff-files-pane,
@@ -1443,6 +1517,11 @@
     flex-direction: column;
   }
 
+  .diff-files-pane {
+    width: var(--files-pane-width);
+    min-width: 0;
+  }
+
   .diff-pane-head {
     display: flex;
     align-items: center;
@@ -1451,6 +1530,81 @@
     padding: 0.55rem 0.7rem;
     border-bottom: 1px solid var(--border-subtle);
     background: color-mix(in srgb, var(--surface-soft) 88%, var(--surface-elevated));
+  }
+
+  .diff-pane-head-left {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.42rem;
+    min-width: 0;
+  }
+
+  .diff-pane-title,
+  .diff-pane-total {
+    transition: opacity 0.2s ease, transform 0.24s ease, max-width 0.24s ease;
+  }
+
+  .pane-collapse-btn {
+    border: 1px solid var(--border-subtle);
+    background: var(--surface-elevated);
+    color: var(--text-muted);
+    border-radius: 999px;
+    width: 1.3rem;
+    height: 1.3rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    line-height: 1;
+    cursor: pointer;
+    transition: border-color 0.18s ease, color 0.18s ease, background-color 0.18s ease;
+  }
+
+  .pane-collapse-btn:hover {
+    color: var(--text-primary);
+    border-color: var(--border-strong);
+  }
+
+  .pane-collapse-caret {
+    width: 0.4rem;
+    height: 0.4rem;
+    border-right: 2px solid currentColor;
+    border-bottom: 2px solid currentColor;
+    transform: rotate(135deg);
+    transform-origin: 50% 50%;
+    transition: transform 0.24s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  .pane-collapse-btn.is-collapsed .pane-collapse-caret {
+    transform: rotate(-45deg);
+  }
+
+  .diff-explorer.is-files-collapsed .diff-pane-head {
+    justify-content: center;
+    padding-left: 0.35rem;
+    padding-right: 0.35rem;
+  }
+
+  .diff-explorer.is-files-collapsed .diff-pane-head-left {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .diff-explorer.is-files-collapsed .diff-pane-title,
+  .diff-explorer.is-files-collapsed .diff-pane-total {
+    opacity: 0;
+    transform: translateX(-6px);
+    max-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    pointer-events: none;
+  }
+
+  .diff-explorer.is-files-collapsed .diff-files-scroll {
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    transform: translateX(-6px);
   }
 
   .diff-pane-head h3 {
@@ -1465,6 +1619,10 @@
   .diff-files-scroll {
     min-height: 0;
     overflow: auto;
+    opacity: 1;
+    visibility: visible;
+    transform: translateX(0);
+    transition: opacity 0.18s ease, visibility 0.18s ease, transform 0.24s ease;
   }
 
   .diff-tree-list {
@@ -1505,9 +1663,20 @@
   }
 
   .tree-caret {
-    width: 12px;
+    width: 0.52rem;
+    height: 0.52rem;
+    border-right: 2px solid currentColor;
+    border-bottom: 2px solid currentColor;
+    transform: rotate(-45deg);
+    transform-origin: 50% 50%;
+    transition: transform 0.18s ease;
     color: var(--text-muted);
     opacity: 0.9;
+    flex: 0 0 auto;
+  }
+
+  .tree-caret.is-expanded {
+    transform: rotate(45deg);
   }
 
   .tree-name {
@@ -1657,15 +1826,24 @@
     display: none;
   }
 
+  .diff-secondary-summary::marker {
+    content: '';
+  }
+
   .diff-secondary-summary::before {
-    content: '▸';
-    color: var(--text-muted);
+    content: '';
+    width: 0.45rem;
+    height: 0.45rem;
+    border-right: 2px solid var(--text-muted);
+    border-bottom: 2px solid var(--text-muted);
     margin-right: 0.35rem;
+    transform: rotate(-45deg);
     transition: transform 0.16s ease;
+    flex: 0 0 auto;
   }
 
   .diff-secondary-block[open] .diff-secondary-summary::before {
-    transform: rotate(90deg);
+    transform: rotate(45deg);
   }
 
   .diff-block {
@@ -1786,9 +1964,13 @@
     }
 
     .diff-controls-inline {
+      justify-content: flex-start;
+      grid-column: 1 / -1;
+    }
+
+    .diff-controls-action {
       grid-column: 1 / -1;
       justify-content: flex-start;
-      flex-wrap: wrap;
     }
 
     .diff-grid {
@@ -1819,6 +2001,10 @@
 
     .split-row {
       grid-template-columns: minmax(0, 1fr);
+    }
+
+    .create-action-cell {
+      justify-content: flex-start;
     }
 
     .restore-controls-grid {

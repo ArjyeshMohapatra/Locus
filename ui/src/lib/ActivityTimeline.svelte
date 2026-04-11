@@ -2,6 +2,7 @@
   import { onMount, onDestroy } from 'svelte';
   import { slide } from 'svelte/transition';
   import { getRecentFileEvents, getWatchedTree, subscribeFileEvents } from '../api.js';
+  import { DATE_TIME_FORMATS, formatDateTime } from './dateTime.js';
   import { addErrorMessage } from '../errorStore.js';
   import Fa from 'svelte-fa';
   import { faChevronRight } from '@fortawesome/free-solid-svg-icons';
@@ -223,17 +224,7 @@
   }
 
   function formatTime(timestamp) {
-    const date = new Date(timestamp + (timestamp.includes('Z') ? '' : 'Z'));
-    return new Intl.DateTimeFormat(undefined, {
-      weekday: 'short',
-      day: '2-digit',
-      month: 'short',
-      year: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-      hour12: true
-    }).format(date);
+    return formatDateTime(timestamp, DATE_TIME_FORMATS.LONG_DATE_TIME);
   }
 
   onMount(() => {

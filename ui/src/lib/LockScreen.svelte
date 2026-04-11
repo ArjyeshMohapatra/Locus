@@ -1,5 +1,6 @@
 <svelte:options runes={false} />
 <script>
+  import appIcon from '../assets/titlebar-icon.png';
   import { onDestroy, onMount, tick } from 'svelte';
   import { createEventDispatcher } from 'svelte';
   import { setupAuth, unlockAuth, requestAuthReset, resetAuth } from '../api.js';
@@ -388,7 +389,9 @@
 <div class="lock-screen-wrapper">
   <div class="lock-card">
     <div class="lock-header">
-      <div class="logo-box">L</div>
+      <div class="logo-box">
+        <img src={appIcon} alt="Locus" class="logo-icon" />
+      </div>
       <h2>{isSetupRequired ? 'Welcome to Locus' : 'Locus Locked'}</h2>
       <p class="text-muted">
         {#if showRecovery}
@@ -628,6 +631,13 @@
     margin: 0 auto 18px;
   }
 
+  .logo-icon {
+    width: 24px;
+    height: 24px;
+    object-fit: contain;
+    display: block;
+  }
+
   .lock-header {
     text-align: center;
     margin-bottom: 24px;
@@ -649,6 +659,16 @@
     padding: 11px 14px;
     font-size: 0.96rem;
     border-radius: 10px;
+    transition: border-color 0.16s ease, box-shadow 0.16s ease, background-color 0.16s ease;
+  }
+
+  .lock-input:focus,
+  .lock-input:focus-visible {
+    outline: none;
+    border-color: color-mix(in srgb, var(--accent) 70%, var(--border-subtle));
+    box-shadow:
+      0 0 0 var(--locus-focus-ring-width) color-mix(in srgb, var(--accent) 26%, transparent),
+      0 8px 22px -18px color-mix(in srgb, var(--accent) 80%, transparent);
   }
 
   .password-input-group {
@@ -726,7 +746,7 @@
   }
 
   .recovery-copy-btn:focus-visible {
-    box-shadow: 0 0 0 0.2rem color-mix(in srgb, var(--accent) 30%, transparent);
+    box-shadow: 0 0 0 var(--locus-focus-ring-width) color-mix(in srgb, var(--accent) 30%, transparent);
   }
 
   .recovery-copy-toast {

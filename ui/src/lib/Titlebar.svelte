@@ -1,52 +1,57 @@
 <svelte:options runes={false} />
 
 <script>
-  import { onMount, onDestroy } from 'svelte';
-  import { getCurrentWindow } from '@tauri-apps/api/window';
-  import { exit as tauriExit } from '@tauri-apps/plugin-process';
-  import { stopWatchedSnapshotScan, subscribeFileEvents } from '../api.js';
-  import { askQuestion, showMessage } from '../dialogStore.js';
-  import Fa from 'svelte-fa';
-  import { faMinus, faSquare, faXmark, faCloud } from '@fortawesome/free-solid-svg-icons';
+  import appIcon from "../assets/titlebar-icon.png";
+  import { onMount, onDestroy } from "svelte";
+  import { getCurrentWindow } from "@tauri-apps/api/window";
+  import { exit as tauriExit } from "@tauri-apps/plugin-process";
+  import { stopWatchedSnapshotScan, subscribeFileEvents } from "../api.js";
+  import { askQuestion, showMessage } from "../dialogStore.js";
+  import Fa from "svelte-fa";
+  import {
+    faMinus,
+    faSquare,
+    faXmark,
+  } from "@fortawesome/free-solid-svg-icons";
 
-  export let closeBehavior = 'tray';
+  export let closeBehavior = "tray";
 
   let appWindow;
   let isMaximized = false;
   let eventSource;
   let snapshotProgress = null;
   let stoppingSnapshot = false;
-  let stopRequestToast = '';
+  let stopRequestToast = "";
   let stopRequestToastTimer;
   let detachWindowResizeListener = null;
   let decorationRetryTimer = null;
   let customTitlebarActive = false;
 
-  const isTauriRuntime = () => (
-    typeof window !== 'undefined' && !!(window.__TAURI__ || window.__TAURI_INTERNALS__ || window.__TAURI_IPC__)
-  );
+  const isTauriRuntime = () =>
+    typeof window !== "undefined" &&
+    !!(window.__TAURI__ || window.__TAURI_INTERNALS__ || window.__TAURI_IPC__);
 
   const setCustomTitlebarState = (enabled) => {
     customTitlebarActive = !!enabled;
-    document.body.classList.toggle('has-custom-titlebar', customTitlebarActive);
+    document.body.classList.toggle("has-custom-titlebar", customTitlebarActive);
   };
 
   const ensureUndecoratedWindow = async () => {
     if (!appWindow) return false;
 
-    if (typeof appWindow.setDecorations === 'function') {
+    if (typeof appWindow.setDecorations === "function") {
       try {
         await appWindow.setDecorations(false);
       } catch (error) {
-        console.error('Failed to disable native window decorations:', error);
+        console.error("Failed to disable native window decorations:", error);
       }
     }
 
-    if (typeof appWindow.isDecorated === 'function') {
+    if (typeof appWindow.isDecorated === "function") {
       try {
         return !(await appWindow.isDecorated());
       } catch (error) {
-        console.error('Failed to confirm window decoration state:', error);
+        console.error("Failed to confirm window decoration state:", error);
       }
     }
 
@@ -54,15 +59,15 @@
   };
 
   const formatEta = (seconds) => {
-    if (seconds === null || seconds === undefined) return 'ETA --:--';
+    if (seconds === null || seconds === undefined) return "ETA --:--";
     const totalSeconds = Math.max(Number(seconds) || 0, 0);
     const hours = Math.floor(totalSeconds / 3600);
     const minutes = Math.floor((totalSeconds % 3600) / 60);
     const secs = Math.floor(totalSeconds % 60);
     if (hours > 0) {
-      return `ETA ${hours}h ${String(minutes).padStart(2, '0')}m`;
+      return `ETA ${hours}h ${String(minutes).padStart(2, "0")}m`;
     }
-    return `ETA ${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+    return `ETA ${String(minutes).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
   };
 
   onMount(() => {
@@ -78,20 +83,21 @@
         setCustomTitlebarState(await ensureUndecoratedWindow());
 
         const updateMaximized = async () => {
-          if (!appWindow || typeof appWindow.isMaximized !== 'function') return;
+          if (!appWindow || typeof appWindow.isMaximized !== "function") return;
           isMaximized = await appWindow.isMaximized();
         };
 
         await updateMaximized();
-        window.addEventListener('resize', updateMaximized);
-        detachWindowResizeListener = () => window.removeEventListener('resize', updateMaximized);
+        window.addEventListener("resize", updateMaximized);
+        detachWindowResizeListener = () =>
+          window.removeEventListener("resize", updateMaximized);
 
         // Some Linux window managers re-apply decorations shortly after maximize/show.
         decorationRetryTimer = setTimeout(async () => {
           setCustomTitlebarState(await ensureUndecoratedWindow());
         }, 300);
       } catch (error) {
-        console.error('Failed to initialize titlebar controls:', error);
+        console.error("Failed to initialize titlebar controls:", error);
       }
     };
 
@@ -100,7 +106,7 @@
 
   onMount(() => {
     eventSource = subscribeFileEvents((event) => {
-      if (event?.type === 'snapshot_start') {
+      if (event?.type === "snapshot_start") {
         snapshotProgress = {
           watched_path: event.watched_path,
           total: 0,
@@ -108,13 +114,13 @@
           skipped: 0,
           error_count: 0,
           eta_seconds: null,
-          scanning: true
+          scanning: true,
         };
         stoppingSnapshot = false;
         return;
       }
 
-      if (event?.type === 'snapshot_progress') {
+      if (event?.type === "snapshot_progress") {
         snapshotProgress = {
           watched_path: event.watched_path,
           total: Number(event.total) || 0,
@@ -122,12 +128,12 @@
           skipped: Number(event.skipped) || 0,
           error_count: Number(event.error_count) || 0,
           eta_seconds: event.eta_seconds,
-          scanning: false
+          scanning: false,
         };
         return;
       }
 
-      if (event?.type === 'snapshot_complete') {
+      if (event?.type === "snapshot_complete") {
         snapshotProgress = null;
         stoppingSnapshot = false;
       }
@@ -135,7 +141,7 @@
   });
 
   onDestroy(() => {
-    if (typeof detachWindowResizeListener === 'function') {
+    if (typeof detachWindowResizeListener === "function") {
       detachWindowResizeListener();
       detachWindowResizeListener = null;
     }
@@ -154,12 +160,12 @@
   });
 
   const showStopRequestToast = (message) => {
-    stopRequestToast = String(message || '').trim();
+    stopRequestToast = String(message || "").trim();
     if (stopRequestToastTimer) {
       clearTimeout(stopRequestToastTimer);
     }
     stopRequestToastTimer = setTimeout(() => {
-      stopRequestToast = '';
+      stopRequestToast = "";
     }, 1700);
   };
 
@@ -167,11 +173,11 @@
     if (!appWindow || !isTauriRuntime() || event.button !== 0) return;
 
     const target = event.target;
-    if (target instanceof Element && target.closest('.titlebar-controls')) {
+    if (target instanceof Element && target.closest(".titlebar-controls")) {
       return;
     }
 
-    if (typeof appWindow.startDragging !== 'function') return;
+    if (typeof appWindow.startDragging !== "function") return;
 
     try {
       await appWindow.startDragging();
@@ -182,7 +188,7 @@
 
   const handleTitlebarDoubleClick = async (event) => {
     const target = event.target;
-    if (target instanceof Element && target.closest('.titlebar-controls')) {
+    if (target instanceof Element && target.closest(".titlebar-controls")) {
       return;
     }
     await toggleMaximize();
@@ -192,7 +198,7 @@
     try {
       await appWindow?.minimize();
     } catch (e) {
-      console.error('Failed to minimize window:', e);
+      console.error("Failed to minimize window:", e);
     }
   };
   const toggleMaximize = async () => {
@@ -200,12 +206,12 @@
       await appWindow?.toggleMaximize();
       isMaximized = await appWindow?.isMaximized();
     } catch (e) {
-      console.error('Failed to toggle maximize:', e);
+      console.error("Failed to toggle maximize:", e);
     }
   };
   const close = async () => {
     try {
-      if (closeBehavior === 'shutdown') {
+      if (closeBehavior === "shutdown") {
         if (isTauriRuntime()) {
           await tauriExit(0);
           return;
@@ -215,43 +221,43 @@
       }
 
       if (!appWindow) return;
-      if (typeof appWindow.hide === 'function') {
+      if (typeof appWindow.hide === "function") {
         await appWindow.hide();
         return;
       }
       await appWindow.close?.();
     } catch (e) {
-      console.error('Failed to process close action:', e);
+      console.error("Failed to process close action:", e);
     }
   };
 
   const handleStopSnapshotScan = async () => {
-    const watchedPath = String(snapshotProgress?.watched_path || '').trim();
+    const watchedPath = String(snapshotProgress?.watched_path || "").trim();
     if (!watchedPath || stoppingSnapshot) {
       return;
     }
 
     const confirmed = await askQuestion(
-      'This will stop the active snapshot scan, remove the watched folder from LOCUS, and delete related backup/storage data. This action cannot be undone.',
-      'Stop Scan And Delete Data',
+      "This will stop the active snapshot scan, remove the watched folder from LOCUS, and delete related backup/storage data. This action cannot be undone.",
+      "Stop Scan And Delete Data",
       {
-        type: 'danger',
-        okLabel: 'Stop And Delete',
-        cancelLabel: 'Cancel'
-      }
+        type: "danger",
+        okLabel: "Stop And Delete",
+        cancelLabel: "Cancel",
+      },
     );
     if (!confirmed) {
       return;
     }
 
     stoppingSnapshot = true;
-    showStopRequestToast('Stop requested');
+    showStopRequestToast("Stop requested");
     try {
       const response = await stopWatchedSnapshotScan(watchedPath, {
         removeWatchedPath: true,
-        purgeStorage: true
+        purgeStorage: true,
       });
-      showStopRequestToast('Stopping and removing folder');
+      showStopRequestToast("Stopping and removing folder");
 
       const result = response?.result || {};
       const storageCleanup = response?.storage_cleanup || {};
@@ -262,21 +268,21 @@
         `File events removed: ${Number(result?.file_events_deleted || 0)}`,
         `Backup tasks removed: ${Number(result?.backup_tasks_deleted || 0)}`,
         `Snapshot jobs removed: ${Number(result?.snapshot_jobs_deleted || 0)}`,
-        `Storage files removed: ${Number(snapshotDirCleanup?.deleted_files || 0)}`
+        `Storage files removed: ${Number(snapshotDirCleanup?.deleted_files || 0)}`,
       ];
 
       await showMessage(
-        summaryLines.join('\n'),
-        'Scan Stopped: Data Removed',
-        'danger'
+        summaryLines.join("\n"),
+        "Scan Stopped: Data Removed",
+        "danger",
       );
     } catch (error) {
-      console.error('Failed to stop snapshot scan:', error);
-      showStopRequestToast('Could not request stop');
+      console.error("Failed to stop snapshot scan:", error);
+      showStopRequestToast("Could not request stop");
       await showMessage(
-        error?.message || 'Failed to stop and remove snapshot data.',
-        'Stop Failed',
-        'error'
+        error?.message || "Failed to stop and remove snapshot data.",
+        "Stop Failed",
+        "error",
       );
     } finally {
       stoppingSnapshot = false;
@@ -295,7 +301,7 @@
   >
     <div class="titlebar-brand" data-tauri-drag-region>
       <span class="titlebar-icon">
-        <Fa icon={faCloud} />
+        <img src={appIcon} alt="Locus" class="titlebar-icon-image" />
       </span>
       <span class="titlebar-text">Locus</span>
     </div>
@@ -303,20 +309,26 @@
     <div class="titlebar-center" data-tauri-drag-region>
       {#if snapshotProgress}
         {@const total = Math.max(snapshotProgress.total, 1)}
-        {@const completed = snapshotProgress.processed + snapshotProgress.skipped}
+        {@const completed =
+          snapshotProgress.processed + snapshotProgress.skipped}
         {@const percent = Math.min(100, Math.round((completed / total) * 100))}
-        {@const scanning = snapshotProgress.scanning || snapshotProgress.total <= 0}
+        {@const scanning =
+          snapshotProgress.scanning || snapshotProgress.total <= 0}
         <div class="snapshot-progress" title={snapshotProgress.watched_path}>
           <div class="snapshot-track" aria-label="Snapshot progress">
             <div
               class="snapshot-fill {scanning ? 'is-indeterminate' : ''}"
-              style={scanning ? '' : `width: ${percent}%`}
+              style={scanning ? "" : `width: ${percent}%`}
             ></div>
           </div>
           <div class="snapshot-meta">
-            <span class="snapshot-label">{scanning ? 'Scanning' : 'Snapshot'}</span>
+            <span class="snapshot-label"
+              >{scanning ? "Scanning" : "Snapshot"}</span
+            >
             <span class="snapshot-stats">
-              {scanning ? 'Preparing…' : `${percent}% • ${formatEta(snapshotProgress.eta_seconds)}`}
+              {scanning
+                ? "Preparing…"
+                : `${percent}% • ${formatEta(snapshotProgress.eta_seconds)}`}
             </span>
             <button
               class="snapshot-stop-btn"
@@ -326,7 +338,7 @@
               disabled={stoppingSnapshot}
               title="Stop current scan"
             >
-              {stoppingSnapshot ? 'Stopping…' : 'Stop'}
+              {stoppingSnapshot ? "Stopping…" : "Stop"}
             </button>
           </div>
           {#if stopRequestToast}
@@ -340,7 +352,11 @@
       <button class="control-btn" on:click={minimize} title="Minimize">
         <Fa icon={faMinus} />
       </button>
-      <button class="control-btn" on:click={toggleMaximize} title={isMaximized ? 'Restore' : 'Maximize'}>
+      <button
+        class="control-btn"
+        on:click={toggleMaximize}
+        title={isMaximized ? "Restore" : "Maximize"}
+      >
         <Fa icon={faSquare} />
       </button>
       <button class="control-btn control-close" on:click={close} title="Close">
@@ -379,9 +395,17 @@
   }
 
   .titlebar-icon {
-    color: var(--accent);
     display: flex;
     align-items: center;
+    width: 18px;
+    height: 18px;
+  }
+
+  .titlebar-icon-image {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    display: block;
   }
 
   .titlebar-controls {

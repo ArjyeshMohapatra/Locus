@@ -1544,7 +1544,7 @@ def _build_watched_tree_node(path: str, depth: int = 0) -> dict[str, object]:
 
 
 def _default_checkpoint_name(now: datetime | None = None) -> str:
-    stamp = (now or datetime.now()).strftime("%Y-%m-%d %H:%M:%S")
+    stamp = (now or datetime.now()).strftime("%Y-%m-%d %I:%M:%S %p")
     return f"Checkpoint {stamp}"
 
 

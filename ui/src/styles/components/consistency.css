@@ -6,7 +6,7 @@
   --ui-radius-control: 999px;
   --ui-radius-card: 14px;
   --ui-transition-fast: 140ms ease;
-  --ui-focus-ring: 0 0 0 3px var(--accent-soft);
+  --ui-focus-ring: var(--locus-focus-ring-shadow);
 }
 
 *, *::before, *::after {

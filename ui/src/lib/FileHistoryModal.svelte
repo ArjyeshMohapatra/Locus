@@ -3,6 +3,7 @@
     import { fade, fly, scale } from 'svelte/transition';
                 import { getFileVersions, restoreFileVersion, getFileVersionContent, getCurrentFileVersion, getCurrentFileContent } from '../api.js';
     import { showMessage, askQuestion } from '../dialogStore.js';
+    import { DATE_TIME_FORMATS, formatDateTime } from './dateTime.js';
     import Fa from 'svelte-fa';
     import { faArrowLeft, faHistory, faUndo, faEye } from '@fortawesome/free-solid-svg-icons';
 
@@ -255,19 +256,7 @@
   }
 
   function formatDate(dateString) {
-      if (!dateString) return 'Unknown date';
-      // Ensure dateString is treated as UTC
-      const date = new Date(dateString + (dateString.includes('Z') ? '' : 'Z'));
-            return new Intl.DateTimeFormat(undefined, {
-                weekday: 'short',
-                day: '2-digit',
-                month: 'short',
-                year: 'numeric',
-                hour: '2-digit',
-                minute: '2-digit',
-                second: '2-digit',
-                hour12: true
-            }).format(date);
+      return formatDateTime(dateString, DATE_TIME_FORMATS.LONG_DATE_TIME, 'Unknown date');
   }
 </script>
 

@@ -43,6 +43,9 @@
   --font-size-title-1: 1.75rem;
   --line-height-body: 1.5;
   --locus-font-zoom-scale: 1;
+  --locus-ui-zoom-scale: 1;
+  --locus-focus-ring-width: clamp(2px, calc(3px * var(--locus-font-zoom-scale, 1)), 6px);
+  --locus-focus-ring-shadow: 0 0 0 var(--locus-focus-ring-width) var(--accent-soft);
 }
 
 body.theme-dark {
@@ -149,7 +152,7 @@ h6 {
   background-color: var(--surface-elevated);
   border-color: var(--accent);
   color: var(--text-primary);
-  box-shadow: 0 0 0 3px var(--accent-soft);
+  box-shadow: var(--locus-focus-ring-shadow);
 }
 
 .form-control:disabled,
