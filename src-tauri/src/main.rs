@@ -31,6 +31,16 @@ struct BackendState {
     port: u16,
 }
 
+fn reveal_main_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        if let Err(err) = window.show() {
+            eprintln!("[tauri] failed to show window: {}", err);
+        }
+        let _ = window.set_focus();
+    }
+}
+
 fn pick_backend_port(preferred: u16) -> u16 {
     for offset in 0..=BACKEND_PORT_SEARCH_LIMIT {
         let candidate = preferred.saturating_add(offset);
@@ -474,13 +484,7 @@ fn setup_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
                 }
             }
             "show" => {
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.unminimize();
-                    if let Err(err) = window.show() {
-                        eprintln!("[tauri] failed to show window: {}", err);
-                    }
-                    let _ = window.set_focus();
-                }
+                reveal_main_window(app);
             }
             _ => {}
         })
@@ -496,18 +500,14 @@ fn main() {
         pick_backend_port(DEFAULT_BACKEND_PORT)
     };
 
-    // In release, guarantee backend readiness before creating the UI window.
-    let backend_child = if cfg!(debug_assertions) {
-        None
-    } else {
-        Some(start_release_backend(selected_port))
-    };
-
     tauri::Builder::default()
         .manage(BackendState {
-            child: Mutex::new(backend_child),
+            child: Mutex::new(None),
             port: selected_port,
         })
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            reveal_main_window(app);
+        }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_process::init())
@@ -515,6 +515,19 @@ fn main() {
             if cfg!(debug_assertions) {
                 // In dev mode, we assume the user is running the backend manually.
                 println!("[tauri] Dev mode: Skipping sidecar spawn, expecting backend on port {}", DEFAULT_BACKEND_PORT);
+            } else {
+                let state: State<BackendState> = app.state();
+                let backend_port = state.port;
+                let mut guard = match state.child.lock() {
+                    Ok(guard) => guard,
+                    Err(_) => {
+                        eprintln!("[tauri] failed to acquire backend process lock during startup");
+                        return Ok(());
+                    }
+                };
+                if guard.is_none() {
+                    *guard = Some(start_release_backend(backend_port));
+                }
             }
 
             if let Err(err) = setup_tray(app.handle()) {
