@@ -93,11 +93,45 @@ jobs:
       - name: Install UI dependencies
         run: npm ci --prefix ui
 
-      - name: Install Tauri CLI
-        run: cargo install tauri-cli --version "^1.5.0" --locked
+      - name: Install Tauri CLI (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          cargo uninstall tauri-cli || true
+          rm -f ~/.cargo/bin/cargo-tauri
+          cargo install tauri-cli --version "2.10.1" --locked --force
+
+      - name: Verify Tauri CLI version (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          cargo-tauri --version
+          cargo tauri --version
+          cargo tauri --version | grep -E '^tauri-cli 2\.'
+
+      - name: Install Tauri CLI (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cargo uninstall tauri-cli
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "tauri-cli not previously installed"
+          }
+          Remove-Item "$env:USERPROFILE\.cargo\bin\cargo-tauri.exe" -ErrorAction SilentlyContinue
+          cargo install tauri-cli --version "2.10.1" --locked --force
+
+      - name: Verify Tauri CLI version (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cargo-tauri --version
+          $ver = cargo tauri --version
+          Write-Host $ver
+          if ($ver -notmatch '^tauri-cli 2\.') {
+            throw "Expected tauri-cli v2.x, got: $ver"
+          }
 
       - name: Build desktop bundle
-        run: cargo tauri build --target ${{ matrix.rust_target }}
+        working-directory: src-tauri
+        run: cargo tauri build --config tauri.conf.json --target ${{ matrix.rust_target }}
 
       - name: Upload desktop artifacts
         uses: actions/upload-artifact@v4
