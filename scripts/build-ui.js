@@ -21,8 +21,16 @@ if (!uiDir) {
   process.exit(1);
 }
 
-const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-cp.execFileSync(npmCmd, ['run', 'build'], {
-  cwd: uiDir,
-  stdio: 'inherit',
-});
+if (process.platform === 'win32') {
+  // .cmd shims are expected to be launched via a shell on Windows.
+  cp.execSync('npm run build', {
+    cwd: uiDir,
+    stdio: 'inherit',
+    shell: true,
+  });
+} else {
+  cp.execFileSync('npm', ['run', 'build'], {
+    cwd: uiDir,
+    stdio: 'inherit',
+  });
+}
