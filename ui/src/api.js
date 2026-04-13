@@ -5,6 +5,10 @@ const SESSION_TOKEN_STORAGE_KEY = 'locus-session-token';
 const SESSION_HEADER_NAME = 'X-Locus-Session';
 const RESET_INTENT_HEADER_NAME = 'X-Locus-Reset-Intent';
 const RESET_CONFIRMATION_PHRASE = 'DELETE MY LOCUS DATA COMPLETELY';
+const DESKTOP_BACKEND_PORT_SEARCH_LIMIT = 20;
+const AUTH_BACKEND_URL_WAIT_MS = 8000;
+const AUTH_BACKEND_URL_POLL_MS = 100;
+const AUTH_BACKEND_PROBE_TIMEOUT_MS = 400;
 
 let sessionToken = '';
 
@@ -179,21 +183,49 @@ async function resolveAuthBaseUrl() {
     return String(BASE_URL);
   }
 
-  for (let attempt = 0; attempt < 20; attempt += 1) {
+  const maxWaitAttempts = Math.max(1, Math.floor(AUTH_BACKEND_URL_WAIT_MS / AUTH_BACKEND_URL_POLL_MS));
+  for (let attempt = 0; attempt < maxWaitAttempts; attempt += 1) {
     const fromGlobal = String(window.__LOCUS_BACKEND_URL || '').trim();
     if (fromGlobal) {
       return fromGlobal;
     }
-    await sleep(100);
+
+    try {
+      const fromStorage = String(window.localStorage.getItem('locus-backend-url') || '').trim();
+      if (fromStorage) {
+        window.__LOCUS_BACKEND_URL = fromStorage;
+        return fromStorage;
+      }
+    } catch {
+      // Ignore localStorage access failures in hardened runtime contexts.
+    }
+
+    await sleep(AUTH_BACKEND_URL_POLL_MS);
   }
 
-  try {
-    const fromStorage = String(window.localStorage.getItem('locus-backend-url') || '').trim();
-    if (fromStorage) {
-      return fromStorage;
+  // Last-resort probe: detect a healthy desktop backend port if startup URL injection is delayed.
+  for (let offset = 0; offset <= DESKTOP_BACKEND_PORT_SEARCH_LIMIT; offset += 1) {
+    const candidate = `http://127.0.0.1:${8000 + offset}`;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), AUTH_BACKEND_PROBE_TIMEOUT_MS);
+    try {
+      const res = await apiFetch(`${candidate}/health`, { signal: controller.signal });
+      if (!res.ok) {
+        continue;
+      }
+
+      window.__LOCUS_BACKEND_URL = candidate;
+      try {
+        window.localStorage.setItem('locus-backend-url', candidate);
+      } catch {
+        // Ignore localStorage write failures in restricted runtime contexts.
+      }
+      return candidate;
+    } catch {
+      // Keep probing subsequent ports.
+    } finally {
+      clearTimeout(timeoutId);
     }
-  } catch {
-    // Ignore localStorage access failures in hardened runtime contexts.
   }
 
   return DEFAULT_BASE_URL;

@@ -420,12 +420,24 @@ def _clear_auth_sessions() -> None:
         _auth_sessions.clear()
 
 
-def _set_auth_session_cookie(response: Response, token: str) -> None:
+def _is_https_request(request: Request) -> bool:
+    forwarded_proto = str(request.headers.get("x-forwarded-proto", "")).strip()
+    if forwarded_proto:
+        return forwarded_proto.lower().split(",")[0].strip() == "https"
+    return str(request.url.scheme).lower() == "https"
+
+
+def _set_auth_session_cookie(response: Response, token: str, request: Request) -> None:
+    secure_cookie = _is_truthy_env("LOCUS_AUTH_COOKIE_SECURE", "false")
+    if not secure_cookie:
+        # Desktop runtime uses localhost HTTP by default; allow secure cookies when HTTPS is detected.
+        secure_cookie = _is_https_request(request)
+
     response.set_cookie(
         key=AUTH_SESSION_COOKIE_NAME,
         value=token,
         httponly=True,
-        secure=False,
+        secure=secure_cookie,
         samesite="strict",
         path="/",
     )
@@ -3740,7 +3752,9 @@ class SetupPayload(BaseModel):
         400: {"description": "Already setup or invalid master password"},
     },
 )
-def auth_setup(payload: SetupPayload, db: DbSession, response: Response):
+def auth_setup(
+    payload: SetupPayload, db: DbSession, request: Request, response: Response
+):
     verifier = crud.get_setting(db, "snapshot_key_verifier", None)
     if verifier:
         raise HTTPException(status_code=400, detail="Already setup")
@@ -3751,7 +3765,7 @@ def auth_setup(payload: SetupPayload, db: DbSession, response: Response):
         )
         _set_setup_required_state(False)
         session_token = _issue_auth_session_token()
-        _set_auth_session_cookie(response, session_token)
+        _set_auth_session_cookie(response, session_token, request)
         return {
             "success": True,
             "recovery_key": recovery_key,
@@ -3804,7 +3818,7 @@ def auth_unlock(
     _reset_auth_failures(client_key)
     _set_setup_required_state(False)
     session_token = _issue_auth_session_token()
-    _set_auth_session_cookie(response, session_token)
+    _set_auth_session_cookie(response, session_token, request)
     return {
         "unlocked": True,
         "session_token": session_token,

@@ -1700,9 +1700,17 @@ class SnapshotService:
         providers.append(SnapshotService._linux_title_from_xprop)
 
         try:
-            for provider in providers:
+            for index, provider in enumerate(providers):
                 title = str(provider() or "").strip()
                 if title:
+                    # Some environments can report stale/self values from probe first.
+                    # When that happens, continue to xdotool/xprop fallbacks before deciding.
+                    if index == 0 and SnapshotService._is_locus_window(title, title):
+                        logger.debug(
+                            "[SnapshotService] bundled probe returned self title '%s'; falling back",
+                            title,
+                        )
+                        continue
                     return title
         except Exception as e:
             logger.error(f"[SnapshotService] Title capture error: {e}")

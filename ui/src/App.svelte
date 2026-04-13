@@ -79,6 +79,7 @@
   let linuxThemeUnlisten;
   let trayQuitUnlisten;
   let systemThemeOverride = null;
+  let systemThemeOverrideUpdatedAt = 0;
   const MIN_UI_ZOOM_SCALE = 0.5;
   const MAX_UI_ZOOM_SCALE = 3;
   const DEFAULT_UI_ZOOM_SCALE = 1;
@@ -86,6 +87,7 @@
   const MAX_FONT_ZOOM_SCALE = 1.5;
   const DEFAULT_FONT_ZOOM_SCALE = 1;
   const THEME_TRANSITION_MS = 220;
+  const SYSTEM_THEME_OVERRIDE_TTL_MS = 10000;
   const TELEMETRY_WINDOW_MS = 10000;
   const TELEMETRY_WINDOW_MAX_EVENTS = 8;
 
@@ -258,7 +260,15 @@
   };
 
   const getSystemTheme = () => {
-    if (systemThemeOverride) return systemThemeOverride;
+    if (systemThemeOverride) {
+      const ageMs = Date.now() - Number(systemThemeOverrideUpdatedAt || 0);
+      if (ageMs <= SYSTEM_THEME_OVERRIDE_TTL_MS) {
+        return systemThemeOverride;
+      }
+      // Allow fallback to media query when no recent native/system theme signal arrives.
+      systemThemeOverride = null;
+      systemThemeOverrideUpdatedAt = 0;
+    }
     return window.matchMedia("(prefers-color-scheme: dark)").matches
       ? "dark"
       : "light";
@@ -358,6 +368,7 @@
     handleSystemChange = () => {
       if (themeMode === "system") {
         systemThemeOverride = null;
+        systemThemeOverrideUpdatedAt = 0;
         applyTheme("system");
       }
     };
@@ -373,6 +384,7 @@
       localStorage.setItem("locus-theme", themeMode);
       if (themeMode !== "system") {
         systemThemeOverride = null;
+        systemThemeOverrideUpdatedAt = 0;
       }
       applyTheme(themeMode);
     };
@@ -401,6 +413,7 @@
         const normalizedTheme = normalizeThemeValue(payload);
         if (!normalizedTheme) return;
         systemThemeOverride = normalizedTheme;
+        systemThemeOverrideUpdatedAt = Date.now();
         if (themeMode === "system") {
           applyTheme("system");
         }

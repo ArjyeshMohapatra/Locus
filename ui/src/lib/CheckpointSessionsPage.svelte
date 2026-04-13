@@ -62,7 +62,8 @@
   let diffContentLoadToken = 0;
   let beforeStatePaneEl;
   let afterStatePaneEl;
-  let syncingStateScroll = false;
+  let syncedScrollSuppressedPane = null;
+  let syncedScrollReleaseHandle = null;
   let isDiffFilesPaneCollapsed = false;
 
   let restoreSessionId = '';
@@ -240,16 +241,28 @@
   };
 
   const syncStatePaneScroll = (source, target) => {
-    if (!source || !target || syncingStateScroll) return;
-    syncingStateScroll = true;
+    if (!source || !target) return;
+    if (syncedScrollSuppressedPane === source) return;
 
     const sourceScrollable = source.scrollHeight - source.clientHeight;
     const targetScrollable = target.scrollHeight - target.clientHeight;
     const ratio = sourceScrollable > 0 ? source.scrollTop / sourceScrollable : 0;
-    target.scrollTop = ratio * Math.max(0, targetScrollable);
+    const nextTop = ratio * Math.max(0, targetScrollable);
 
-    requestAnimationFrame(() => {
-      syncingStateScroll = false;
+    if (Math.abs((target.scrollTop || 0) - nextTop) < 1) {
+      return;
+    }
+
+    syncedScrollSuppressedPane = target;
+    target.scrollTop = nextTop;
+
+    if (syncedScrollReleaseHandle) {
+      cancelAnimationFrame(syncedScrollReleaseHandle);
+    }
+
+    syncedScrollReleaseHandle = requestAnimationFrame(() => {
+      syncedScrollSuppressedPane = null;
+      syncedScrollReleaseHandle = null;
     });
   };
 
