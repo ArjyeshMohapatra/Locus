@@ -37,7 +37,7 @@ locus_test.db
 backend/locus.db
 backend/locus.db-shm
 
-
+icon-transparency-and-fit-guide.md
 # Locus Data & Snapshots
 .locus_storage/
 .locus_snapshot_images/
