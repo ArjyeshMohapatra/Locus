@@ -111,19 +111,84 @@ env PATH="$HOME/.cargo/bin:$PATH" \
 
 ```powershell
 cd C:\path\to\LOCUS
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r backend\requirements.txt
-npm --prefix ui install
-cargo tauri build --target x86_64-pc-windows-msvc
+powershell -ExecutionPolicy Bypass -File .\scripts\desktop-windows-build.ps1
 ```
 
 Use this when you need real installer/runtime checks (tray behavior, auth persistence, popup UX, packaging).
+
+Optional script flags:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\desktop-windows-build.ps1 -SkipUiInstall
+powershell -ExecutionPolicy Bypass -File .\scripts\desktop-windows-build.ps1 -SkipPythonDeps
+```
 
 ### About Wine
 
 Wine can be used for quick smoke tests, but it is not reliable for final Tauri + system integration validation.
 Prefer VM or GitHub Windows runners for release confidence.
+
+## Docker Desktop Build And Debug
+
+Use this when you want deterministic local build/debug runs without GitHub Actions.
+
+### Build Linux Desktop Bundles In Docker
+
+From repo root:
+
+```bash
+./scripts/docker/desktop-linux-build.sh
+```
+
+Windows PowerShell equivalent:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\docker\desktop-linux-build.ps1
+```
+
+Output bundles:
+
+```text
+src-tauri/target/x86_64-unknown-linux-gnu/release/bundle
+```
+
+### Debug Windows Target In Docker
+
+From repo root:
+
+```bash
+./scripts/docker/desktop-windows-debug.sh x86_64-pc-windows-msvc
+```
+
+Windows PowerShell equivalent:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\docker\desktop-windows-debug.ps1 -Target x86_64-pc-windows-msvc
+```
+
+Notes:
+
+- This is useful for Tauri config, prebuild command, and resource-path debugging.
+- Linux containers cannot provide MSVC toolchain/linker, so full Windows MSVC packaging is not expected to complete there.
+
+Optional GNU cross-target debug run:
+
+```bash
+./scripts/docker/desktop-windows-debug.sh x86_64-pc-windows-gnu
+```
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\docker\desktop-windows-debug.ps1 -Target x86_64-pc-windows-gnu
+```
+
+### Docker Assets Added
+
+- `docker/desktop-build/Dockerfile`
+- `scripts/docker/desktop-linux-build.sh`
+- `scripts/docker/desktop-windows-debug.sh`
+- `scripts/docker/desktop-linux-build.ps1`
+- `scripts/docker/desktop-windows-debug.ps1`
+- `scripts/desktop-windows-build.ps1`
 
 ## Service mode
 
