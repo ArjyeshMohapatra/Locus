@@ -57,6 +57,8 @@
   let selectedDiffAfterState = null;
   let selectedDiffBeforeLines = [];
   let selectedDiffAfterLines = [];
+  let selectedDiffBeforeDisplayLines = [];
+  let selectedDiffAfterDisplayLines = [];
   let selectedDiffBeforeHighlights = new Set();
   let selectedDiffAfterHighlights = new Set();
   let diffContentLoadToken = 0;
@@ -64,7 +66,10 @@
   let afterStatePaneEl;
   let syncedScrollSuppressedPane = null;
   let syncedScrollReleaseHandle = null;
+  let syncedWheelRemainder = 0;
   let isDiffFilesPaneCollapsed = false;
+
+  const DIFF_PANE_WHEEL_ACCELERATION = 1.85;
 
   let restoreSessionId = '';
   let restoreDestinationRoot = '';
@@ -154,6 +159,21 @@
     return text.replace(/\r\n/g, '\n').split('\n');
   };
 
+  const buildDisplayLines = (lines, targetLength) => {
+    const result = [];
+    for (let i = 0; i < targetLength; i += 1) {
+      const hasLine = i < lines.length;
+      result.push({
+        number: hasLine ? i + 1 : '',
+        text: hasLine ? lines[i] : '',
+        placeholder: !hasLine
+      });
+    }
+    return result;
+  };
+
+  const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
+
   const buildHighlightedLineSets = (item) => {
     const before = new Set();
     const after = new Set();
@@ -187,6 +207,8 @@
     selectedDiffAfterState = null;
     selectedDiffBeforeLines = [];
     selectedDiffAfterLines = [];
+    selectedDiffBeforeDisplayLines = [];
+    selectedDiffAfterDisplayLines = [];
     selectedDiffBeforeHighlights = new Set();
     selectedDiffAfterHighlights = new Set();
   };
@@ -222,11 +244,15 @@
 
       selectedDiffBeforeLines = beforeType === 'text' ? splitContentLines(beforeState?.content) : [];
       selectedDiffAfterLines = afterType === 'text' ? splitContentLines(afterState?.content) : [];
+      const maxLineCount = Math.max(selectedDiffBeforeLines.length, selectedDiffAfterLines.length);
+      selectedDiffBeforeDisplayLines = buildDisplayLines(selectedDiffBeforeLines, maxLineCount);
+      selectedDiffAfterDisplayLines = buildDisplayLines(selectedDiffAfterLines, maxLineCount);
 
       const highlights = buildHighlightedLineSets(item);
       selectedDiffBeforeHighlights = highlights.before;
       selectedDiffAfterHighlights = highlights.after;
 
+      syncedWheelRemainder = 0;
       if (beforeStatePaneEl) beforeStatePaneEl.scrollTop = 0;
       if (afterStatePaneEl) afterStatePaneEl.scrollTop = 0;
     } catch (e) {
@@ -244,10 +270,13 @@
     if (!source || !target) return;
     if (syncedScrollSuppressedPane === source) return;
 
-    const sourceScrollable = source.scrollHeight - source.clientHeight;
-    const targetScrollable = target.scrollHeight - target.clientHeight;
-    const ratio = sourceScrollable > 0 ? source.scrollTop / sourceScrollable : 0;
-    const nextTop = ratio * Math.max(0, targetScrollable);
+    // Manual scroll interactions should clear any fractional wheel carry-over.
+    if (!syncedScrollSuppressedPane) {
+      syncedWheelRemainder = 0;
+    }
+
+    const targetScrollable = Math.max(0, target.scrollHeight - target.clientHeight);
+    const nextTop = clamp(source.scrollTop, 0, targetScrollable);
 
     if (Math.abs((target.scrollTop || 0) - nextTop) < 1) {
       return;
@@ -264,6 +293,71 @@
       syncedScrollSuppressedPane = null;
       syncedScrollReleaseHandle = null;
     });
+  };
+
+  const normalizeWheelDeltaY = (event, pane) => {
+    const deltaMode = Number(event?.deltaMode || 0);
+    if (deltaMode === 1) {
+      return Number(event.deltaY || 0) * 16;
+    }
+    if (deltaMode === 2) {
+      return Number(event.deltaY || 0) * Number(pane?.clientHeight || 0);
+    }
+    return Number(event?.deltaY || 0);
+  };
+
+  const syncPanesWithWheel = (event, sourcePane, targetPane) => {
+    if (!sourcePane || !targetPane) return;
+
+    const normalizedDeltaY = normalizeWheelDeltaY(event, sourcePane);
+    if (!normalizedDeltaY) return;
+
+    const acceleratedDeltaY = normalizedDeltaY * DIFF_PANE_WHEEL_ACCELERATION;
+    const sourceScrollable = Math.max(0, sourcePane.scrollHeight - sourcePane.clientHeight);
+    const targetScrollable = Math.max(0, targetPane.scrollHeight - targetPane.clientHeight);
+    const sharedScrollable = Math.min(sourceScrollable, targetScrollable);
+    if (sharedScrollable <= 0) return;
+
+    const currentTop = clamp(Math.min(sourcePane.scrollTop, targetPane.scrollTop), 0, sharedScrollable);
+    const rawNextTop = clamp(currentTop + acceleratedDeltaY + syncedWheelRemainder, 0, sharedScrollable);
+
+    if (Math.abs(rawNextTop - currentTop) < 0.001) {
+      return;
+    }
+
+    const netDelta = rawNextTop - currentTop;
+    const appliedDelta = netDelta > 0 ? Math.floor(netDelta) : Math.ceil(netDelta);
+
+    event.preventDefault();
+
+    if (appliedDelta === 0) {
+      syncedWheelRemainder = netDelta;
+      return;
+    }
+
+    const nextTop = clamp(currentTop + appliedDelta, 0, sharedScrollable);
+    syncedWheelRemainder = rawNextTop - nextTop;
+
+    syncedScrollSuppressedPane = sourcePane;
+    sourcePane.scrollTop = nextTop;
+    targetPane.scrollTop = nextTop;
+
+    if (syncedScrollReleaseHandle) {
+      cancelAnimationFrame(syncedScrollReleaseHandle);
+    }
+
+    syncedScrollReleaseHandle = requestAnimationFrame(() => {
+      syncedScrollSuppressedPane = null;
+      syncedScrollReleaseHandle = null;
+    });
+  };
+
+  const onBeforeStateWheel = (event) => {
+    syncPanesWithWheel(event, beforeStatePaneEl, afterStatePaneEl);
+  };
+
+  const onAfterStateWheel = (event) => {
+    syncPanesWithWheel(event, afterStatePaneEl, beforeStatePaneEl);
   };
 
   const onBeforeStateScroll = () => {
@@ -990,15 +1084,15 @@
                       {#if selectedDiffBeforeState?.type !== 'text'}
                         <div class="empty-state diff-empty">{selectedDiffBeforeState?.content || 'Before version is not text-renderable.'}</div>
                       {:else}
-                        <div class="file-state-pane" bind:this={beforeStatePaneEl} on:scroll={onBeforeStateScroll}>
+                        <div class="file-state-pane" bind:this={beforeStatePaneEl} on:scroll={onBeforeStateScroll} on:wheel|nonpassive={onBeforeStateWheel}>
                           {#if selectedDiffBeforeLines.length === 0}
                             <div class="empty-state diff-empty">File was empty in the From session.</div>
                           {:else}
                             <div class="file-state-line-list mono-text">
-                              {#each selectedDiffBeforeLines as line, idx (idx)}
-                                <div class="state-line {selectedDiffBeforeHighlights.has(idx + 1) ? 'is-changed-removed' : ''}">
-                                  <span class="state-line-number">{idx + 1}</span>
-                                  <span class="state-line-content">{line || ' '}</span>
+                              {#each selectedDiffBeforeDisplayLines as entry, idx (idx)}
+                                <div class="state-line {entry.placeholder ? 'is-placeholder' : ''} {!entry.placeholder && selectedDiffBeforeHighlights.has(idx + 1) ? 'is-changed-removed' : ''}">
+                                  <span class="state-line-number">{entry.number}</span>
+                                  <span class="state-line-content">{entry.text || ' '}</span>
                                 </div>
                               {/each}
                             </div>
@@ -1012,15 +1106,15 @@
                       {#if selectedDiffAfterState?.type !== 'text'}
                         <div class="empty-state diff-empty">{selectedDiffAfterState?.content || 'After version is not text-renderable.'}</div>
                       {:else}
-                        <div class="file-state-pane" bind:this={afterStatePaneEl} on:scroll={onAfterStateScroll}>
+                        <div class="file-state-pane" bind:this={afterStatePaneEl} on:scroll={onAfterStateScroll} on:wheel|nonpassive={onAfterStateWheel}>
                           {#if selectedDiffAfterLines.length === 0}
                             <div class="empty-state diff-empty">File is empty in the To session.</div>
                           {:else}
                             <div class="file-state-line-list mono-text">
-                              {#each selectedDiffAfterLines as line, idx (idx)}
-                                <div class="state-line {selectedDiffAfterHighlights.has(idx + 1) ? 'is-changed-added' : ''}">
-                                  <span class="state-line-number">{idx + 1}</span>
-                                  <span class="state-line-content">{line || ' '}</span>
+                              {#each selectedDiffAfterDisplayLines as entry, idx (idx)}
+                                <div class="state-line {entry.placeholder ? 'is-placeholder' : ''} {!entry.placeholder && selectedDiffAfterHighlights.has(idx + 1) ? 'is-changed-added' : ''}">
+                                  <span class="state-line-number">{entry.number}</span>
+                                  <span class="state-line-content">{entry.text || ' '}</span>
                                 </div>
                               {/each}
                             </div>
@@ -1506,17 +1600,18 @@
   }
 
   .diff-explorer {
-    --files-pane-width: clamp(180px, 24vw, 230px);
-    display: grid;
-    grid-template-columns: var(--files-pane-width) minmax(0, 1fr);
+    --files-pane-expanded-width: clamp(180px, 24vw, 230px);
+    --files-pane-collapsed-width: 44px;
+    --files-pane-width: var(--files-pane-expanded-width);
+    display: flex;
+    align-items: stretch;
     gap: 0.75rem;
     min-height: min(72vh, calc(100vh - 280px));
     margin-bottom: 0.65rem;
-    transition: grid-template-columns 0.24s cubic-bezier(0.22, 1, 0.36, 1);
   }
 
   .diff-explorer.is-files-collapsed {
-    --files-pane-width: 44px;
+    --files-pane-width: var(--files-pane-collapsed-width);
   }
 
   .diff-files-pane,
@@ -1532,7 +1627,17 @@
 
   .diff-files-pane {
     width: var(--files-pane-width);
+    flex: 0 0 var(--files-pane-width);
     min-width: 0;
+    transition: width 0.16s ease-out, flex-basis 0.16s ease-out;
+    will-change: width, flex-basis;
+    contain: layout paint;
+  }
+
+  .diff-view-pane {
+    flex: 1 1 auto;
+    min-width: 0;
+    contain: layout paint;
   }
 
   .diff-pane-head {
@@ -1561,14 +1666,19 @@
     border: 1px solid var(--border-subtle);
     background: var(--surface-elevated);
     color: var(--text-muted);
-    border-radius: 999px;
-    width: 1.3rem;
-    height: 1.3rem;
+    border-radius: 50%;
+    inline-size: 22px;
+    block-size: 22px;
+    min-inline-size: 22px;
+    min-block-size: 22px;
+    aspect-ratio: 1 / 1;
     display: inline-flex;
+    flex: 0 0 auto;
     align-items: center;
     justify-content: center;
     padding: 0;
-    line-height: 1;
+    line-height: 0;
+    box-sizing: border-box;
     cursor: pointer;
     transition: border-color 0.18s ease, color 0.18s ease, background-color 0.18s ease;
   }
@@ -1635,7 +1745,8 @@
     opacity: 1;
     visibility: visible;
     transform: translateX(0);
-    transition: opacity 0.18s ease, visibility 0.18s ease, transform 0.24s ease;
+    transition: opacity 0.14s ease, visibility 0.14s ease, transform 0.18s ease;
+    will-change: opacity, transform;
   }
 
   .diff-tree-list {
@@ -1792,6 +1903,10 @@
 
   .state-line.is-changed-removed {
     background: rgba(207, 34, 46, 0.1);
+  }
+
+  .state-line.is-placeholder {
+    background: color-mix(in srgb, var(--surface-soft) 78%, transparent);
   }
 
   .diff-empty {
@@ -1991,11 +2106,13 @@
     }
 
     .diff-explorer {
-      grid-template-columns: minmax(0, 1fr);
+      flex-direction: column;
       min-height: 0;
     }
 
     .diff-files-pane {
+      width: 100%;
+      flex: 0 0 auto;
       max-height: min(38vh, 320px);
     }
 

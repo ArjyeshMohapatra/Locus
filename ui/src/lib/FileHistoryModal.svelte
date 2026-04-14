@@ -1,3 +1,5 @@
+<svelte:options runes={false} />
+
 <script>
     import { onDestroy, onMount } from 'svelte';
     import { fade, fly, scale } from 'svelte/transition';
@@ -363,7 +365,7 @@
                                               <span class="badge badge-soft-danger px-2 py-1 rounded-pill">-{diffRemovedCount} deletions</span>
                                           </div>
                                       </div>
-                                      <div class="preview-scroll preview-text diff-text">{#each diffRows as row}
+                                      <div class="preview-scroll preview-text diff-text">{#each diffRows as row, rowIndex (rowIndex)}
       <div class="diff-line diff-{row.type}">
           <span class="diff-gutter">{row.oldNo ?? ''}</span>
           <span class="diff-gutter">{row.newNo ?? ''}</span>
@@ -374,7 +376,7 @@
                                       <div class="text-muted small px-3 pt-3">Diff is too large to render here. Showing raw historical content.</div>
                                       <div class="preview-scroll preview-text preview-lines-scroll">
                                           <div class="preview-lines-wrap">
-                                              {#each previewLines as line, lineIndex}
+                                              {#each previewLines as line, lineIndex (lineIndex)}
                                                   <div class="preview-line">
                                                       <span class="preview-line-no">{lineIndex + 1}</span>
                                                       <span class="preview-line-code">{line || ' '}</span>
@@ -385,7 +387,7 @@
                                   {:else}
                                       <div class="preview-scroll preview-text preview-lines-scroll">
                                           <div class="preview-lines-wrap">
-                                              {#each previewLines as line, lineIndex}
+                                              {#each previewLines as line, lineIndex (lineIndex)}
                                                   <div class="preview-line">
                                                       <span class="preview-line-no">{lineIndex + 1}</span>
                                                       <span class="preview-line-code">{line || ' '}</span>
@@ -415,9 +417,7 @@
                   {:else}
                       <div class="version-list-scroll">
                           <div class="list-group list-group-flush pt-2 pb-2">
-                              {#each versions as v}
-                                  <!-- svelte-ignore a11y-click-events-have-key-events -->
-                                  <!-- svelte-ignore a11y-no-static-element-interactions -->
+                              {#each versions as v (v.id)}
                                   <div
                                       class="list-group-item list-group-item-action d-flex justify-content-between align-items-center cursor-pointer version-row py-3 mb-2 rounded-3 shadow-sm border"
                                       on:click={() => openPreview(v)}
@@ -425,7 +425,6 @@
                                       role="button"
                                       tabindex="0"
                                       title="Click to preview content"
-                                      style="transition: all 0.2s ease-in-out;"
                                   >
                                       <div>
                                           <div class="d-flex align-items-center mb-1">
@@ -436,9 +435,9 @@
                                               {/if}
                                           </div>
                                           <div class="text-muted small mt-2 d-flex align-items-center gap-3">
-                                              <span class="badge bg-light text-dark fw-medium border">{formatSize(v.file_size_bytes)}</span>
+                                              <span class="badge file-size-badge fw-medium border">{formatSize(v.file_size_bytes)}</span>
                                               {#if v.file_hash}
-                                              <span class="text-truncate d-inline-block align-bottom text-muted" style="max-width: 250px; opacity: 0.8;" title={v.file_hash}><Fa icon={faHistory} class="me-1 d-inline-block" /> {v.file_hash.substring(0, 12)}...</span>
+                                              <span class="version-hash text-truncate d-inline-flex align-items-center" title={v.file_hash}><Fa icon={faHistory} class="me-1 d-inline-block" /> {v.file_hash.substring(0, 12)}...</span>
                                               {/if}
                                           </div>
                                       </div>
@@ -742,16 +741,47 @@
         border-radius: 10px;
     }
     .version-row {
-        background: var(--app-bg);
+        background: var(--surface-elevated);
         border-color: var(--border-subtle) !important;
         transform: translateY(0);
+        transition: background-color 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
     }
     .version-row:hover {
-        background-color: var(--sidebar-hover);
+        background-color: color-mix(in srgb, var(--sidebar-hover) 82%, var(--surface-elevated));
         border-color: var(--accent) !important;
     }
     .version-row:hover .text-muted {
-        color: var(--text-muted) !important;
+        color: var(--text-secondary) !important;
+    }
+    .version-row:focus-visible {
+        outline: none;
+        border-color: var(--accent) !important;
+        box-shadow: var(--locus-focus-ring-shadow);
+    }
+    .version-row .fw-semibold {
+        color: var(--text-primary);
+    }
+    .version-row .text-muted {
+        color: var(--text-secondary) !important;
+        opacity: 1;
+    }
+    .file-size-badge {
+        background: color-mix(in srgb, var(--surface-soft) 88%, var(--surface-elevated));
+        color: var(--text-primary) !important;
+        border-color: color-mix(in srgb, var(--border-subtle) 90%, transparent) !important;
+    }
+    .version-hash {
+        max-width: 250px;
+        color: var(--text-secondary);
+    }
+    .version-hash :global(svg) {
+        opacity: 0.85;
+    }
+    :global(body.theme-dark) .file-size-badge {
+        background: color-mix(in srgb, var(--surface-soft) 78%, #141b24);
+    }
+    :global(body.theme-dark) .version-hash {
+        color: #aeb8c7;
     }
     .btn-preview-hover {
         transition: all 0.2s ease;

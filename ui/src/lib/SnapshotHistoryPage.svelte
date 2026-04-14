@@ -92,6 +92,14 @@
   let filterDay = toDateInputValue(nowLocal);
   let filterTimeOfDay = TIME_OF_DAY_BUCKETS[0].value;
 
+  let appliedFilterMode = FILTER_MODE_NONE;
+  let appliedFilterApp = FILTER_APP_ALL;
+  let appliedFilterYear = String(nowLocal.getFullYear());
+  let appliedFilterMonth = toMonthInputValue(nowLocal);
+  let appliedFilterWeek = toIsoWeekInputValue(nowLocal);
+  let appliedFilterDay = toDateInputValue(nowLocal);
+  let appliedFilterTimeOfDay = TIME_OF_DAY_BUCKETS[0].value;
+
   let allowDelete = false;
   let items = [];
   let timelineItems = [];
@@ -119,12 +127,12 @@
   };
 
   const buildHistoryTimeRange = () => {
-    if (filterMode === FILTER_MODE_NONE || filterMode === FILTER_MODE_TIME_OF_DAY) {
+    if (appliedFilterMode === FILTER_MODE_NONE || appliedFilterMode === FILTER_MODE_TIME_OF_DAY) {
       return { start_time: null, end_time: null };
     }
 
-    if (filterMode === FILTER_MODE_YEAR) {
-      const year = Number(filterYear);
+    if (appliedFilterMode === FILTER_MODE_YEAR) {
+      const year = Number(appliedFilterYear);
       if (!Number.isFinite(year) || year < 1970 || year > 9999) {
         throw new Error('Invalid year filter.');
       }
@@ -133,8 +141,8 @@
       return { start_time: start.toISOString(), end_time: end.toISOString() };
     }
 
-    if (filterMode === FILTER_MODE_MONTH) {
-      const match = /^([0-9]{4})-([0-9]{2})$/.exec(String(filterMonth || ''));
+    if (appliedFilterMode === FILTER_MODE_MONTH) {
+      const match = /^([0-9]{4})-([0-9]{2})$/.exec(String(appliedFilterMonth || ''));
       if (!match) {
         throw new Error('Invalid month filter.');
       }
@@ -145,8 +153,8 @@
       return { start_time: start.toISOString(), end_time: end.toISOString() };
     }
 
-    if (filterMode === FILTER_MODE_WEEK) {
-      const parsed = parseIsoWeekInput(filterWeek);
+    if (appliedFilterMode === FILTER_MODE_WEEK) {
+      const parsed = parseIsoWeekInput(appliedFilterWeek);
       if (!parsed) {
         throw new Error('Invalid week filter.');
       }
@@ -156,8 +164,8 @@
       };
     }
 
-    if (filterMode === FILTER_MODE_DAY) {
-      const match = /^([0-9]{4})-([0-9]{2})-([0-9]{2})$/.exec(String(filterDay || ''));
+    if (appliedFilterMode === FILTER_MODE_DAY) {
+      const match = /^([0-9]{4})-([0-9]{2})-([0-9]{2})$/.exec(String(appliedFilterDay || ''));
       if (!match) {
         throw new Error('Invalid day filter.');
       }
@@ -174,16 +182,16 @@
 
   const applyClientSideFilters = (source) => {
     const rows = Array.isArray(source) ? source : [];
-    const filteredByApp = filterApp === FILTER_APP_ALL
+    const filteredByApp = appliedFilterApp === FILTER_APP_ALL
       ? rows
-      : rows.filter((item) => String(item?.app_name || '').trim() === filterApp);
+      : rows.filter((item) => String(item?.app_name || '').trim() === appliedFilterApp);
 
-    if (filterMode !== FILTER_MODE_TIME_OF_DAY) {
+    if (appliedFilterMode !== FILTER_MODE_TIME_OF_DAY) {
       return filteredByApp;
     }
     return filteredByApp.filter((item) => {
       const capturedAt = parseSnapshotDate(item?.captured_at);
-      return isInTimeOfDayBucket(capturedAt, filterTimeOfDay);
+      return isInTimeOfDayBucket(capturedAt, appliedFilterTimeOfDay);
     });
   };
 
@@ -196,10 +204,14 @@
       )
     ).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
 
-    appFilterOptions = normalized;
     if (filterApp !== FILTER_APP_ALL && !normalized.includes(filterApp)) {
-      filterApp = FILTER_APP_ALL;
+      normalized.unshift(filterApp);
     }
+    if (appliedFilterApp !== FILTER_APP_ALL && !normalized.includes(appliedFilterApp)) {
+      normalized.unshift(appliedFilterApp);
+    }
+
+    appFilterOptions = normalized;
   };
 
   const loadAppFilters = async () => {
@@ -369,7 +381,7 @@
       }
       const payload = {
         limit: Number(limit) || 200,
-        ...(filterApp !== FILTER_APP_ALL ? { app_name: filterApp } : {}),
+        ...(appliedFilterApp !== FILTER_APP_ALL ? { app_name: appliedFilterApp } : {}),
         ...(range.start_time ? { start_time: range.start_time } : {}),
         ...(range.end_time ? { end_time: range.end_time } : {})
       };
@@ -454,12 +466,32 @@
   };
 
   const applyTimelineFilter = async () => {
+    appliedFilterMode = filterMode;
+    appliedFilterApp = filterApp;
+    appliedFilterYear = filterYear;
+    appliedFilterMonth = filterMonth;
+    appliedFilterWeek = filterWeek;
+    appliedFilterDay = filterDay;
+    appliedFilterTimeOfDay = filterTimeOfDay;
     await loadHistory();
   };
 
   const clearTimelineFilter = async () => {
     filterMode = FILTER_MODE_NONE;
     filterApp = FILTER_APP_ALL;
+    filterYear = String(nowLocal.getFullYear());
+    filterMonth = toMonthInputValue(nowLocal);
+    filterWeek = toIsoWeekInputValue(nowLocal);
+    filterDay = toDateInputValue(nowLocal);
+    filterTimeOfDay = TIME_OF_DAY_BUCKETS[0].value;
+
+    appliedFilterMode = FILTER_MODE_NONE;
+    appliedFilterApp = FILTER_APP_ALL;
+    appliedFilterYear = filterYear;
+    appliedFilterMonth = filterMonth;
+    appliedFilterWeek = filterWeek;
+    appliedFilterDay = filterDay;
+    appliedFilterTimeOfDay = filterTimeOfDay;
     await loadHistory();
   };
 
@@ -497,7 +529,7 @@
     </div>
     <div class="snapshot-head-meta">
       <span class="badge-soft badge-soft-secondary">
-        {#if filterMode === FILTER_MODE_NONE && filterApp === FILTER_APP_ALL}
+        {#if appliedFilterMode === FILTER_MODE_NONE && appliedFilterApp === FILTER_APP_ALL}
           {items.length} snapshots
         {:else}
           {timelineItems.length} of {items.length} snapshots
@@ -590,7 +622,7 @@
       </div>
     </div>
 
-    {#if filterMode === FILTER_MODE_TIME_OF_DAY}
+    {#if appliedFilterMode === FILTER_MODE_TIME_OF_DAY}
       <div class="small text-muted mt-1">Time-of-day filtering uses local timezone buckets.</div>
     {/if}
 
@@ -635,9 +667,6 @@
               alt="Snapshot preview"
               loading="lazy"
             />
-            {#if imageLoading}
-              <div class="preview-updating">Updating preview…</div>
-            {/if}
           {:else if imageLoading}
             <div class="preview-placeholder">Loading image preview…</div>
           {:else}
@@ -813,11 +842,11 @@
     background: var(--surface-elevated);
   }
 
-  .preview-updating {
+  /* .preview-updating {
     margin-top: 0.45rem;
     font-size: 0.75rem;
     color: var(--text-muted);
-  }
+  } */
 
   .refresh-btn {
     min-width: 96px;
@@ -845,9 +874,9 @@
     border-color: color-mix(in srgb, var(--border-strong) 74%, transparent);
   }
 
-  :global(.theme-dark) .preview-updating {
+  /* :global(.theme-dark) .preview-updating {
     color: var(--text-muted);
-  }
+  } */
 
   @media (max-width: 720px) {
     .recall-strip {

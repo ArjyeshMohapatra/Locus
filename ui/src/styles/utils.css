@@ -68,6 +68,11 @@ body.theme-dark .badge-soft-success { color: #10b981; }
 body.theme-dark .badge-soft-danger { color: #ef4444; }
 body.theme-dark .badge-soft-warning { color: #f59e0b; }
 
+.badge-soft-primary {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 25%, transparent);
+}
 
 .badge-soft-secondary {
   background: var(--sidebar-hover);
@@ -361,6 +366,7 @@ body.theme-dark .btn:disabled {
   -webkit-appearance: none;
   -moz-appearance: none;
   appearance: none;
+  color-scheme: light;
   padding-right: 2.25rem;
   background-image:
     linear-gradient(45deg, transparent 50%, color-mix(in srgb, var(--text-primary) 84%, transparent) 50%),
@@ -374,6 +380,43 @@ body.theme-dark .btn:disabled {
 
 .form-select:disabled {
   cursor: not-allowed;
+}
+
+body.theme-dark select,
+body.theme-dark .form-select {
+  color-scheme: dark;
+}
+
+select option,
+select optgroup,
+.form-select option,
+.form-select optgroup {
+  background-color: var(--surface-elevated);
+  color: var(--text-primary);
+}
+
+.dropdown-menu {
+  background: var(--surface-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+  color: var(--text-primary);
+}
+
+.dropdown-item {
+  color: var(--text-primary);
+}
+
+.dropdown-item:hover,
+.dropdown-item:focus,
+.dropdown-item.active,
+.dropdown-item:active {
+  color: var(--text-primary);
+  background: color-mix(in srgb, var(--sidebar-hover) 82%, transparent);
+}
+
+.dropdown-divider {
+  border-top-color: var(--border-subtle);
 }
 
 .form-select:hover:not(:disabled) {

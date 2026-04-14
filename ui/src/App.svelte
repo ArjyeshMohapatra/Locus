@@ -79,7 +79,6 @@
   let linuxThemeUnlisten;
   let trayQuitUnlisten;
   let systemThemeOverride = null;
-  let systemThemeOverrideUpdatedAt = 0;
   const MIN_UI_ZOOM_SCALE = 0.5;
   const MAX_UI_ZOOM_SCALE = 3;
   const DEFAULT_UI_ZOOM_SCALE = 1;
@@ -87,7 +86,6 @@
   const MAX_FONT_ZOOM_SCALE = 1.5;
   const DEFAULT_FONT_ZOOM_SCALE = 1;
   const THEME_TRANSITION_MS = 220;
-  const SYSTEM_THEME_OVERRIDE_TTL_MS = 10000;
   const TELEMETRY_WINDOW_MS = 10000;
   const TELEMETRY_WINDOW_MAX_EVENTS = 8;
 
@@ -261,14 +259,9 @@
 
   const getSystemTheme = () => {
     if (systemThemeOverride) {
-      const ageMs = Date.now() - Number(systemThemeOverrideUpdatedAt || 0);
-      if (ageMs <= SYSTEM_THEME_OVERRIDE_TTL_MS) {
-        return systemThemeOverride;
-      }
-      // Allow fallback to media query when no recent native/system theme signal arrives.
-      systemThemeOverride = null;
-      systemThemeOverrideUpdatedAt = 0;
+      return systemThemeOverride;
     }
+
     return window.matchMedia("(prefers-color-scheme: dark)").matches
       ? "dark"
       : "light";
@@ -368,7 +361,6 @@
     handleSystemChange = () => {
       if (themeMode === "system") {
         systemThemeOverride = null;
-        systemThemeOverrideUpdatedAt = 0;
         applyTheme("system");
       }
     };
@@ -384,7 +376,6 @@
       localStorage.setItem("locus-theme", themeMode);
       if (themeMode !== "system") {
         systemThemeOverride = null;
-        systemThemeOverrideUpdatedAt = 0;
       }
       applyTheme(themeMode);
     };
@@ -413,7 +404,6 @@
         const normalizedTheme = normalizeThemeValue(payload);
         if (!normalizedTheme) return;
         systemThemeOverride = normalizedTheme;
-        systemThemeOverrideUpdatedAt = Date.now();
         if (themeMode === "system") {
           applyTheme("system");
         }
@@ -629,6 +619,35 @@
   const formatTimestamp = (value) => {
     return formatDateTime(value, DATE_TIME_FORMATS.SHORT_DATE_TIME);
   };
+
+  const BYTE_UNITS = ["B", "KB", "MB", "GB", "TB"];
+
+  const formatByteSize = (rawBytes) => {
+    const bytes = Number(rawBytes);
+    if (!Number.isFinite(bytes) || bytes <= 0) {
+      return { value: "0", unit: "B" };
+    }
+
+    let scaled = bytes;
+    let unitIndex = 0;
+    while (scaled >= 1024 && unitIndex < BYTE_UNITS.length - 1) {
+      scaled /= 1024;
+      unitIndex += 1;
+    }
+
+    const decimals = unitIndex === 0 ? 0 : scaled >= 100 ? 0 : 1;
+    return {
+      value: scaled.toLocaleString(undefined, {
+        minimumFractionDigits: decimals,
+        maximumFractionDigits: decimals,
+      }),
+      unit: BYTE_UNITS[unitIndex],
+    };
+  };
+
+  $: storageSize = formatByteSize(dashboardSummary.storage_bytes);
+  $: ramUsageSize = formatByteSize(dashboardSummary.ram_usage_bytes);
+  $: dbSize = formatByteSize(dashboardSummary.db_size_bytes);
 
   const refreshDashboardSummaries = async () => {
     try {
@@ -910,10 +929,8 @@
                   <article class="metric-tile metric-storage">
                     <div class="metric-kicker">Storage Utilized</div>
                     <div class="metric-value">
-                      {(dashboardSummary.storage_bytes / (1024 * 1024)).toFixed(
-                        1,
-                      )}
-                      <span class="metric-value-unit">MB</span>
+                      {storageSize.value}
+                      <span class="metric-value-unit">{storageSize.unit}</span>
                     </div>
                     <div class="metric-icon"><Fa icon={faGear} /></div>
                   </article>
@@ -933,11 +950,8 @@
                   <article class="metric-tile metric-ram">
                     <div class="metric-kicker">Combined RAM Usage</div>
                     <div class="metric-value">
-                      {(
-                        dashboardSummary.ram_usage_bytes /
-                        (1024 * 1024)
-                      ).toFixed(1)}
-                      <span class="metric-value-unit">MB</span>
+                      {ramUsageSize.value}
+                      <span class="metric-value-unit">{ramUsageSize.unit}</span>
                     </div>
                     <div class="metric-icon"><Fa icon={faMemory} /></div>
                   </article>
@@ -945,8 +959,8 @@
                   <article class="metric-tile metric-db">
                     <div class="metric-kicker">Database Size</div>
                     <div class="metric-value">
-                      {(dashboardSummary.db_size_bytes / 1024).toFixed(1)}
-                      <span class="metric-value-unit">KB</span>
+                      {dbSize.value}
+                      <span class="metric-value-unit">{dbSize.unit}</span>
                     </div>
                     <div class="metric-icon"><Fa icon={faDatabase} /></div>
                   </article>
@@ -1221,6 +1235,7 @@
     flex-direction: column;
     gap: 0.5rem;
     overflow: hidden;
+    isolation: isolate;
   }
 
   .metric-kicker {
@@ -1229,6 +1244,8 @@
     letter-spacing: 0.05em;
     text-transform: none;
     color: var(--text-muted);
+    position: relative;
+    z-index: 1;
   }
 
   .metric-value {
@@ -1237,6 +1254,8 @@
     font-weight: 700;
     letter-spacing: -0.02em;
     color: var(--text-primary);
+    position: relative;
+    z-index: 1;
   }
 
   .metric-value-unit {
@@ -1253,6 +1272,8 @@
     gap: 0.15rem;
     font-size: 0.8rem;
     color: var(--text-primary);
+    position: relative;
+    z-index: 1;
   }
 
   .metric-meta-label {
@@ -1265,20 +1286,19 @@
 
   .metric-icon {
     position: absolute;
-    right: 0.9rem;
-    bottom: 0.8rem;
-    width: 34px;
-    height: 34px;
-    border-radius: 10px;
+    right: 0.75rem;
+    bottom: 0.55rem;
     display: grid;
     place-items: center;
     color: var(--accent);
-    background: var(--accent-soft);
+    opacity: 0.26;
+    pointer-events: none;
+    z-index: 0;
   }
 
   .metric-icon :global(svg) {
-    width: 1rem;
-    height: 1rem;
+    width: 2.9rem;
+    height: 2.9rem;
   }
 
   .metric-files .metric-icon {
@@ -1490,6 +1510,11 @@
 
     .metric-grid {
       grid-template-columns: minmax(0, 1fr);
+    }
+
+    .metric-icon :global(svg) {
+      width: 2.35rem;
+      height: 2.35rem;
     }
 
     .fab-popover {
